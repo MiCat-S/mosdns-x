@@ -57,17 +57,16 @@ func (m *Mosdns) startServers(cfg *ServerConfig) error {
 		queryTimeout = time.Duration(cfg.Timeout) * time.Second
 	}
 
-	dnsHandler, err := D.NewEntryHandler(D.EntryHandlerOpts{
-		Logger:             m.logger,
-		Entry:              entry,
-		QueryTimeout:       queryTimeout,
-		RecursionAvailable: true,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to init entry handler, %w", err)
-	}
-
 	for _, lc := range cfg.Listeners {
+		opts := D.EntryHandlerOpts{Logger: m.logger, Entry: entry, QueryTimeout: queryTimeout, RecursionAvailable: true}
+		if m.control != nil && isHTTPDNSProtocol(lc.Protocol) {
+			opts.Admit = admit(m.control)
+			opts.Observe = m.telemetry.Observe
+		}
+		dnsHandler, err := D.NewEntryHandler(opts)
+		if err != nil {
+			return fmt.Errorf("failed to init entry handler, %w", err)
+		}
 		if err := m.startServerListener(lc, dnsHandler); err != nil {
 			return err
 		}
@@ -87,25 +86,32 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		idleTimeout = time.Duration(cfg.IdleTimeout) * time.Second
 	}
 
-	httpHandler, err := H.NewHandler(H.HandlerOpts{
+	httpOpts := H.HandlerOpts{
 		DNSHandler:  dnsHandler,
 		Path:        cfg.URLPath,
 		SrcIPHeader: cfg.GetUserIPFromHeader,
 		Logger:      m.logger,
-	})
+	}
+	if m.control != nil && isHTTPDNSProtocol(cfg.Protocol) {
+		httpOpts.Authenticate = authenticate(m.control)
+		httpOpts.TrustedProxies = m.trustedProxies
+		httpOpts.UpstreamObserver = m.telemetry.ObserveUpstream
+	}
+	httpHandler, err := H.NewHandler(httpOpts)
 	if err != nil {
 		return fmt.Errorf("failed to init http handler, %w", err)
 	}
 
 	opts := server.ServerOpts{
-		DNSHandler:  dnsHandler,
-		HttpHandler: httpHandler,
-		Cert:        cfg.Cert,
-		Key:         cfg.Key,
-		KernelTX:    cfg.KernelTX,
-		KernelRX:    cfg.KernelRX,
-		IdleTimeout: idleTimeout,
-		Logger:      m.logger,
+		DNSHandler:       dnsHandler,
+		HttpHandler:      httpHandler,
+		Cert:             cfg.Cert,
+		Key:              cfg.Key,
+		KernelTX:         cfg.KernelTX,
+		KernelRX:         cfg.KernelRX,
+		IdleTimeout:      idleTimeout,
+		DisableEarlyData: m.control != nil,
+		Logger:           m.logger,
 	}
 	s := server.NewServer(opts)
 
@@ -137,18 +143,22 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		if err != nil {
 			return err
 		}
+		m.ownedClosers = append(m.ownedClosers, conn)
+		s.OwnCloser(conn)
 		switch cfg.Protocol {
 		case "", "udp":
 			run = func() error { return s.ServeUDP(conn) }
 		case "quic", "doq":
 			l, err := s.CreateQUICListner(conn, []string{"doq"})
 			if err != nil {
+				conn.Close()
 				return err
 			}
 			run = func() error { return s.ServeQUIC(l) }
 		case "h3", "doh3":
 			l, err := s.CreateQUICListner(conn, []string{"h3"})
 			if err != nil {
+				conn.Close()
 				return err
 			}
 			run = func() error { return s.ServeH3(l) }
@@ -170,6 +180,8 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		if err != nil {
 			return err
 		}
+		m.ownedClosers = append(m.ownedClosers, l)
+		s.OwnCloser(l)
 		if cfg.ProxyProtocol {
 			l = &proxyproto.Listener{Listener: l, Policy: requirePP}
 		}
@@ -177,23 +189,28 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		case "tcp":
 			run = func() error { return s.ServeTCP(l) }
 		case "tls", "dot":
-			l, err = s.CreateETLSListner(l, []string{"dot"})
-			if err != nil {
-				return err
+			tlsListener, tlsErr := s.CreateETLSListner(l, []string{"dot"})
+			if tlsErr != nil {
+				l.Close()
+				return tlsErr
 			}
+			l = tlsListener
 			run = func() error { return s.ServeTCP(l) }
 		case "http":
 			run = func() error { return s.ServeHTTP(l) }
 		case "https", "doh":
-			l, err = s.CreateETLSListner(l, []string{"h2"})
-			if err != nil {
-				return err
+			tlsListener, tlsErr := s.CreateETLSListner(l, []string{"h2"})
+			if tlsErr != nil {
+				l.Close()
+				return tlsErr
 			}
+			l = tlsListener
 			run = func() error { return s.ServeHTTP(l) }
 		}
 	default:
 		return fmt.Errorf("unknown protocol: [%s]", cfg.Protocol)
 	}
+	m.servers = append(m.servers, s)
 
 	m.sc.Attach(func(done func(), closeSignal <-chan struct{}) {
 		defer done()
@@ -201,12 +218,36 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		go func() {
 			errChan <- run()
 		}()
+		serveDone := false
 		select {
 		case err := <-errChan:
-			m.sc.SendCloseSignal(fmt.Errorf("server exited, %w", err))
+			serveDone = true
+			select {
+			case <-closeSignal:
+			default:
+				m.sc.SendCloseSignal(fmt.Errorf("server exited, %w", err))
+			}
 		case <-closeSignal:
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := s.Shutdown(shutdownCtx)
+		cancel()
+		if err != nil {
+			m.logger.Warn("server shutdown error", zap.Error(err))
+			_ = s.Shutdown(context.Background())
+		}
+		if !serveDone {
+			<-errChan
 		}
 	})
 
 	return nil
+}
+
+func isHTTPDNSProtocol(protocol string) bool {
+	switch strings.ToLower(protocol) {
+	case "http", "https", "doh", "h3", "doh3":
+		return true
+	}
+	return false
 }

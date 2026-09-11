@@ -43,6 +43,7 @@ func asyncWait(ctx context.Context, qCtx *query_context.Context, logger *zap.Log
 			if r := res.qCtx.R(); r != nil {
 				logger.Debug("sequence returned a response", qCtx.InfoField(), zap.Int("sequence", res.from))
 				qCtx.SetResponse(r)
+				qCtx.SetCacheHit(res.qCtx.CacheHit())
 				return nil
 			}
 

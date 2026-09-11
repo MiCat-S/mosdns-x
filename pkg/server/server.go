@@ -20,8 +20,10 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -64,6 +66,9 @@ type ServerOpts struct {
 	// IdleTimeout limits the maximum time period that a connection
 	// can idle. Default is defaultTCPIdleTimeout.
 	IdleTimeout time.Duration
+
+	// DisableEarlyData disables replayable TLS early data and QUIC 0-RTT.
+	DisableEarlyData bool
 }
 
 func (opts *ServerOpts) init() {
@@ -87,6 +92,9 @@ type Server struct {
 	m             sync.Mutex
 	closed        bool
 	closerTracker map[io.Closer]struct{}
+	queryWG       sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 func NewServer(opts ServerOpts) *Server {
@@ -124,17 +132,84 @@ func (s *Server) trackCloser(c io.Closer, add bool) bool {
 	return true
 }
 
+// OwnCloser registers a transport that must be closed with the server.
+// It returns false and closes c when shutdown has already begun.
+func (s *Server) OwnCloser(c io.Closer) bool {
+	if s.trackCloser(c, true) {
+		return true
+	}
+	_ = c.Close()
+	return false
+}
+
 // Close closes the Server and all its inner listeners.
 func (s *Server) Close() {
 	s.m.Lock()
-	defer s.m.Unlock()
-
-	if s.closed {
-		return
-	}
-
 	s.closed = true
-	for closer := range s.closerTracker {
-		closer.Close()
+	closers := make([]io.Closer, 0, len(s.closerTracker))
+	for c := range s.closerTracker {
+		closers = append(closers, c)
+	}
+	s.m.Unlock()
+	for _, c := range closers {
+		_ = c.Close()
+	}
+}
+
+type gracefulCloser interface{ Shutdown(context.Context) error }
+
+func (s *Server) beginQuery() bool {
+	s.m.Lock()
+	defer s.m.Unlock()
+	if s.closed {
+		return false
+	}
+	s.queryWG.Add(1)
+	return true
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.closeOnce.Do(func() {
+		s.m.Lock()
+		s.closed = true
+		closers := make([]io.Closer, 0, len(s.closerTracker))
+		for c := range s.closerTracker {
+			closers = append(closers, c)
+		}
+		s.m.Unlock()
+		// Graceful servers stop accepting and drain before auxiliary resources
+		// such as certificate watchers are closed.
+		var errs []error
+		for _, c := range closers {
+			if graceful, ok := c.(gracefulCloser); ok {
+				if err := graceful.Shutdown(ctx); err != nil {
+					errs = append(errs, err)
+				}
+				// Shutdown drains handlers; Close then releases the listener so
+				// the serving goroutine always terminates.
+				if closeErr := c.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+					errs = append(errs, closeErr)
+				}
+			}
+		}
+		for _, c := range closers {
+			if _, ok := c.(gracefulCloser); !ok {
+				if err := c.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					errs = append(errs, err)
+				}
+			}
+		}
+		s.closeErr = errors.Join(errs...)
+	})
+	done := make(chan struct{})
+	go func() {
+		s.queryWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return s.closeErr
+	case <-ctx.Done():
+		return errors.Join(s.closeErr, ctx.Err())
 	}
 }

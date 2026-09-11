@@ -9,6 +9,11 @@ import zipfile
 parser = argparse.ArgumentParser()
 parser.add_argument("-upx", action="store_true")
 parser.add_argument("-i", type=int)
+parser.add_argument(
+    "--headless",
+    action="store_true",
+    help="skip the frontend build and create binaries without embedded UI assets",
+)
 args = parser.parse_args()
 
 PROJECT_NAME = 'mosdns'
@@ -54,7 +59,7 @@ def go_build():
     logger.info(f'building {PROJECT_NAME}')
 
     global envs
-    if args.i:
+    if args.i is not None:
         envs = [envs[args.i]]
 
     VERSION = f'4.6.0'
@@ -67,8 +72,10 @@ def go_build():
         logger.exception('failed to generate config template')
         raise
 
+    failed = []
     for env in envs:
         os_env = os.environ.copy()  # new env
+        os_env['CGO_ENABLED'] = '0'
 
         s = PROJECT_NAME
         for pairs in env:
@@ -81,8 +88,9 @@ def go_build():
 
         logger.info(f'building {zip_filename}')
         try:
+            tags = '' if args.headless else '-tags ui '
             subprocess.check_call(
-                f'go build -ldflags "-s -w -buildid= -X github.com/pmkol/mosdns-x/constant.Version={VERSION} -X github.com/pmkol/mosdns-x/constant.BuildTime={BuildTime}" -trimpath -o {bin_filename} ../', shell=True,
+                f'go build {tags}-ldflags "-s -w -buildid= -X github.com/pmkol/mosdns-x/constant.Version={VERSION} -X github.com/pmkol/mosdns-x/constant.BuildTime={BuildTime}" -trimpath -o {bin_filename} ../', shell=True,
                 env=os_env)
 
             if args.upx:
@@ -101,12 +109,21 @@ def go_build():
 
         except subprocess.CalledProcessError as e:
             logger.error(f'build {zip_filename} failed: {e.args}')
+            failed.append(zip_filename)
         except Exception:
             logger.exception('unknown err')
+            failed.append(zip_filename)
+
+    if failed:
+        raise RuntimeError(f'failed release targets: {", ".join(failed)}')
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
+
+    if not args.headless:
+        subprocess.check_call(['npm', 'ci'], cwd='./web')
+        subprocess.check_call(['npm', 'run', 'build'], cwd='./web')
 
     if len(RELEASE_DIR) != 0:
         if not os.path.exists(RELEASE_DIR):

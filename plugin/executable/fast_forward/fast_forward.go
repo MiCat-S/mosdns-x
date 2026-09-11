@@ -108,6 +108,7 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 
 		if strings.HasPrefix(c.Addr, "udpme://") {
 			u := newUDPME(c.Addr[8:], c.Trusted)
+			u.observerID = fmt.Sprintf("%s/%d", bp.Tag(), i)
 			f.upstreamWrappers = append(f.upstreamWrappers, u)
 			if i == 0 {
 				u.trusted = true
@@ -139,9 +140,10 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 		}
 
 		w := &upstreamWrapper{
-			address: c.Addr,
-			trusted: c.Trusted,
-			u:       u,
+			address:    c.Addr,
+			observerID: fmt.Sprintf("%s/%d", bp.Tag(), i),
+			trusted:    c.Trusted,
+			u:          u,
 		}
 
 		if i == 0 { // Set first upstream as trusted upstream.
@@ -156,9 +158,14 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 }
 
 type upstreamWrapper struct {
-	address string
-	trusted bool
-	u       upstream.Upstream
+	address    string
+	observerID string
+	trusted    bool
+	u          upstream.Upstream
+}
+
+func (u *upstreamWrapper) ObserverID() string {
+	return u.observerID
 }
 
 func (u *upstreamWrapper) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {

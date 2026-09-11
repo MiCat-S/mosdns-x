@@ -20,10 +20,13 @@
 package coremain
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/kardianos/service"
@@ -96,6 +99,12 @@ func Run() error {
 }
 
 func StartServer(sf *serverFlags) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return StartServerContext(ctx, sf)
+}
+
+func StartServerContext(ctx context.Context, sf *serverFlags) error {
 	if sf.cpu > 0 {
 		runtime.GOMAXPROCS(sf.cpu)
 	}
@@ -117,7 +126,7 @@ func StartServer(sf *serverFlags) error {
 		return fmt.Errorf("failed to load sub config file, %w", err)
 	}
 
-	if err := RunMosdns(cfg); err != nil {
+	if err := RunMosdnsContext(ctx, cfg); err != nil {
 		return fmt.Errorf("mosdns exited, %w", err)
 	}
 	return nil

@@ -22,6 +22,7 @@ package bundled_upstream
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
@@ -52,23 +53,54 @@ var nopLogger = zap.NewNop()
 
 var ErrAllFailed = errors.New("all upstreams failed")
 
+type observerUpstream interface {
+	ObserverID() string
+}
+
+func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal) (*dns.Msg, error) {
+	started := time.Now()
+	r, err := u.Exchange(ctx, q)
+	if observer != nil {
+		id := "upstream"
+		if identified, ok := u.(observerUpstream); ok {
+			id = identified.ObserverID()
+		}
+		attempt := query_context.UpstreamAttempt{
+			Principal:  principal,
+			UpstreamID: id,
+			Duration:   time.Since(started),
+			Rcode:      -1,
+			Failed:     err != nil || r == nil,
+		}
+		if r != nil {
+			attempt.Rcode = r.Rcode
+			attempt.Failed = attempt.Failed || r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused
+		}
+		observer(attempt)
+	}
+	return r, err
+}
+
 func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstreams []Upstream, logger *zap.Logger) (*dns.Msg, error) {
 	if logger == nil {
 		logger = nopLogger
 	}
 
 	q := qCtx.Q()
+	meta := qCtx.ReqMeta()
+	observer := meta.GetUpstreamObserver()
+	principal := meta.GetPrincipal()
 	t := len(upstreams)
 	if t == 1 {
-		return upstreams[0].Exchange(ctx, q)
+		return exchange(ctx, q.Copy(), upstreams[0], observer, principal)
 	}
 
 	c := make(chan *parallelResult, t) // use buf chan to avoid blocking.
-	qCopy := q.Copy()                  // qCtx is not safe for concurrent use.
 	for _, u := range upstreams {
 		u := u
+		qCopy := q.Copy() // Every upstream may mutate its query.
 		go func() {
-			r, err := u.Exchange(ctx, qCopy)
+			r, err := exchange(ctx, qCopy, u, observer, principal)
 			c <- &parallelResult{
 				r:    r,
 				err:  err,

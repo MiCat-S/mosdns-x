@@ -180,6 +180,7 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		cachedResp.Id = q.Id // change msg id
 		c.L().Debug("cache hit", qCtx.InfoField())
 		qCtx.SetResponse(cachedResp)
+		qCtx.SetCacheHit(true)
 		if c.whenHit != nil {
 			return c.whenHit.Exec(ctx, qCtx, nil)
 		}

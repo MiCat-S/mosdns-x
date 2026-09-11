@@ -125,6 +125,8 @@ gitlab.com/go-extension/tls v0.0.0-20260519093151-a11971e4240d h1:fm37KHdWKab5Xh
 gitlab.com/go-extension/tls v0.0.0-20260519093151-a11971e4240d/go.mod h1:YDOE3Bcr2glufOLkR1iTOguApmrXdmJGTg5XuAij9bY=
 gitlab.com/go-extension/utils v0.0.0-20251006173700-b62b19cda891 h1:b45Hl2gyHbV6GANcg/7BSZ0A0JUjq/gBEq+OeJlAuM0=
 gitlab.com/go-extension/utils v0.0.0-20251006173700-b62b19cda891/go.mod h1:Ywd71Frp71RHLytGD2PgcTyxX/nEpGcYh85CPFTz3Mg=
+go.etcd.io/bbolt v1.5.0 h1:S7GAl7Fxv12yohbwFfIbQCGDWbQbtDGPET4P/bD4lxU=
+go.etcd.io/bbolt v1.5.0/go.mod h1:mkltfYE5aUHQxUct9N9V+Kp7aSjFqjgrhcXIS70Lrdk=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.uber.org/mock v0.6.0 h1:hyF9dfmbgIX5EfOdasqLsWD6xqpNZlXblLB/Dbnwv3Y=

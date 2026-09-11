@@ -30,8 +30,13 @@ import (
 )
 
 type udpmeUpstream struct {
-	addr    string
-	trusted bool
+	addr       string
+	trusted    bool
+	observerID string
+}
+
+func (u *udpmeUpstream) ObserverID() string {
+	return u.observerID
 }
 
 func newUDPME(addr string, trusted bool) *udpmeUpstream {

@@ -47,7 +47,7 @@ func (s *Server) ServeH3(l *quic.EarlyListener) error {
 	}
 
 	hs := &http3.Server{
-		Handler:        &sHandler{s.opts.HttpHandler},
+		Handler:        &sHandler{h: s.opts.HttpHandler, s: s},
 		IdleTimeout:    idleTimeout,
 		MaxHeaderBytes: 2048,
 	}
@@ -67,9 +67,15 @@ func (s *Server) ServeH3(l *quic.EarlyListener) error {
 
 type sHandler struct {
 	h *H.Handler
+	s *Server
 }
 
 func (h *sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !h.s.beginQuery() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	defer h.s.queryWG.Done()
 	h.h.ServeHTTP(&sWriter{w}, &sRequest{r})
 }
 

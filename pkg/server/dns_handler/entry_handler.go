@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
+	"github.com/pmkol/mosdns-x/pkg/server/query_access"
 	"github.com/pmkol/mosdns-x/pkg/utils"
 )
 
@@ -66,6 +68,28 @@ type EntryHandlerOpts struct {
 
 	// RecursionAvailable sets the dns.Msg.RecursionAvailable flag globally.
 	RecursionAvailable bool
+
+	// Admit authorizes an authenticated principal after DNS question validation.
+	Admit func(context.Context, query_context.Principal) error
+
+	// Observe receives one self-contained result for every request.
+	Observe func(Result)
+}
+
+// Result is an immutable snapshot of a completed entry request.
+type Result struct {
+	Principal    query_context.Principal
+	Protocol     string
+	ClientAddr   netip.Addr
+	QuestionName string
+	QuestionType uint16
+	Duration     time.Duration
+	Rcode        int
+	ExecError    bool
+	Admitted     bool
+	Rejected     bool
+	AccessKind   query_access.Kind
+	CacheHit     bool
 }
 
 func (opts *EntryHandlerOpts) Init() error {
@@ -92,8 +116,21 @@ func NewEntryHandler(opts EntryHandlerOpts) (*EntryHandler, error) {
 
 // ServeDNS implements Handler.
 // If entry returns an error, a SERVFAIL response will be returned.
-// If entry returns without a response, a REFUSED response will be returned.
+// If entry returns without a response, a SERVFAIL response will be returned.
 func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_context.RequestMeta) (*dns.Msg, error) {
+	started := time.Now()
+	result := Result{Rcode: -1}
+	if meta != nil {
+		result.Principal = meta.GetPrincipal()
+		result.Protocol = meta.GetProtocol()
+		result.ClientAddr = meta.GetClientAddr()
+	}
+	if h.opts.Observe != nil {
+		defer func() {
+			result.Duration = time.Since(started)
+			h.opts.Observe(result)
+		}()
+	}
 	// apply timeout to ctx
 	ddl := time.Now().Add(h.opts.QueryTimeout)
 	ctxDdl, ok := ctx.Deadline()
@@ -105,15 +142,27 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	// return FORMERR response
 	if len(req.Question) == 0 {
 		h.opts.Logger.Warn("zero question")
+		result.Rcode = dns.RcodeFormatError
 		return h.responseFormErr(req), nil
 	}
+	result.QuestionName = req.Question[0].Name
+	result.QuestionType = req.Question[0].Qtype
 	for _, question := range req.Question {
 		_, ok := dns.IsDomainName(question.Name)
 		if !ok {
 			h.opts.Logger.Warn(fmt.Sprintf("invalid question name: %s", question.Name))
+			result.Rcode = dns.RcodeFormatError
 			return h.responseFormErr(req), nil
 		}
 	}
+	if h.opts.Admit != nil {
+		if err := h.opts.Admit(ctx, result.Principal); err != nil {
+			result.Rejected = true
+			result.AccessKind, _ = query_access.KindOf(err)
+			return nil, err
+		}
+	}
+	result.Admitted = true
 	// cache original id
 	id := req.Id
 
@@ -122,6 +171,7 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	err := h.opts.Entry.Exec(ctx, qCtx, nil)
 	respMsg := qCtx.R()
 	if err != nil {
+		result.ExecError = true
 		h.opts.Logger.Warn("entry returned an err", qCtx.InfoField(), zap.Error(err))
 	} else {
 		h.opts.Logger.Debug("entry returned", qCtx.InfoField())
@@ -140,6 +190,10 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		respMsg.RecursionAvailable = true
 	}
 	respMsg.Id = id
+	result.Rcode = respMsg.Rcode
+	if err == nil {
+		result.CacheHit = qCtx.CacheHit()
+	}
 	return respMsg, nil
 }
 

@@ -44,7 +44,7 @@ func (s *Server) ServeHTTP(l net.Listener) error {
 	}
 
 	hs := &http.Server{
-		Handler:           &eHandler{s.opts.HttpHandler},
+		Handler:           &eHandler{h: s.opts.HttpHandler, s: s},
 		ReadHeaderTimeout: time.Millisecond * 500,
 		ReadTimeout:       idleTimeout,
 		IdleTimeout:       idleTimeout,
@@ -66,9 +66,15 @@ func (s *Server) ServeHTTP(l net.Listener) error {
 
 type eHandler struct {
 	h *H.Handler
+	s *Server
 }
 
 func (h *eHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !h.s.beginQuery() {
+		w.WriteHeader(503)
+		return
+	}
+	defer h.s.queryWG.Done()
 	h.h.ServeHTTP(&eWriter{w}, &eRequest{r})
 }
 

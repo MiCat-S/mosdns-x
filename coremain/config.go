@@ -32,9 +32,21 @@ type Config struct {
 	Plugins       []PluginConfig                     `yaml:"plugins"`
 	Servers       []ServerConfig                     `yaml:"servers"`
 	API           APIConfig                          `yaml:"api"`
+	Control       *ControlConfig                     `yaml:"control"`
 
 	// Experimental
 	Security SecurityConfig `yaml:"security"`
+}
+
+type ControlConfig struct {
+	Database       string   `yaml:"database"`
+	StatsDatabase  string   `yaml:"stats_database"`
+	PublicDNSURL   string   `yaml:"public_dns_url"`
+	PanelOrigin    string   `yaml:"panel_origin"`
+	Development    bool     `yaml:"development"`
+	QueryLog       bool     `yaml:"query_log"`
+	EnablePprof    bool     `yaml:"enable_pprof"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 // PluginConfig represents a plugin config

@@ -139,7 +139,10 @@ func (s *Server) handleConnectionTcp(ctx context.Context, c *TCPConn) {
 			return // read err, close the connection
 		}
 
-		go s.handleQueryTcp(ctx, c, req)
+		if !s.beginQuery() {
+			return
+		}
+		go func() { defer s.queryWG.Done(); s.handleQueryTcp(ctx, c, req) }()
 
 		c.SetReadDeadline(time.Now().Add(idleTimeout))
 	}

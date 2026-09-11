@@ -1,0 +1,36 @@
+log:
+  level: info
+
+control:
+  database: /var/lib/mosdns/control.db
+  stats_database: /var/lib/mosdns/stats.db
+  public_dns_url: https://dns.example.com/dns-query
+  panel_origin: https://panel.example.com
+  development: false
+  query_log: false
+  enable_pprof: false
+  trusted_proxies:
+    - 127.0.0.1/32
+
+api:
+  http: 127.0.0.1:18081
+
+plugins:
+  - tag: local_answer
+    type: blackhole
+    args:
+      rcode: 0
+
+servers:
+  - exec: local_answer
+    listeners:
+      - protocol: doh
+        addr: 0.0.0.0:443
+        url_path: /dns-query
+        cert: /etc/mosdns/tls.crt
+        key: /etc/mosdns/tls.key
+      - protocol: doh3
+        addr: 0.0.0.0:443
+        url_path: /dns-query
+        cert: /etc/mosdns/tls.crt
+        key: /etc/mosdns/tls.key

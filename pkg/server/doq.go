@@ -111,7 +111,13 @@ func (s *Server) ServeQUIC(l *quic.EarlyListener) error {
 					return
 				}
 				// handle stream
+				if !s.beginQuery() {
+					stream.CancelRead(1)
+					stream.CancelWrite(1)
+					continue
+				}
 				go func() {
+					defer s.queryWG.Done()
 					req, _, err := dnsutils.ReadMsgFromTCP(stream)
 					timeout.Reset(idleTimeout)
 					if err != nil {

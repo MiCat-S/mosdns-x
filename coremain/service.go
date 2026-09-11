@@ -20,9 +20,12 @@
 package coremain
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/kardianos/service"
@@ -43,20 +46,60 @@ var (
 )
 
 type serverService struct {
-	f *serverFlags
+	f      *serverFlags
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
+	runErr error
 }
 
 func (ss *serverService) Start(s service.Service) error {
 	mlog.L().Info("starting service", zap.String("platform", s.Platform()))
+	ss.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	ss.cancel = cancel
+	ss.done = make(chan struct{})
+	done := ss.done
+	ss.mu.Unlock()
 	go func() {
-		err := StartServer(ss.f)
-		mlog.L().Fatal("server exited", zap.Error(err))
+		err := StartServerContext(ctx, ss.f)
+		if err != nil {
+			mlog.L().Error("server exited", zap.Error(err))
+		}
+		ss.mu.Lock()
+		ss.runErr = err
+		ss.cancel = nil
+		ss.mu.Unlock()
+		close(done)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			mlog.L().Fatal("service worker exited", zap.Error(err))
+		}
 	}()
 	return nil
 }
 
 func (ss *serverService) Stop(s service.Service) error {
-	return nil
+	ss.mu.Lock()
+	cancel, done := ss.cancel, ss.done
+	ss.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	if cancel != nil {
+		cancel()
+	}
+	select {
+	case <-done:
+		ss.mu.Lock()
+		err := ss.runErr
+		ss.mu.Unlock()
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	case <-time.After(15 * time.Second):
+		return errors.New("timed out stopping server")
+	}
 }
 
 // initService will init svc for sub command "service"

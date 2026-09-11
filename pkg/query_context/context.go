@@ -53,7 +53,30 @@ type RequestMeta struct {
 	serverName string
 
 	protocol string
+
+	principal Principal
+
+	upstreamObserver UpstreamObserver
 }
+
+// Principal identifies the authenticated account and credential for a query.
+// It is a value type so request metadata users cannot mutate shared state.
+type Principal struct {
+	UserID            string
+	CredentialID      string
+	CredentialVersion uint64
+}
+
+// UpstreamAttempt is a self-contained observation of one actual upstream call.
+type UpstreamAttempt struct {
+	Principal  Principal
+	UpstreamID string
+	Duration   time.Duration
+	Rcode      int
+	Failed     bool
+}
+
+type UpstreamObserver func(UpstreamAttempt)
 
 func NewRequestMeta(addr netip.Addr) *RequestMeta {
 	meta := new(RequestMeta)
@@ -91,6 +114,30 @@ func (m *RequestMeta) GetServerName() string {
 	return m.serverName
 }
 
+// SetPrincipal sets the authenticated principal before the request enters the
+// executable chain. Callers must treat RequestMeta as read-only afterwards.
+func (m *RequestMeta) SetPrincipal(principal Principal) {
+	m.principal = principal
+}
+
+func (m *RequestMeta) GetPrincipal() Principal {
+	if m == nil {
+		return Principal{}
+	}
+	return m.principal
+}
+
+func (m *RequestMeta) SetUpstreamObserver(observer UpstreamObserver) {
+	m.upstreamObserver = observer
+}
+
+func (m *RequestMeta) GetUpstreamObserver() UpstreamObserver {
+	if m == nil {
+		return nil
+	}
+	return m.upstreamObserver
+}
+
 // Context is a query context that pass through plugins
 // A Context will always have a non-nil Q.
 // Context MUST be created using NewContext.
@@ -103,8 +150,9 @@ type Context struct {
 	id            uint32 // additional uint to distinguish duplicated msg
 	reqMeta       *RequestMeta
 
-	r     *dns.Msg
-	marks map[uint]struct{}
+	r        *dns.Msg
+	cacheHit bool
+	marks    map[uint]struct{}
 }
 
 var (
@@ -184,6 +232,15 @@ func (ctx *Context) R() *dns.Msg {
 // shouldn't modify or read r after the call.
 func (ctx *Context) SetResponse(r *dns.Msg) {
 	ctx.r = r
+	ctx.cacheHit = false
+}
+
+func (ctx *Context) SetCacheHit(hit bool) {
+	ctx.cacheHit = hit
+}
+
+func (ctx *Context) CacheHit() bool {
+	return ctx.cacheHit
 }
 
 // Id returns the Context id.
@@ -222,6 +279,7 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 	if r := ctx.r; r != nil {
 		d.r = r.Copy()
 	}
+	d.cacheHit = ctx.cacheHit
 	for m := range ctx.marks {
 		d.AddMark(m)
 	}

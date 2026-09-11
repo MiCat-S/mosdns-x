@@ -24,5 +24,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Test Build
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Test frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Test Go
+        run: go test ./...
+
+      - name: Build headless
         run: go build
+
+      - name: Test embedded frontend
+        run: go test -tags ui ./web
+
+      - name: Build with embedded frontend
+        run: go build -tags ui

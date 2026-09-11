@@ -1,0 +1,28 @@
+log:
+  level: info
+
+control:
+  database: /tmp/mosdns-control-local/control.db
+  stats_database: /tmp/mosdns-control-local/stats.db
+  public_dns_url: http://127.0.0.1:18443/dns-query
+  panel_origin: http://127.0.0.1:18081
+  development: true
+  query_log: true
+  enable_pprof: false
+  trusted_proxies: []
+
+api:
+  http: 127.0.0.1:18081
+
+plugins:
+  - tag: local_answer
+    type: blackhole
+    args:
+      rcode: 0
+
+servers:
+  - exec: local_answer
+    listeners:
+      - protocol: http
+        addr: 127.0.0.1:18443
+        url_path: /dns-query

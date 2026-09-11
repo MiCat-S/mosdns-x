@@ -28,7 +28,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"reflect"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -39,9 +38,17 @@ import (
 	"github.com/pmkol/mosdns-x/pkg/pool"
 	C "github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/dns_handler"
+	"github.com/pmkol/mosdns-x/pkg/server/query_access"
 )
 
 var nopLogger = zap.NewNop()
+
+const (
+	defaultPath        = "/dns-query"
+	maxCredentialLen   = 512
+	maxDNSMessageSize  = 65535
+	maxEncodedDNSQuery = (maxDNSMessageSize*8 + 5) / 6
+)
 
 type HandlerOpts struct {
 	// DNSHandler is required.
@@ -51,9 +58,19 @@ type HandlerOpts struct {
 	// will ignore the request path.
 	Path string
 
-	// SrcIPHeader specifies the header that contain client source address.
-	// "True-Client-IP" "X-Real-IP" "X-Forwarded-For" will parse automatically.
+	// SrcIPHeader specifies the sole header containing the client source address.
+	// If empty, only X-Forwarded-For is considered. Headers are read only from
+	// peers matched by TrustedProxies.
 	SrcIPHeader string
+
+	// TrustedProxies controls which socket peers may supply client IP headers.
+	TrustedProxies []netip.Prefix
+
+	// Authenticate validates a path or Bearer credential. Nil disables access
+	// protection and preserves the original path behavior.
+	Authenticate func(context.Context, string) (C.Principal, error)
+
+	UpstreamObserver C.UpstreamObserver
 
 	// Logger specifies the logger which Handler writes its log to.
 	// Default is a nop logger.
@@ -81,8 +98,8 @@ func NewHandler(opts HandlerOpts) (*Handler, error) {
 	return &Handler{opts: opts}, nil
 }
 
-func (h *Handler) warnErr(req Request, err error) {
-	h.opts.Logger.Warn(err.Error(), zap.String("from", req.GetRemoteAddr()), zap.String("method", req.Method()), zap.String("url", req.RequestURI()))
+func (h *Handler) warnErr(req Request, message string) {
+	h.opts.Logger.Warn(message, zap.String("from", req.GetRemoteAddr()))
 }
 
 type ResponseWriter interface {
@@ -115,9 +132,15 @@ type TlsInfo struct {
 }
 
 func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
+	protected := h.opts.Authenticate != nil
+	if protected {
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
+
 	// get remote addr from header and request
 	meta := new(C.RequestMeta)
-	if addr, err := getRemoteAddr(req, h.opts.SrcIPHeader); err == nil {
+	meta.SetUpstreamObserver(h.opts.UpstreamObserver)
+	if addr, err := getRemoteAddr(req, h.opts.SrcIPHeader, h.opts.TrustedProxies); err == nil {
 		meta.SetClientAddr(addr)
 	}
 
@@ -135,12 +158,41 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 		meta.SetProtocol(C.ProtocolHTTP)
 	}
 
-	// check url path
-	if len(h.opts.Path) != 0 && req.URL().Path != h.opts.Path {
+	basePath := h.opts.Path
+	if protected && basePath == "" {
+		basePath = defaultPath
+	}
+	credential, credentialInPath, credentialErr := pathCredential(req.URL().Path, basePath, protected)
+	if credentialErr != nil {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("invalid request path"))
-		h.warnErr(req, fmt.Errorf("invalid request path %s", req.URL().Path))
+		h.warnErr(req, "invalid request path")
 		return
+	}
+	if protected {
+		headerCredential, hasHeader, err := bearerCredential(req.Header().Get("Authorization"))
+		if err != nil || (credentialInPath && hasHeader) || (!credentialInPath && !hasHeader) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mosdns"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("invalid credential"))
+			h.warnErr(req, "invalid credential")
+			return
+		}
+		if hasHeader {
+			credential = headerCredential
+		}
+		principal, err := h.opts.Authenticate(req.Context(), credential)
+		if err != nil {
+			status := query_access.HTTPStatus(err)
+			if status == http.StatusUnauthorized {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="mosdns"`)
+			}
+			w.WriteHeader(status)
+			w.Write([]byte("request rejected"))
+			h.warnErr(req, "authentication failed")
+			return
+		}
+		meta.SetPrincipal(principal)
 	}
 
 	var b []byte
@@ -149,16 +201,13 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 	switch req.Method() {
 	case http.MethodGet:
 		accept := req.Header().Get("Accept")
-		if accept == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("missing Accept header"))
-			h.warnErr(req, fmt.Errorf("missing Accept header"))
-			return
-		}
 		var matched bool
+		if accept == "" {
+			matched = true
+		}
 		for _, v := range strings.Split(accept, ",") {
 			mediatype := strings.TrimSpace(strings.SplitN(v, ";", 2)[0])
-			if mediatype == "application/dns-message" {
+			if mediatype == "application/dns-message" || mediatype == "*/*" {
 				matched = true
 				break
 			}
@@ -166,7 +215,7 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 		if !matched {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("invalid Accept header"))
-			h.warnErr(req, fmt.Errorf("invalid Accept header: %s", accept))
+			h.warnErr(req, "invalid Accept header")
 			return
 		}
 
@@ -174,7 +223,13 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 		if len(s) == 0 {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("no dns param"))
-			h.warnErr(req, fmt.Errorf("no dns param"))
+			h.warnErr(req, "no dns param")
+			return
+		}
+		if len(s) > maxEncodedDNSQuery {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			w.Write([]byte("dns message too large"))
+			h.warnErr(req, "dns message too large")
 			return
 		}
 
@@ -182,28 +237,34 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("invalid dns param"))
-			h.warnErr(req, fmt.Errorf("decode base64 query failed: %s", err))
+			h.warnErr(req, "decode base64 query failed")
 			return
 		}
 	case http.MethodPost:
 		if contentType := req.Header().Get("Content-Type"); contentType != "application/dns-message" {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("invalid Content-Type header"))
-			h.warnErr(req, fmt.Errorf("invalid Content-Type header: %s", contentType))
+			h.warnErr(req, "invalid Content-Type header")
 			return
 		}
 
-		b, err = io.ReadAll(req.Body())
+		b, err = io.ReadAll(io.LimitReader(req.Body(), maxDNSMessageSize+1))
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("invalid request body"))
-			h.warnErr(req, fmt.Errorf("read request body failed: %s", err))
+			h.warnErr(req, "read request body failed")
+			return
+		}
+		if len(b) > maxDNSMessageSize {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			w.Write([]byte("dns message too large"))
+			h.warnErr(req, "dns message too large")
 			return
 		}
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		w.Write([]byte("invalid request method"))
-		h.warnErr(req, fmt.Errorf("invalid method: %s", req.Method()))
+		h.warnErr(req, "invalid method")
 		return
 	}
 
@@ -212,7 +273,7 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 	if err := m.Unpack(b); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("invalid request message"))
-		h.warnErr(req, fmt.Errorf("unpack request failed: %s", err))
+		h.warnErr(req, "unpack request failed")
 		return
 	}
 
@@ -222,9 +283,13 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 
 	r, err := h.opts.DNSHandler.ServeDNS(req.Context(), m, meta)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("handle response failed"))
-		h.warnErr(req, fmt.Errorf("handle response failed: %s", err))
+		status := query_access.HTTPStatus(err)
+		if status == http.StatusUnauthorized {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mosdns"`)
+		}
+		w.WriteHeader(status)
+		w.Write([]byte("request rejected"))
+		h.warnErr(req, "handle response failed")
 		return
 	}
 
@@ -232,60 +297,118 @@ func (h *Handler) ServeHTTP(w ResponseWriter, req Request) {
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("pack response failed"))
-		h.warnErr(req, fmt.Errorf("pack response failed: %s", err))
+		h.warnErr(req, "pack response failed")
 		return
 	}
 	defer buf.Release()
 
 	w.Header().Set("Content-Type", "application/dns-message")
-	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", dnsutils.GetMinimalTTL(r)))
+	if !protected {
+		w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d", dnsutils.GetMinimalTTL(r)))
+	}
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(b); err != nil {
-		h.warnErr(req, fmt.Errorf("write response failed: %s", err))
+		h.warnErr(req, "write response failed")
 		return
 	}
 }
 
-func getRemoteAddr(req Request, customHeader string) (netip.Addr, error) {
-	if tcip := req.Header().Get("True-Client-IP"); tcip != "" {
-		if addr, err := netip.ParseAddr(tcip); err == nil {
-			req.SetRemoteAddr(tcip)
-			return addr, nil
-		}
-	}
-	if xrip := req.Header().Get("X-Real-IP"); xrip != "" {
-		if addr, err := netip.ParseAddr(xrip); err == nil {
-			req.SetRemoteAddr(xrip)
-			return addr, nil
-		}
-	}
-	if xff := req.Header().Get("X-Forwarded-For"); xff != "" {
-		ip, _, _ := strings.Cut(xff, ",")
-		if addr, err := netip.ParseAddr(ip); err == nil {
-			req.SetRemoteAddr(ip)
-			return addr, nil
-		}
-	}
-	if customHeader != "" && !contain([]string{"True-Client-IP", "X-Real-IP", "X-Forwarded-For"}, customHeader) {
-		if ip := req.Header().Get(customHeader); ip != "" {
-			if addr, err := netip.ParseAddr(ip); err == nil {
-				req.SetRemoteAddr(ip)
-				return addr, nil
-			}
-		}
-	}
+func getRemoteAddr(req Request, customHeader string, trusted []netip.Prefix) (netip.Addr, error) {
 	addrport, err := netip.ParseAddrPort(req.GetRemoteAddr())
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	return addrport.Addr(), nil
+	peer := addrport.Addr().Unmap()
+	if !prefixContains(trusted, peer) {
+		return peer, nil
+	}
+	name := customHeader
+	if name == "" {
+		name = "X-Forwarded-For"
+	}
+	name = http.CanonicalHeaderKey(name)
+	value := req.Header().Get(name)
+	if value == "" {
+		return peer, nil
+	}
+	if name == "X-Forwarded-For" {
+		addr, err := clientFromXFF(value, peer, trusted)
+		if err != nil {
+			return peer, nil
+		}
+		return addr, nil
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil {
+		return peer, nil
+	}
+	return addr.Unmap(), nil
 }
 
-func contain[T any](arr []T, it T) bool {
-	for _, item := range arr {
-		if reflect.DeepEqual(it, item) {
+func prefixContains(prefixes []netip.Prefix, addr netip.Addr) bool {
+	for _, prefix := range prefixes {
+		if prefix.Contains(addr) {
 			return true
 		}
 	}
 	return false
+}
+
+func clientFromXFF(value string, peer netip.Addr, trusted []netip.Prefix) (netip.Addr, error) {
+	parts := strings.Split(value, ",")
+	addrs := make([]netip.Addr, len(parts))
+	for i, part := range parts {
+		addr, err := netip.ParseAddr(strings.TrimSpace(part))
+		if err != nil {
+			return netip.Addr{}, err
+		}
+		addrs[i] = addr.Unmap()
+	}
+	current := peer
+	for i := len(addrs) - 1; i >= 0 && prefixContains(trusted, current); i-- {
+		current = addrs[i]
+	}
+	return current, nil
+}
+
+func pathCredential(path, base string, protected bool) (string, bool, error) {
+	if !protected {
+		if base != "" && path != base {
+			return "", false, errors.New("invalid path")
+		}
+		return "", false, nil
+	}
+	if path == base {
+		return "", false, nil
+	}
+	if len(path) > len(base)+1+maxCredentialLen || !strings.HasPrefix(path, base+"/") {
+		return "", false, errors.New("invalid path")
+	}
+	credential := strings.TrimPrefix(path, base+"/")
+	if !validCredential(credential) || strings.Contains(credential, "/") {
+		return "", false, errors.New("invalid credential path")
+	}
+	return credential, true, nil
+}
+
+func bearerCredential(value string) (string, bool, error) {
+	if value == "" {
+		return "", false, nil
+	}
+	if len(value) < len("Bearer ") || len(value) > len("Bearer ")+maxCredentialLen || !strings.EqualFold(value[:len("Bearer ")], "Bearer ") {
+		return "", true, errors.New("invalid bearer credential")
+	}
+	credential := value[len("Bearer "):]
+	if !validCredential(credential) || strings.ContainsAny(credential, " \t\r\n") {
+		return "", true, errors.New("invalid bearer credential")
+	}
+	return credential, true, nil
+}
+
+func validCredential(credential string) bool {
+	if len(credential) == 0 || len(credential) > maxCredentialLen {
+		return false
+	}
+	dot := strings.IndexByte(credential, '.')
+	return dot > 0 && dot == strings.LastIndexByte(credential, '.') && dot < len(credential)-1
 }
