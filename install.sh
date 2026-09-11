@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly DEFAULT_VERSION="v26.09.11"
+readonly DEFAULT_VERSION="v26.09.11.1"
 readonly RELEASE_REPOSITORY="MiCat-S/mosdns-x"
 readonly DEFAULT_GITHUB_PROXY="https://gh-proxy.com/"
 readonly CLOUDFLARE_TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
@@ -15,7 +15,7 @@ die() {
 usage() {
   cat <<'EOF'
 用法：
-  install.sh [--version vYY.MM.DD] [--no-github-proxy | --github-proxy PREFIX]
+  install.sh [--version vYY.MM.DD[.N]] [--no-github-proxy | --github-proxy PREFIX]
   install.sh --print-asset [ARCH]
   install.sh --help
 
@@ -23,7 +23,7 @@ usage() {
 缺失的默认配置，然后安装或重启 mosdns systemd 服务。
 
 选项：
-  --version TAG          安装指定 Release；默认 v26.09.11
+  --version TAG          安装指定 Release；默认 v26.09.11.1
   --no-github-proxy     禁用中国 IP 自动使用的 GitHub 下载代理
   --github-proxy PREFIX 指定并强制使用 HTTPS GitHub 下载代理前缀
   --print-asset ARCH    输出 ARCH 对应的 Release 资产；省略 ARCH 时使用 uname -m
@@ -31,14 +31,14 @@ usage() {
 
 示例：
   curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | sudo bash
-  sudo bash install.sh --version v26.09.11
+  sudo bash install.sh --version v26.09.11.1
   sudo bash install.sh --github-proxy https://gh-proxy.com/
 EOF
 }
 validate_version() {
   local version=$1
-  [[ $version =~ ^v[0-9]{2}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])$ ]] ||
-    die "无效 Release 版本 ${version@Q}；格式必须为 vYY.MM.DD"
+  [[ $version =~ ^v[0-9]{2}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])(\.[1-9][0-9]*)?$ ]] ||
+    die "无效 Release 版本 ${version@Q}；格式必须为 vYY.MM.DD 或 vYY.MM.DD.N"
 }
 asset_for_arch() {
   local arch=$1

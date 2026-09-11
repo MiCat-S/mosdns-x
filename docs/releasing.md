@@ -24,14 +24,14 @@ gh auth status
 选择明确的版本标签、标题和发布说明文件；不要从本文推断或自动递增当前版本：
 
 ```bash
-RELEASE_TAG='vYY.MM.DD'
+RELEASE_TAG='vYY.MM.DD' # 同日追加发布使用 vYY.MM.DD.N
 RELEASE_TITLE='<TITLE>'
 RELEASE_NOTES_FILE='/absolute/path/to/release-notes.md'
 test -s "$RELEASE_NOTES_FILE"
-[[ "$RELEASE_TAG" =~ ^v[0-9]{2}\.[0-9]{2}\.[0-9]{2}$ ]]
+[[ "$RELEASE_TAG" =~ ^v[0-9]{2}\.[0-9]{2}\.[0-9]{2}(\.[1-9][0-9]*)?$ ]]
 ```
 
-`release.py` 的 `--version` 是必填参数，接受 `YY.MM.DD` 或带 `v` 前缀的同一格式。脚本会把规范化后的版本写入二进制和每个包内的 `BUILD-INFO.txt`，因此构建参数必须来自本次 `RELEASE_TAG`。
+`release.py` 的 `--version` 是必填参数。当天首次发布使用 `YY.MM.DD`；同一天再次发布依次使用 `YY.MM.DD.1`、`YY.MM.DD.2`，修订号必须是没有前导零的正整数。两种格式都可以带 `v` 前缀。脚本会把规范化后的版本写入二进制和每个包内的 `BUILD-INFO.txt`，因此构建参数必须来自本次 `RELEASE_TAG`。
 
 ## 生成并检查资产
 

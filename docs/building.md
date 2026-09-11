@@ -15,10 +15,10 @@ go build -o mosdns .
 批量生成原有平台的无界面发布包：
 
 ```sh
-python3 release.py --version 26.09.11 --headless
+python3 release.py --version 26.09.11.1 --headless
 ```
 
-`--version` 是必填的日期版本，格式为 `YY.MM.DD` 或 `vYY.MM.DD`；脚本会让二进制显示的版本和 `BUILD-INFO.txt` 中的版本统一使用一个 `v` 前缀。
+`--version` 是必填的日期版本，格式为 `YY.MM.DD`；同日追加发布使用 `YY.MM.DD.N`，例如 `26.09.11.1`。两种格式都可以带 `v` 前缀。脚本会让二进制显示的版本和 `BUILD-INFO.txt` 中的版本统一使用一个 `v` 前缀。
 
 ## 包含网页界面的构建
 
@@ -37,7 +37,7 @@ go build -tags ui -o mosdns .
 默认运行发布脚本会先构建一次前端，然后复用这些资源生成所有平台包：
 
 ```sh
-python3 release.py --version 26.09.11
+python3 release.py --version 26.09.11.1
 ```
 
 直接运行脚本只会在本地生成 zip，不代表已经创建 Git tag 或 GitHub Release。发布人必须继续完成版本、矩阵、zip 内容、校验和与远端发布检查。

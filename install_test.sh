@@ -35,8 +35,16 @@ assert_eq mosdns-linux-ppc64le.zip "$(asset_for_arch ppc64le)" 'ppc64le mapping'
 assert_eq mosdns-linux-amd64.zip "$(bash "$test_dir/install.sh" --print-asset x86_64)" '--print-asset CLI'
 
 validate_version v26.09.11
+validate_version v26.09.11.1
+validate_version v26.09.11.12
 if (validate_version 26.09.11 >/dev/null 2>&1); then
   fail 'version without v prefix was accepted'
+fi
+if (validate_version v26.09.11.0 >/dev/null 2>&1); then
+  fail 'zero release revision was accepted'
+fi
+if (validate_version v26.09.11.01 >/dev/null 2>&1); then
+  fail 'release revision with a leading zero was accepted'
 fi
 if (validate_version 'v26.13.01' >/dev/null 2>&1); then
   fail 'invalid month was accepted'

@@ -11,7 +11,9 @@ class ReleaseTest(unittest.TestCase):
     def test_version_validation(self):
         self.assertEqual(release.parse_version("26.09.11"), "v26.09.11")
         self.assertEqual(release.parse_version("v26.09.11"), "v26.09.11")
-        for invalid in ("", "4.6.0", "26.09.11;touch", "26-09-11", "26.13.40"):
+        self.assertEqual(release.parse_version("26.09.11.1"), "v26.09.11.1")
+        self.assertEqual(release.parse_version("v26.09.11.12"), "v26.09.11.12")
+        for invalid in ("", "4.6.0", "26.09.11.0", "26.09.11.01", "26.09.11;touch", "26-09-11", "26.13.40"):
             with self.assertRaises(argparse.ArgumentTypeError):
                 release.parse_version(invalid)
 
@@ -22,7 +24,7 @@ class ReleaseTest(unittest.TestCase):
         )
 
     def test_linker_version_avoids_double_prefix(self):
-        self.assertEqual(release.linker_version("v26.09.11"), "26.09.11")
+        self.assertEqual(release.linker_version("v26.09.11.1"), "26.09.11.1")
 
     def test_checksums_only_include_selected_archives_sorted(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -14,7 +14,7 @@ import zipfile
 
 PROJECT_NAME = "mosdns"
 RELEASE_DIR = Path("release")
-VERSION_RE = re.compile(r"(?:v)?(\d{2}\.\d{2}\.\d{2})\Z")
+VERSION_RE = re.compile(r"(?:v)?(\d{2}\.\d{2}\.\d{2})(?:\.([1-9]\d*))?\Z")
 LOGGER = logging.getLogger(__name__)
 
 # More information: https://go.dev/doc/install/source
@@ -46,12 +46,13 @@ ARCHIVE_FILES = (
 def parse_version(value: str) -> str:
     match = VERSION_RE.fullmatch(value)
     if not match:
-        raise argparse.ArgumentTypeError("version must be a date version such as 26.09.11")
+        raise argparse.ArgumentTypeError("version must be a date version such as 26.09.11 or 26.09.11.1")
     try:
         datetime.datetime.strptime(match.group(1), "%y.%m.%d")
     except ValueError as exc:
         raise argparse.ArgumentTypeError("version must contain a valid calendar date") from exc
-    return "v" + match.group(1)
+    revision = f".{match.group(2)}" if match.group(2) else ""
+    return "v" + match.group(1) + revision
 
 
 def target_name(target) -> str:

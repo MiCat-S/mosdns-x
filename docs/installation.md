@@ -26,11 +26,11 @@ systemctl status mosdns --no-pager
 journalctl -u mosdns -n 50 --no-pager
 ```
 
-默认安装 `v26.09.11`。指定其他日期版本：
+默认安装 `v26.09.11.1`。指定其他日期版本或同日修订版：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | \
-  sudo bash -s -- --version vYY.MM.DD
+  sudo bash -s -- --version vYY.MM.DD.N
 ```
 
 需要绕过自动判断时，可以明确禁用代理或指定 HTTPS 代理前缀：
