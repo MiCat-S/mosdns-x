@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,10 +23,12 @@ import (
 )
 
 const (
-	schemaVersion = 1
-	defaultPage   = 100
-	maxPage       = 1000
-	maxUsageRange = 31 * 24 * time.Hour
+	legacySchemaVersion             = 1
+	schemaVersion                   = 2
+	defaultPage                     = 100
+	maxPage                         = 1000
+	maxUsageRange                   = 31 * 24 * time.Hour
+	maxCredentialGenerationAttempts = 16
 )
 
 var (
@@ -35,6 +38,7 @@ var (
 	bSessions          = []byte("sessions")
 	bUserSessions      = []byte("user_sessions")
 	bCredentials       = []byte("credentials")
+	bCredentialTokens  = []byte("credential_tokens")
 	bUserCredentials   = []byte("user_credentials")
 	bActiveCredentials = []byte("active_credentials")
 	bUsage             = []byte("usage")
@@ -82,7 +86,10 @@ type sessionRecord struct {
 
 type credentialRecord struct {
 	Credential
-	SecretHash [32]byte `json:"secret_hash"`
+	// SecretHash is retained only for credentials issued in the legacy
+	// id.secret format. New credentials hash the complete UUID token.
+	SecretHash [32]byte `json:"secret_hash,omitempty"`
+	TokenHash  []byte   `json:"token_hash,omitempty"`
 	Version    uint64   `json:"version"`
 }
 
@@ -111,22 +118,31 @@ func Open(path string, opts Options) (*Store, error) {
 	db.MaxBatchSize = 128
 	s := &Store{db: db, clock: opts.Clock, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, opts.AdmitQueueSize)}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range [][]byte{bMeta, bUsers, bUsernames, bSessions, bUserSessions, bCredentials, bUserCredentials, bActiveCredentials, bUsage, bAudit} {
+		meta, err := tx.CreateBucketIfNotExists(bMeta)
+		if err != nil {
+			return err
+		}
+		v := meta.Get(kSchema)
+		if v != nil {
+			if len(v) != 8 {
+				return fmt.Errorf("unsupported schema version")
+			}
+			version := binary.BigEndian.Uint64(v)
+			if version != legacySchemaVersion && version != schemaVersion {
+				return fmt.Errorf("unsupported schema version")
+			}
+		}
+		for _, name := range [][]byte{bUsers, bUsernames, bSessions, bUserSessions, bCredentials, bCredentialTokens, bUserCredentials, bActiveCredentials, bUsage, bAudit} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
 		}
-		m := tx.Bucket(bMeta)
-		v := m.Get(kSchema)
-		if v == nil {
-			var buf [8]byte
-			binary.BigEndian.PutUint64(buf[:], schemaVersion)
-			return m.Put(kSchema, buf[:])
+		if err := rebuildCredentialTokenIndex(tx); err != nil {
+			return err
 		}
-		if len(v) != 8 || binary.BigEndian.Uint64(v) != schemaVersion {
-			return fmt.Errorf("unsupported schema version")
-		}
-		return nil
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], schemaVersion)
+		return meta.Put(kSchema, buf[:])
 	}); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("%w: initialize database: %v", ErrUnavailable, err)
@@ -235,6 +251,104 @@ func randomText(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(p), nil
 }
 func hashSecret(v string) [32]byte { return sha256.Sum256([]byte(v)) }
+
+func randomUUIDv4() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	raw[6] = raw[6]&0x0f | 0x40
+	raw[8] = raw[8]&0x3f | 0x80
+	var encoded [36]byte
+	hex.Encode(encoded[0:8], raw[0:4])
+	encoded[8] = '-'
+	hex.Encode(encoded[9:13], raw[4:6])
+	encoded[13] = '-'
+	hex.Encode(encoded[14:18], raw[6:8])
+	encoded[18] = '-'
+	hex.Encode(encoded[19:23], raw[8:10])
+	encoded[23] = '-'
+	hex.Encode(encoded[24:36], raw[10:16])
+	return string(encoded[:]), nil
+}
+
+func validUUIDv4(token string) bool {
+	if len(token) != 36 || token[8] != '-' || token[13] != '-' || token[18] != '-' || token[23] != '-' || token[14] != '4' {
+		return false
+	}
+	if token[19] != '8' && token[19] != '9' && token[19] != 'a' && token[19] != 'b' {
+		return false
+	}
+	for i := range token {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !((token[i] >= '0' && token[i] <= '9') || (token[i] >= 'a' && token[i] <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func rebuildCredentialTokenIndex(tx *bbolt.Tx) error {
+	index := tx.Bucket(bCredentialTokens)
+	cursor := index.Cursor()
+	for k, _ := cursor.First(); k != nil; k, _ = cursor.Next() {
+		if err := cursor.Delete(); err != nil {
+			return err
+		}
+	}
+	return tx.Bucket(bCredentials).ForEach(func(id, value []byte) error {
+		var r credentialRecord
+		if err := json.Unmarshal(value, &r); err != nil {
+			return err
+		}
+		if len(r.TokenHash) == 0 {
+			return nil
+		}
+		if len(r.TokenHash) != sha256.Size {
+			return fmt.Errorf("invalid token hash for credential %q", id)
+		}
+		if existing := index.Get(r.TokenHash); existing != nil && string(existing) != string(id) {
+			return fmt.Errorf("duplicate credential token hash")
+		}
+		return index.Put(r.TokenHash, id)
+	})
+}
+
+func deleteCredentialTokenIndex(tx *bbolt.Tx, r credentialRecord) error {
+	if len(r.TokenHash) != sha256.Size {
+		return nil
+	}
+	return tx.Bucket(bCredentialTokens).Delete(r.TokenHash)
+}
+
+func uniqueCredentialID(credentials *bbolt.Bucket) (string, error) {
+	for range maxCredentialGenerationAttempts {
+		id, err := randomText(16)
+		if err != nil {
+			return "", err
+		}
+		if credentials.Get([]byte(id)) == nil {
+			return id, nil
+		}
+	}
+	return "", errors.New("credential id collision limit reached")
+}
+
+func uniqueCredentialToken(index *bbolt.Bucket) (string, [sha256.Size]byte, error) {
+	for range maxCredentialGenerationAttempts {
+		token, err := randomUUIDv4()
+		if err != nil {
+			return "", [sha256.Size]byte{}, err
+		}
+		hash := hashSecret(token)
+		if index.Get(hash[:]) == nil {
+			return token, hash, nil
+		}
+	}
+	return "", [sha256.Size]byte{}, errors.New("credential token collision limit reached")
+}
 
 func hashPassword(password string) ([]byte, []byte, error) {
 	if len(password) < 12 || len(password) > 1024 {
@@ -778,21 +892,12 @@ func (s *Store) CreateCredential(ctx context.Context, actor, userID, name string
 	if name == "" || len(name) > 128 {
 		return IssuedCredential{}, ErrInvalidInput
 	}
-	id, err := randomText(16)
-	if err != nil {
-		return IssuedCredential{}, err
-	}
-	sec, err := randomText(32)
-	if err != nil {
-		return IssuedCredential{}, err
-	}
 	now := s.clock.Now().UTC()
 	if !expires.IsZero() && !now.Before(expires) {
 		return IssuedCredential{}, fmt.Errorf("%w: credential expiry must be in the future", ErrInvalidInput)
 	}
-	c := Credential{ID: id, UserID: userID, Name: name, ExpiresAt: expires, CreatedAt: now, UpdatedAt: now}
-	r := credentialRecord{Credential: c, SecretHash: hashSecret(sec), Version: 1}
-	err = s.update(ctx, func(tx *bbolt.Tx) error {
+	var issued IssuedCredential
+	err := s.update(ctx, func(tx *bbolt.Tx) error {
 		if e := authorizeCredentialOwner(tx, actor, userID, now); e != nil {
 			return e
 		}
@@ -810,7 +915,20 @@ func (s *Store) CreateCredential(ctx context.Context, actor, userID, name string
 		if u.CredentialCount >= u.MaxCredentials {
 			return ErrConflict
 		}
+		id, e := uniqueCredentialID(tx.Bucket(bCredentials))
+		if e != nil {
+			return e
+		}
+		token, tokenHash, e := uniqueCredentialToken(tx.Bucket(bCredentialTokens))
+		if e != nil {
+			return e
+		}
+		c := Credential{ID: id, UserID: userID, Name: name, ExpiresAt: expires, CreatedAt: now, UpdatedAt: now}
+		r := credentialRecord{Credential: c, TokenHash: append([]byte(nil), tokenHash[:]...), Version: 1}
 		if e = marshalPut(tx.Bucket(bCredentials), []byte(id), r); e != nil {
+			return e
+		}
+		if e = tx.Bucket(bCredentialTokens).Put(tokenHash[:], []byte(id)); e != nil {
 			return e
 		}
 		if e = index.Put(userCredentialKey(userID, id), []byte(id)); e != nil {
@@ -823,9 +941,13 @@ func (s *Store) CreateCredential(ctx context.Context, actor, userID, name string
 		if e = marshalPut(tx.Bucket(bUsers), []byte(userID), u); e != nil {
 			return e
 		}
-		return s.audit(tx, actor, "create_credential", "credential", id, map[string]any{"name": name}, now)
+		if e = s.audit(tx, actor, "create_credential", "credential", id, map[string]any{"name": name}, now); e != nil {
+			return e
+		}
+		issued = IssuedCredential{Credential: c, Token: token}
+		return nil
 	})
-	return IssuedCredential{Credential: c, Token: id + "." + sec}, err
+	return issued, err
 }
 
 func cleanupActiveCredentials(tx *bbolt.Tx, u *userRecord, now time.Time) error {
@@ -851,13 +973,9 @@ func cleanupActiveCredentials(tx *bbolt.Tx, u *userRecord, now time.Time) error 
 }
 
 func (s *Store) RotateCredential(ctx context.Context, actor, userID, id string) (IssuedCredential, error) {
-	sec, err := randomText(32)
-	if err != nil {
-		return IssuedCredential{}, err
-	}
 	now := s.clock.Now().UTC()
-	var out Credential
-	err = s.update(ctx, func(tx *bbolt.Tx) error {
+	var issued IssuedCredential
+	err := s.update(ctx, func(tx *bbolt.Tx) error {
 		if e := authorizeCredentialOwner(tx, actor, userID, now); e != nil {
 			return e
 		}
@@ -874,16 +992,30 @@ func (s *Store) RotateCredential(ctx context.Context, actor, userID, id string) 
 		if !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt) {
 			return ErrForbidden
 		}
-		r.SecretHash = hashSecret(sec)
+		token, tokenHash, e := uniqueCredentialToken(tx.Bucket(bCredentialTokens))
+		if e != nil {
+			return e
+		}
+		if e := deleteCredentialTokenIndex(tx, r); e != nil {
+			return e
+		}
+		r.SecretHash = [sha256.Size]byte{}
+		r.TokenHash = append([]byte(nil), tokenHash[:]...)
 		r.Version++
 		r.UpdatedAt = now
-		out = r.Credential
 		if e := marshalPut(tx.Bucket(bCredentials), []byte(id), r); e != nil {
 			return e
 		}
-		return s.audit(tx, actor, "rotate_credential", "credential", id, nil, now)
+		if e := tx.Bucket(bCredentialTokens).Put(tokenHash[:], []byte(id)); e != nil {
+			return e
+		}
+		if e := s.audit(tx, actor, "rotate_credential", "credential", id, nil, now); e != nil {
+			return e
+		}
+		issued = IssuedCredential{Credential: r.Credential, Token: token}
+		return nil
 	})
-	return IssuedCredential{Credential: out, Token: id + "." + sec}, err
+	return issued, err
 }
 
 func (s *Store) RevokeCredential(ctx context.Context, actor, userID, id string) error {
@@ -929,21 +1061,41 @@ func (s *Store) RevokeCredential(ctx context.Context, actor, userID, id string) 
 }
 
 func (s *Store) AuthenticateCredential(ctx context.Context, token string) (Identity, error) {
-	id, sec, ok := splitToken(token)
-	if !ok {
-		return Identity{}, ErrInvalidCredential
+	var id, legacySecret string
+	legacy := false
+	var tokenHash [sha256.Size]byte
+	if validUUIDv4(token) {
+		tokenHash = hashSecret(token)
+	} else {
+		var ok bool
+		id, legacySecret, ok = splitToken(token)
+		if !ok {
+			return Identity{}, ErrInvalidCredential
+		}
+		legacy = true
 	}
 	var out Identity
 	err := s.view(ctx, func(tx *bbolt.Tx) error {
+		if !legacy {
+			indexedID := tx.Bucket(bCredentialTokens).Get(tokenHash[:])
+			if indexedID == nil {
+				return ErrInvalidCredential
+			}
+			id = string(indexedID)
+		}
 		var r credentialRecord
 		if decode(tx.Bucket(bCredentials).Get([]byte(id)), &r) != nil {
 			return ErrInvalidCredential
 		}
-		h := hashSecret(sec)
-		now := s.clock.Now().UTC()
-		if subtle.ConstantTimeCompare(h[:], r.SecretHash[:]) != 1 {
+		if legacy {
+			h := hashSecret(legacySecret)
+			if subtle.ConstantTimeCompare(h[:], r.SecretHash[:]) != 1 {
+				return ErrInvalidCredential
+			}
+		} else if subtle.ConstantTimeCompare(tokenHash[:], r.TokenHash) != 1 {
 			return ErrInvalidCredential
 		}
+		now := s.clock.Now().UTC()
 		if !r.RevokedAt.IsZero() || (!r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt)) {
 			return ErrForbidden
 		}

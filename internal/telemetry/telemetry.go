@@ -86,16 +86,19 @@ type StatsSnapshot struct {
 }
 
 type QueryRecord struct {
-	ID           string    `json:"id"`
-	Time         time.Time `json:"time"`
-	UserID       string    `json:"user_id"`
-	CredentialID string    `json:"credential_id"`
-	Name         string    `json:"name"`
-	QType        string    `json:"qtype"`
-	Rcode        string    `json:"rcode"`
-	DurationMS   float64   `json:"duration_ms"`
-	CacheHit     bool      `json:"cache_hit"`
-	Protocol     string    `json:"protocol"`
+	ID           string               `json:"id"`
+	Time         time.Time            `json:"time"`
+	UserID       string               `json:"user_id"`
+	CredentialID string               `json:"credential_id"`
+	ClientIP     string               `json:"client_ip"`
+	Name         string               `json:"name"`
+	QType        string               `json:"qtype"`
+	Rcode        string               `json:"rcode"`
+	DurationMS   float64              `json:"duration_ms"`
+	CacheHit     bool                 `json:"cache_hit"`
+	Protocol     string               `json:"protocol"`
+	AnswerIPs    []string             `json:"answer_ips"`
+	EDNS         dns_handler.EDNSInfo `json:"edns"`
 }
 
 type Page struct {
@@ -216,6 +219,12 @@ func (s *Store) Observe(result dns_handler.Result) {
 		return
 	}
 	r := result
+	r.AnswerIPs = append([]string(nil), result.AnswerIPs...)
+	r.EDNS.OptionCodes = append([]uint16(nil), result.EDNS.OptionCodes...)
+	if result.EDNS.ECS != nil {
+		ecs := *result.EDNS.ECS
+		r.EDNS.ECS = &ecs
+	}
 	s.enqueue(event{result: &r, time: s.now().UTC()})
 }
 
@@ -481,7 +490,24 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 		if rcode == "" {
 			rcode = strconv.Itoa(r.Rcode)
 		}
-		record := QueryRecord{ID: id, Time: now, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol}
+		clientIP := ""
+		if r.ClientAddr.IsValid() {
+			clientIP = r.ClientAddr.String()
+		}
+		answerIPs := append([]string(nil), r.AnswerIPs...)
+		if answerIPs == nil {
+			answerIPs = []string{}
+		}
+		edns := r.EDNS
+		edns.OptionCodes = append([]uint16(nil), r.EDNS.OptionCodes...)
+		if edns.OptionCodes == nil {
+			edns.OptionCodes = []uint16{}
+		}
+		if r.EDNS.ECS != nil {
+			ecs := *r.EDNS.ECS
+			edns.ECS = &ecs
+		}
+		record := QueryRecord{ID: id, Time: now, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns}
 		v, _ := json.Marshal(record)
 		if err := tx.Bucket(bucketQueries).Put([]byte(id), v); err != nil {
 			return err
@@ -755,6 +781,12 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 			var r QueryRecord
 			if err := json.Unmarshal(v, &r); err != nil {
 				return err
+			}
+			if r.AnswerIPs == nil {
+				r.AnswerIPs = []string{}
+			}
+			if r.EDNS.OptionCodes == nil {
+				r.EDNS.OptionCodes = []uint16{}
 			}
 			if r.Time.Before(from) {
 				continue

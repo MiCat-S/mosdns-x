@@ -282,6 +282,10 @@ td {
 tbody tr:last-child td {
   border: 0;
 }
+.query-detail {
+  min-width: 190px;
+  white-space: normal;
+}
 .badge {
   display: inline-block;
   border-radius: 999px;

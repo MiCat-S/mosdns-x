@@ -91,12 +91,29 @@ export interface QueryRecord {
   time: string;
   user_id: string;
   credential_id: string;
+  client_ip: string;
   name: string;
   qtype: string;
   rcode: string;
   duration_ms: number;
   cache_hit: boolean;
   protocol: string;
+  answer_ips: string[];
+  edns: EDNSInfo;
+}
+export interface EDNSInfo {
+  present: boolean;
+  version: number;
+  udp_size: number;
+  dnssec_ok: boolean;
+  option_codes: number[];
+  ecs?: ECSInfo;
+}
+export interface ECSInfo {
+  address: string;
+  family: number;
+  source_prefix: number;
+  scope_prefix: number;
 }
 export interface Audit {
   id: string;

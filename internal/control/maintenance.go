@@ -31,7 +31,7 @@ func (s *Store) Maintain(ctx context.Context) error {
 		{bSessions, sessionRemover(now)},
 		{bUsage, usageRemover(now.Add(-usageRetention))},
 		{bAudit, auditRemover(now.Add(-auditRetention))},
-		{bCredentials, credentialRemover(now.Add(-credentialRetention))},
+		{bCredentials, credentialRemover(now, now.Add(-credentialRetention))},
 	}
 	for _, job := range jobs {
 		if err := s.maintainBucket(ctx, job.bucket, job.remove); err != nil {
@@ -132,21 +132,18 @@ func auditRemover(cutoff time.Time) func(*bbolt.Tx, []byte, []byte) (bool, error
 	}
 }
 
-func credentialRemover(cutoff time.Time) func(*bbolt.Tx, []byte, []byte) (bool, error) {
+func credentialRemover(now, cutoff time.Time) func(*bbolt.Tx, []byte, []byte) (bool, error) {
 	return func(tx *bbolt.Tx, key, value []byte) (bool, error) {
 		var r credentialRecord
 		if err := json.Unmarshal(value, &r); err != nil {
 			return false, err
 		}
-		revokedOld := !r.RevokedAt.IsZero() && r.RevokedAt.Before(cutoff)
-		expiredOld := !r.ExpiresAt.IsZero() && r.ExpiresAt.Before(cutoff)
-		if !revokedOld && !expiredOld {
+		revoked := !r.RevokedAt.IsZero() && !now.Before(r.RevokedAt)
+		expired := !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt)
+		if !revoked && !expired {
 			return false, nil
 		}
 		indexKey := userCredentialKey(r.UserID, string(key))
-		if err := tx.Bucket(bUserCredentials).Delete(indexKey); err != nil {
-			return false, err
-		}
 		active := tx.Bucket(bActiveCredentials)
 		if active.Get(indexKey) != nil {
 			u, err := getUserRecord(tx, r.UserID)
@@ -163,6 +160,17 @@ func credentialRemover(cutoff time.Time) func(*bbolt.Tx, []byte, []byte) (bool, 
 			if err := marshalPut(tx.Bucket(bUsers), []byte(r.UserID), u); err != nil {
 				return false, err
 			}
+		}
+		revokedOld := !r.RevokedAt.IsZero() && r.RevokedAt.Before(cutoff)
+		expiredOld := !r.ExpiresAt.IsZero() && r.ExpiresAt.Before(cutoff)
+		if !revokedOld && !expiredOld {
+			return false, nil
+		}
+		if err := deleteCredentialTokenIndex(tx, r); err != nil {
+			return false, err
+		}
+		if err := tx.Bucket(bUserCredentials).Delete(indexKey); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
@@ -261,10 +269,20 @@ func validateSchema(tx *bbolt.Tx) error {
 		}
 	}
 	v := tx.Bucket(bMeta).Get(kSchema)
-	if len(v) != 8 || binary.BigEndian.Uint64(v) != schemaVersion {
+	if len(v) != 8 {
 		return fmt.Errorf("unsupported schema version")
 	}
-	return nil
+	switch binary.BigEndian.Uint64(v) {
+	case legacySchemaVersion:
+		return nil
+	case schemaVersion:
+		if tx.Bucket(bCredentialTokens) == nil {
+			return fmt.Errorf("missing bucket %q", bCredentialTokens)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported schema version")
+	}
 }
 
 func writeNewDatabase(ctx context.Context, path string, write func(io.Writer) error) (err error) {

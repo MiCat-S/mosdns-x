@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -103,6 +105,47 @@ func TestQueriesEnabledDisabledAndPagination(t *testing.T) {
 	}
 	if _, err = on.Queries(context.Background(), "", now.Add(-32*24*time.Hour), now, Page{}); err == nil {
 		t.Fatal("accepted range over 31 days")
+	}
+}
+
+func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	s := openTestStore(t, true, now)
+	r := result("u1", "c1", dns.RcodeSuccess)
+	r.ClientAddr = netip.MustParseAddr("2001:db8::44")
+	r.AnswerIPs = []string{"192.0.2.1", "2001:db8::1"}
+	r.EDNS = dns_handler.EDNSInfo{Present: true, Version: 0, UDPSize: 1232, DNSSECOK: true, OptionCodes: []uint16{dns.EDNS0SUBNET, dns.EDNS0COOKIE}, ECS: &dns_handler.ECSInfo{Address: "192.0.2.0", Family: 1, SourcePrefix: 24}}
+	s.Observe(r)
+	r.AnswerIPs[0] = "203.0.113.99"
+	r.EDNS.OptionCodes[0] = dns.EDNS0PADDING
+	r.EDNS.ECS.Address = "203.0.113.0"
+	flush(t, s)
+	page, err := s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("queries=%+v err=%v", page, err)
+	}
+	got := page.Items[0]
+	if got.ClientIP != "2001:db8::44" || len(got.AnswerIPs) != 2 || got.AnswerIPs[0] != "192.0.2.1" || got.EDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.EDNS.ECS == nil || got.EDNS.ECS.Address != "192.0.2.0" {
+		t.Fatalf("stored snapshot=%+v", got)
+	}
+
+	legacyID := fmt.Sprintf("%020d-%020d", now.Add(time.Second).UnixNano(), 999)
+	legacyJSON := []byte(fmt.Sprintf(`{"id":%q,"time":%q,"user_id":"u1","credential_id":"old","name":"old.example.","qtype":"A","rcode":"NOERROR","duration_ms":1,"cache_hit":false,"protocol":"https"}`, legacyID, now.Add(time.Second).Format(time.RFC3339Nano)))
+	if err = s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketQueries).Put([]byte(legacyID), legacyJSON); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketUserQ).Put([]byte("u1\x00"+legacyID), legacyJSON)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("queries with legacy=%+v err=%v", page, err)
+	}
+	legacy := page.Items[1]
+	if legacy.ClientIP != "" || legacy.AnswerIPs == nil || len(legacy.AnswerIPs) != 0 || legacy.EDNS.Present || legacy.EDNS.OptionCodes == nil {
+		t.Fatalf("legacy normalization=%+v", legacy)
 	}
 }
 

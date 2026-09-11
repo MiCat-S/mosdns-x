@@ -74,6 +74,10 @@ type EntryHandlerOpts struct {
 
 	// Observe receives one self-contained result for every request.
 	Observe func(Result)
+
+	// CaptureQueryDetails snapshots EDNS metadata and response addresses for
+	// query logging. Leave it disabled when only aggregate telemetry is used.
+	CaptureQueryDetails bool
 }
 
 // Result is an immutable snapshot of a completed entry request.
@@ -81,6 +85,8 @@ type Result struct {
 	Principal    query_context.Principal
 	Protocol     string
 	ClientAddr   netip.Addr
+	AnswerIPs    []string
+	EDNS         EDNSInfo
 	QuestionName string
 	QuestionType uint16
 	Duration     time.Duration
@@ -90,6 +96,22 @@ type Result struct {
 	Rejected     bool
 	AccessKind   query_access.Kind
 	CacheHit     bool
+}
+
+type EDNSInfo struct {
+	Present     bool     `json:"present"`
+	Version     uint8    `json:"version"`
+	UDPSize     uint16   `json:"udp_size"`
+	DNSSECOK    bool     `json:"dnssec_ok"`
+	OptionCodes []uint16 `json:"option_codes"`
+	ECS         *ECSInfo `json:"ecs,omitempty"`
+}
+
+type ECSInfo struct {
+	Address      string `json:"address"`
+	Family       uint16 `json:"family"`
+	SourcePrefix uint8  `json:"source_prefix"`
+	ScopePrefix  uint8  `json:"scope_prefix"`
 }
 
 func (opts *EntryHandlerOpts) Init() error {
@@ -120,6 +142,10 @@ func NewEntryHandler(opts EntryHandlerOpts) (*EntryHandler, error) {
 func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_context.RequestMeta) (*dns.Msg, error) {
 	started := time.Now()
 	result := Result{Rcode: -1}
+	if h.opts.CaptureQueryDetails {
+		result.AnswerIPs = []string{}
+		result.EDNS = snapshotEDNS(req)
+	}
 	if meta != nil {
 		result.Principal = meta.GetPrincipal()
 		result.Protocol = meta.GetProtocol()
@@ -191,10 +217,89 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	}
 	respMsg.Id = id
 	result.Rcode = respMsg.Rcode
+	if h.opts.CaptureQueryDetails {
+		result.AnswerIPs = answerIPs(respMsg)
+	}
 	if err == nil {
 		result.CacheHit = qCtx.CacheHit()
 	}
 	return respMsg, nil
+}
+
+func answerIPs(msg *dns.Msg) []string {
+	result := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, answer := range msg.Answer {
+		var addr netip.Addr
+		var ok bool
+		switch rr := answer.(type) {
+		case *dns.A:
+			if ip := rr.A.To4(); ip != nil {
+				addr, ok = netip.AddrFromSlice(ip)
+			}
+		case *dns.AAAA:
+			if ip := rr.AAAA.To16(); ip != nil {
+				addr, ok = netip.AddrFromSlice(ip)
+			}
+		}
+		if !ok {
+			continue
+		}
+		value := addr.String()
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func snapshotEDNS(msg *dns.Msg) EDNSInfo {
+	result := EDNSInfo{OptionCodes: []uint16{}}
+	opt := msg.IsEdns0()
+	if opt == nil {
+		return result
+	}
+	result.Present = true
+	result.Version = opt.Version()
+	result.UDPSize = opt.UDPSize()
+	result.DNSSECOK = opt.Do()
+	for _, option := range opt.Option {
+		if option == nil {
+			continue
+		}
+		result.OptionCodes = append(result.OptionCodes, option.Option())
+		if result.ECS == nil {
+			if ecs, ok := option.(*dns.EDNS0_SUBNET); ok {
+				result.ECS = snapshotECS(ecs)
+			}
+		}
+	}
+	return result
+}
+
+func snapshotECS(ecs *dns.EDNS0_SUBNET) *ECSInfo {
+	result := &ECSInfo{Family: ecs.Family, SourcePrefix: ecs.SourceNetmask, ScopePrefix: ecs.SourceScope}
+	var addr netip.Addr
+	var ok bool
+	var maxBits int
+	switch ecs.Family {
+	case 1:
+		if ip := ecs.Address.To4(); ip != nil {
+			addr, ok = netip.AddrFromSlice(ip)
+			maxBits = 32
+		}
+	case 2:
+		if ecs.Address.To4() == nil {
+			addr, ok = netip.AddrFromSlice(ecs.Address.To16())
+			maxBits = 128
+		}
+	}
+	if ok && int(ecs.SourceNetmask) <= maxBits {
+		result.Address = netip.PrefixFrom(addr, int(ecs.SourceNetmask)).Masked().Addr().String()
+	}
+	return result
 }
 
 func (h *EntryHandler) responseFormErr(req *dns.Msg) *dns.Msg {

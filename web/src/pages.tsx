@@ -1041,7 +1041,13 @@ function DeviceUsage({
   );
 }
 
-function QueryDetails({ path, enabled }: { path: string; enabled: boolean }) {
+export function QueryDetails({
+  path,
+  enabled,
+}: {
+  path: string;
+  enabled: boolean;
+}) {
   const params = useMemo(range, []);
   const {
     items: data,
@@ -1066,6 +1072,8 @@ function QueryDetails({ path, enabled }: { path: string; enabled: boolean }) {
                 <th>时间</th>
                 <th>名称 / 类型</th>
                 <th>结果</th>
+                <th>客户端 / Answer IP</th>
+                <th>EDNS</th>
                 <th>协议</th>
                 <th>耗时</th>
               </tr>
@@ -1081,6 +1089,31 @@ function QueryDetails({ path, enabled }: { path: string; enabled: boolean }) {
                   <td>
                     {q.rcode}
                     {q.cache_hit ? " · 缓存" : ""}
+                  </td>
+                  <td className="query-detail">
+                    {q.client_ip || "未知客户端"}
+                    <small>
+                      {q.answer_ips?.length
+                        ? `Answer: ${q.answer_ips.join(", ")}`
+                        : "无 Answer IP"}
+                    </small>
+                  </td>
+                  <td className="query-detail">
+                    {q.edns?.present
+                      ? `EDNS v${q.edns.version} · UDP ${q.edns.udp_size}${q.edns.dnssec_ok ? " · DO" : ""}`
+                      : "无 EDNS"}
+                    {q.edns?.present ? (
+                      <small>
+                        选项: {q.edns.option_codes?.join(", ") || "无"}
+                      </small>
+                    ) : null}
+                    {q.edns?.ecs ? (
+                      <small>
+                        ECS: {q.edns.ecs.address || "地址无效"}/
+                        {q.edns.ecs.source_prefix} · family {q.edns.ecs.family}{" "}
+                        · scope {q.edns.ecs.scope_prefix}
+                      </small>
+                    ) : null}
                   </td>
                   <td>{q.protocol}</td>
                   <td>{q.duration_ms.toFixed(1)} ms</td>

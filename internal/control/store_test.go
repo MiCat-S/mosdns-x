@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -129,6 +130,15 @@ func TestCredentialOwnershipRevocationAndExpiry(t *testing.T) {
 	if err = s.RevokeCredential(ctx, u1.ID, u1.ID, c.Credential.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err = s.view(ctx, func(tx *bbolt.Tx) error {
+		h := hashSecret(c.Token)
+		if got := tx.Bucket(bCredentialTokens).Get(h[:]); string(got) != c.Credential.ID {
+			t.Errorf("revoked credential token index=%q", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = s.AuthenticateCredential(ctx, c.Token); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("revoked credential: %v", err)
 	}
@@ -154,6 +164,12 @@ func TestRotateInvalidatesPreviouslyAuthenticatedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !validUUIDv4(issued.Token) || !validUUIDv4(rotated.Token) || issued.Token == issued.Credential.ID || rotated.Token == issued.Token {
+		t.Fatalf("invalid issued tokens: initial=%q rotated=%q credential=%q", issued.Token, rotated.Token, issued.Credential.ID)
+	}
+	if _, err = s.AuthenticateCredential(ctx, issued.Token); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("old token authenticated after rotate: %v", err)
+	}
 	if err = s.Admit(ctx, oldIdentity); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("old identity admitted: %v", err)
 	}
@@ -163,6 +179,102 @@ func TestRotateInvalidatesPreviouslyAuthenticatedIdentity(t *testing.T) {
 	}
 	if err = s.Admit(ctx, newIdentity); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCredentialTokenIndexAndLegacyUpgrade(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s, clock, path := newTestStore(t, start)
+	ctx := context.Background()
+	u, issued := setupUser(t, s, userSpec("upgrade", 100, 100, 0))
+	legacyID, legacySecret := "legacy-public-id", "legacy-secret"
+	legacyToken := legacyID + "." + legacySecret
+	err := s.update(ctx, func(tx *bbolt.Tx) error {
+		r := credentialRecord{Credential: Credential{ID: legacyID, UserID: u.ID, Name: "legacy", CreatedAt: start, UpdatedAt: start}, SecretHash: hashSecret(legacySecret), Version: 3}
+		if err := marshalPut(tx.Bucket(bCredentials), []byte(legacyID), r); err != nil {
+			return err
+		}
+		key := userCredentialKey(u.ID, legacyID)
+		if err := tx.Bucket(bUserCredentials).Put(key, []byte(legacyID)); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bActiveCredentials).Put(key, []byte(legacyID)); err != nil {
+			return err
+		}
+		ur, err := getUserRecord(tx, u.ID)
+		if err != nil {
+			return err
+		}
+		ur.CredentialCount++
+		return marshalPut(tx.Bucket(bUsers), []byte(u.ID), ur)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = raw.Update(func(tx *bbolt.Tx) error {
+		if err := tx.DeleteBucket(bCredentialTokens); err != nil {
+			return err
+		}
+		var version [8]byte
+		binary.BigEndian.PutUint64(version[:], legacySchemaVersion)
+		return tx.Bucket(bMeta).Put(kSchema, version[:])
+	}); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err = raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = ValidateBackup(ctx, path); err != nil {
+		t.Fatalf("v1 database without token index rejected: %v", err)
+	}
+	reopened, err := Open(path, Options{Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if _, err = reopened.AuthenticateCredential(ctx, issued.Token); err != nil {
+		t.Fatalf("rebuilt UUID token index: %v", err)
+	}
+	legacyIdentity, err := reopened.AuthenticateCredential(ctx, legacyToken)
+	if err != nil || legacyIdentity.CredentialID != legacyID || legacyIdentity.CredentialVersion != 3 {
+		t.Fatalf("legacy auth=%+v err=%v", legacyIdentity, err)
+	}
+	if err = reopened.view(ctx, func(tx *bbolt.Tx) error {
+		if got := binary.BigEndian.Uint64(tx.Bucket(bMeta).Get(kSchema)); got != schemaVersion {
+			t.Errorf("schema version=%d want %d", got, schemaVersion)
+		}
+		h := hashSecret(issued.Token)
+		if got := tx.Bucket(bCredentialTokens).Get(h[:]); string(got) != issued.Credential.ID {
+			t.Errorf("token index=%q want %q", got, issued.Credential.ID)
+		}
+		var record credentialRecord
+		if err := decode(tx.Bucket(bCredentials).Get([]byte(issued.Credential.ID)), &record); err != nil {
+			return err
+		}
+		if len(record.TokenHash) != 32 || record.SecretHash != [32]byte{} {
+			t.Errorf("new credential hash fields: token=%d legacy=%x", len(record.TokenHash), record.SecretHash)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := reopened.RotateCredential(ctx, u.ID, u.ID, legacyID)
+	if err != nil || !validUUIDv4(rotated.Token) {
+		t.Fatalf("legacy rotate=%+v err=%v", rotated, err)
+	}
+	if _, err = reopened.AuthenticateCredential(ctx, legacyToken); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("legacy token survived rotate: %v", err)
+	}
+	if _, err = reopened.AuthenticateCredential(ctx, rotated.Token); err != nil {
+		t.Fatalf("rotated UUID token: %v", err)
 	}
 }
 
@@ -471,8 +583,7 @@ func TestSecretsAreNotStoredInPlaintextAndAdminInitializationIsOneShot(t *testin
 		t.Fatal(err)
 	}
 	_, sessionSecret, _ := splitToken(sessionToken)
-	_, credentialSecret, _ := splitToken(issued.Token)
-	for _, secret := range []string{adminSpec().Password, sessionSecret, credentialSecret, sessionToken, issued.Token} {
+	for _, secret := range []string{adminSpec().Password, sessionSecret, sessionToken, issued.Token} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("database contains plaintext secret of length %d", len(secret))
 		}
@@ -591,6 +702,18 @@ func TestCredentialCapacityExpiryAndDeviceUsagePagination(t *testing.T) {
 	c3, err := s.CreateCredential(ctx, u.ID, u.ID, "new", time.Time{})
 	if err != nil {
 		t.Fatalf("expired slot not released: %v", err)
+	}
+	if err = s.view(ctx, func(tx *bbolt.Tx) error {
+		h := hashSecret(c2.Token)
+		if got := tx.Bucket(bCredentialTokens).Get(h[:]); string(got) != c2.Credential.ID {
+			t.Errorf("expired credential token index=%q after active cleanup", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AuthenticateCredential(ctx, c2.Token); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("retained expired credential error=%v", err)
 	}
 	id3, _ := s.AuthenticateCredential(ctx, c3.Token)
 	if err = s.Admit(ctx, id3); err != nil {

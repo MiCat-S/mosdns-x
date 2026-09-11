@@ -88,20 +88,23 @@ func runHandler(t *testing.T, h *Handler, req *testRequest) *testWriter {
 
 func TestProtectedGETPathAndBearerPOST(t *testing.T) {
 	principal := query_context.Principal{UserID: "user", CredentialID: "cred", CredentialVersion: 7}
-	for _, tc := range []struct{ name, method, rawURL, bearer string }{
-		{"path GET", http.MethodGet, "/dns-query/id.secret", ""},
-		{"bearer GET", http.MethodGet, "/dns-query", "Bearer id.secret"},
-		{"path POST", http.MethodPost, "/dns-query/id.secret", ""},
-		{"bearer POST", http.MethodPost, "/dns-query", "Bearer id.secret"},
-		{"lowercase bearer", http.MethodPost, "/dns-query", "bearer id.secret"},
-		{"uppercase bearer", http.MethodPost, "/dns-query", "BEARER id.secret"},
+	uuid := "123e4567-e89b-42d3-a456-426614174000"
+	for _, tc := range []struct{ name, method, rawURL, bearer, credential string }{
+		{"legacy path GET", http.MethodGet, "/dns-query/id.secret", "", "id.secret"},
+		{"legacy bearer GET", http.MethodGet, "/dns-query", "Bearer id.secret", "id.secret"},
+		{"UUID path GET", http.MethodGet, "/dns-query/" + uuid, "", uuid},
+		{"UUID bearer GET", http.MethodGet, "/dns-query", "Bearer " + uuid, uuid},
+		{"path POST", http.MethodPost, "/dns-query/id.secret", "", "id.secret"},
+		{"bearer POST", http.MethodPost, "/dns-query", "Bearer id.secret", "id.secret"},
+		{"lowercase bearer", http.MethodPost, "/dns-query", "bearer id.secret", "id.secret"},
+		{"uppercase bearer", http.MethodPost, "/dns-query", "BEARER id.secret", "id.secret"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dh := new(testDNSHandler)
 			authCalls := 0
 			h, err := NewHandler(HandlerOpts{DNSHandler: dh, Authenticate: func(_ context.Context, credential string) (query_context.Principal, error) {
 				authCalls++
-				if credential != "id.secret" {
+				if credential != tc.credential {
 					t.Fatalf("credential=%q", credential)
 				}
 				return principal, nil
@@ -127,6 +130,28 @@ func TestProtectedGETPathAndBearerPOST(t *testing.T) {
 				t.Fatalf("Cache-Control=%q", got)
 			}
 		})
+	}
+}
+
+func TestCredentialSyntax(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		valid bool
+	}{
+		{"123e4567-e89b-42d3-a456-426614174000", true},
+		{"id.secret", true},
+		{"123e4567-e89b-12d3-a456-426614174000", false},
+		{"123E4567-E89B-42D3-A456-426614174000", false},
+		{"123e4567-e89b-42d3-7456-426614174000", false},
+		{"id.secret.extra", false},
+		{"id secret", false},
+		{"id/secret", false},
+		{"id/.secret", false},
+		{"", false},
+	} {
+		if got := validCredential(tc.value); got != tc.valid {
+			t.Errorf("validCredential(%q)=%v want %v", tc.value, got, tc.valid)
+		}
 	}
 }
 

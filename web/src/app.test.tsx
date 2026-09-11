@@ -6,6 +6,7 @@ import {
   credentialStatus,
   credentialCanRevoke,
   fromLocalDateTime,
+  QueryDetails,
   successRate,
   toLocalDateTime,
   usageSummary,
@@ -42,6 +43,69 @@ function mount(path: string) {
 }
 beforeEach(() => vi.restoreAllMocks());
 describe("前端访问与秘密处理", () => {
+  it("查询明细显示客户端、Answer IP、EDNS 和 ECS，并兼容空字段", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          items: [
+            {
+              id: "q1",
+              time: "2026-09-11T12:00:00Z",
+              user_id: "u1",
+              credential_id: "c1",
+              client_ip: "2001:db8::44",
+              name: "example.org.",
+              qtype: "AAAA",
+              rcode: "NOERROR",
+              duration_ms: 1.25,
+              cache_hit: false,
+              protocol: "h3",
+              answer_ips: ["192.0.2.1", "2001:db8::1"],
+              edns: {
+                present: true,
+                version: 0,
+                udp_size: 1232,
+                dnssec_ok: true,
+                option_codes: [8, 10],
+                ecs: {
+                  address: "192.0.2.0",
+                  family: 1,
+                  source_prefix: 24,
+                  scope_prefix: 0,
+                },
+              },
+            },
+            {
+              id: "q2",
+              time: "2026-09-11T12:00:01Z",
+              user_id: "u1",
+              credential_id: "old",
+              client_ip: "",
+              name: "empty.example.",
+              qtype: "A",
+              rcode: "SERVFAIL",
+              duration_ms: 2,
+              cache_hit: false,
+              protocol: "https",
+              answer_ips: [],
+            },
+          ],
+        }),
+      ),
+    );
+    render(<QueryDetails path="/me/queries" enabled />);
+    expect(await screen.findByText("2001:db8::44")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Answer: 192\.0\.2\.1, 2001:db8::1/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("EDNS v0 · UDP 1232 · DO")).toBeInTheDocument();
+    expect(screen.getByText("选项: 8, 10")).toBeInTheDocument();
+    expect(screen.getByText(/ECS: 192\.0\.2\.0\/24/)).toBeInTheDocument();
+    expect(screen.getByText("未知客户端")).toBeInTheDocument();
+    expect(screen.getByText("无 Answer IP")).toBeInTheDocument();
+    expect(screen.getByText("无 EDNS")).toBeInTheDocument();
+  });
   it("初始会话服务失败时显示错误和重试入口", async () => {
     vi.stubGlobal(
       "fetch",

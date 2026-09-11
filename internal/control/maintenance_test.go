@@ -35,6 +35,10 @@ func TestMaintainRetentionIndexesAndQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	recentlyExpiredCredential, err := s.CreateCredential(ctx, u.ID, u.ID, "recently expired", start.Add(99*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
 	activeCredential, err := s.CreateCredential(ctx, u.ID, u.ID, "active", time.Time{})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +79,12 @@ func TestMaintainRetentionIndexesAndQuota(t *testing.T) {
 	if _, err = s.AuthenticateCredential(ctx, activeCredential.Token); err != nil {
 		t.Fatalf("active credential removed: %v", err)
 	}
+	if _, err = s.AuthenticateCredential(ctx, recentlyExpiredCredential.Token); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("retained expired credential error=%v", err)
+	}
+	if _, err = s.AuthenticateCredential(ctx, oldCredential.Token); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("removed revoked credential error=%v", err)
+	}
 
 	if err = s.view(ctx, func(tx *bbolt.Tx) error {
 		if tx.Bucket(bSessions).Get([]byte(oldSession.ID)) != nil || tx.Bucket(bUserSessions).Get(userSessionKey(u.ID, oldSession.ID)) != nil {
@@ -91,6 +101,22 @@ func TestMaintainRetentionIndexesAndQuota(t *testing.T) {
 		}
 		if tx.Bucket(bCredentials).Get([]byte(activeCredential.Credential.ID)) == nil || tx.Bucket(bActiveCredentials).Get(userCredentialKey(u.ID, activeCredential.Credential.ID)) == nil {
 			t.Error("active credential or index was removed")
+		}
+		if tx.Bucket(bCredentials).Get([]byte(recentlyExpiredCredential.Credential.ID)) == nil || tx.Bucket(bUserCredentials).Get(userCredentialKey(u.ID, recentlyExpiredCredential.Credential.ID)) == nil || tx.Bucket(bActiveCredentials).Get(userCredentialKey(u.ID, recentlyExpiredCredential.Credential.ID)) != nil {
+			t.Error("recently expired credential retention indexes are incorrect")
+		}
+		oldHash := hashSecret(oldCredential.Token)
+		expiredHash := hashSecret(expiredCredential.Token)
+		activeHash := hashSecret(activeCredential.Token)
+		recentlyExpiredHash := hashSecret(recentlyExpiredCredential.Token)
+		if tx.Bucket(bCredentialTokens).Get(oldHash[:]) != nil || tx.Bucket(bCredentialTokens).Get(expiredHash[:]) != nil {
+			t.Error("removed credential token index remains")
+		}
+		if got := tx.Bucket(bCredentialTokens).Get(recentlyExpiredHash[:]); string(got) != recentlyExpiredCredential.Credential.ID {
+			t.Errorf("retained expired token index=%q", got)
+		}
+		if got := tx.Bucket(bCredentialTokens).Get(activeHash[:]); string(got) != activeCredential.Credential.ID {
+			t.Errorf("active token index=%q", got)
 		}
 		user, err := getUserRecord(tx, u.ID)
 		if err != nil || user.CredentialCount != 1 {

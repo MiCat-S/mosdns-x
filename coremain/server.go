@@ -62,6 +62,7 @@ func (m *Mosdns) startServers(cfg *ServerConfig) error {
 		if m.control != nil && isHTTPDNSProtocol(lc.Protocol) {
 			opts.Admit = admit(m.control)
 			opts.Observe = m.telemetry.Observe
+			opts.CaptureQueryDetails = m.controlCfg.QueryLog
 		}
 		dnsHandler, err := D.NewEntryHandler(opts)
 		if err != nil {

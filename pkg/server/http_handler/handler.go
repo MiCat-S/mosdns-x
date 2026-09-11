@@ -406,9 +406,30 @@ func bearerCredential(value string) (string, bool, error) {
 }
 
 func validCredential(credential string) bool {
-	if len(credential) == 0 || len(credential) > maxCredentialLen {
+	if len(credential) == 0 || len(credential) > maxCredentialLen || strings.ContainsAny(credential, " \t\r\n/") {
 		return false
+	}
+	if validUUIDv4(credential) {
+		return true
 	}
 	dot := strings.IndexByte(credential, '.')
 	return dot > 0 && dot == strings.LastIndexByte(credential, '.') && dot < len(credential)-1
+}
+
+func validUUIDv4(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' || value[14] != '4' {
+		return false
+	}
+	if value[19] != '8' && value[19] != '9' && value[19] != 'a' && value[19] != 'b' {
+		return false
+	}
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

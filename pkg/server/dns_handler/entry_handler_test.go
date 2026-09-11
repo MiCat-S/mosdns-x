@@ -3,6 +3,7 @@ package dns_handler
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"testing"
 
@@ -18,6 +19,21 @@ type testExecutable struct {
 	err      error
 	nilR     bool
 	cacheHit bool
+}
+
+type snapshotExecutable struct{}
+
+func (*snapshotExecutable) Exec(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+	qCtx.Q().Extra = nil
+	r := new(dns.Msg)
+	r.SetReply(qCtx.Q())
+	r.Answer = []dns.RR{
+		&dns.A{Hdr: dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeA, Class: dns.ClassINET}, A: net.ParseIP("192.0.2.1")},
+		&dns.AAAA{Hdr: dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET}, AAAA: net.ParseIP("2001:db8::1")},
+		&dns.A{Hdr: dns.RR_Header{Name: "example.org.", Rrtype: dns.TypeA, Class: dns.ClassINET}, A: net.ParseIP("192.0.2.1")},
+	}
+	qCtx.SetResponse(r)
+	return nil
 }
 
 func (e *testExecutable) Exec(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
@@ -42,6 +58,62 @@ func TestResultIncludesFinalCacheHit(t *testing.T) {
 	}
 	if !got.CacheHit {
 		t.Fatal("cache hit missing from final result")
+	}
+}
+
+func TestResultSnapshotsOriginalEDNSAndFinalAnswerIPs(t *testing.T) {
+	q := validQuery()
+	q.SetEdns0(1232, true)
+	opt := q.IsEdns0()
+	opt.Option = append(opt.Option,
+		&dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, SourceScope: 0, Address: net.ParseIP("192.0.2.129")},
+		&dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "0011223344556677"},
+	)
+	var got Result
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: new(snapshotExecutable), CaptureQueryDetails: true, Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), q, query_context.NewRequestMeta(netip.MustParseAddr("192.0.2.44"))); err != nil {
+		t.Fatal(err)
+	}
+	if diff := len(got.AnswerIPs); diff != 2 || got.AnswerIPs[0] != "192.0.2.1" || got.AnswerIPs[1] != "2001:db8::1" {
+		t.Fatalf("answer IPs=%v", got.AnswerIPs)
+	}
+	if !got.EDNS.Present || got.EDNS.Version != 0 || got.EDNS.UDPSize != 1232 || !got.EDNS.DNSSECOK {
+		t.Fatalf("EDNS=%+v", got.EDNS)
+	}
+	if len(got.EDNS.OptionCodes) != 2 || got.EDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.EDNS.OptionCodes[1] != dns.EDNS0COOKIE {
+		t.Fatalf("option codes=%v", got.EDNS.OptionCodes)
+	}
+	if got.EDNS.ECS == nil || got.EDNS.ECS.Address != "192.0.2.0" || got.EDNS.ECS.Family != 1 || got.EDNS.ECS.SourcePrefix != 24 || got.EDNS.ECS.ScopePrefix != 0 {
+		t.Fatalf("ECS=%+v", got.EDNS.ECS)
+	}
+}
+
+func TestQueryDetailsAreNotCapturedWhenDisabled(t *testing.T) {
+	q := validQuery()
+	q.SetEdns0(1232, true)
+	var got Result
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: new(snapshotExecutable), Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), q, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.AnswerIPs != nil || got.EDNS.Present || got.EDNS.OptionCodes != nil {
+		t.Fatalf("query details captured while disabled: %+v", got)
+	}
+}
+
+func TestSnapshotEDNSMalformedECS(t *testing.T) {
+	for _, ecs := range []*dns.EDNS0_SUBNET{
+		{Code: dns.EDNS0SUBNET, Family: 999, SourceNetmask: 24, Address: net.ParseIP("192.0.2.1")},
+		{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 64, Address: net.ParseIP("192.0.2.1")},
+		{Code: dns.EDNS0SUBNET, Family: 2, SourceNetmask: 64, Address: net.ParseIP("192.0.2.1")},
+	} {
+		q := validQuery()
+		q.SetEdns0(512, false)
+		q.IsEdns0().Option = append(q.IsEdns0().Option, ecs)
+		got := snapshotEDNS(q)
+		if got.ECS == nil || got.ECS.Address != "" {
+			t.Fatalf("malformed ECS %#v produced %+v", ecs, got.ECS)
+		}
 	}
 }
 
