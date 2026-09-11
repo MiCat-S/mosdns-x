@@ -57,6 +57,10 @@ def target_name(target) -> str:
     return PROJECT_NAME + "-" + "-".join(value for _, value in target)
 
 
+def linker_version(version: str) -> str:
+    return version.removeprefix("v")
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -84,7 +88,7 @@ def build_archive(repo: Path, release_dir: Path, target, version: str, commit: s
         command.extend(["-tags", "ui"])
     ldflags = (
         "-s -w -buildid= "
-        f"-X github.com/pmkol/mosdns-x/constant.Version={version} "
+        f"-X github.com/pmkol/mosdns-x/constant.Version={linker_version(version)} "
         f"-X github.com/pmkol/mosdns-x/constant.BuildTime={build_time}"
     )
     command.extend(["-ldflags", ldflags, "-trimpath", "-o", str(binary), str(repo)])

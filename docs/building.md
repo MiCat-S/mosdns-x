@@ -18,7 +18,7 @@ go build -o mosdns .
 python3 release.py --version 26.09.11 --headless
 ```
 
-`--version` 是必填的日期版本，格式为 `YY.MM.DD` 或 `vYY.MM.DD`；脚本写入二进制和 `BUILD-INFO.txt` 时会统一添加 `v` 前缀。
+`--version` 是必填的日期版本，格式为 `YY.MM.DD` 或 `vYY.MM.DD`；脚本会让二进制显示的版本和 `BUILD-INFO.txt` 中的版本统一使用一个 `v` 前缀。
 
 ## 包含网页界面的构建
 

@@ -21,6 +21,9 @@ class ReleaseTest(unittest.TestCase):
             "mosdns-linux-amd64-v3",
         )
 
+    def test_linker_version_avoids_double_prefix(self):
+        self.assertEqual(release.linker_version("v26.09.11"), "26.09.11")
+
     def test_checksums_only_include_selected_archives_sorted(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
