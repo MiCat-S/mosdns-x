@@ -1,0 +1,44 @@
+log:
+  level: info
+
+control:
+  database: /var/lib/mosdns/control.db
+  stats_database: /var/lib/mosdns/stats.db
+  public_dns_url: https://dns.example.com/dns-query
+  panel_origin: https://panel.example.com
+  development: false
+  query_log: false
+  enable_pprof: false
+  trusted_proxies:
+    - 127.0.0.1/32
+
+api:
+  http: 127.0.0.1:18081
+
+plugins:
+  - tag: cache
+    type: cache
+    args:
+      size: 10240
+
+  - tag: upstream
+    type: fast_forward
+    args:
+      upstream:
+        # Replace these example resolvers with the upstreams for your deployment.
+        - addr: udp://1.1.1.1:53
+        - addr: udp://9.9.9.9:53
+
+  - tag: main
+    type: sequence
+    args:
+      exec:
+        - cache
+        - upstream
+
+servers:
+  - exec: main
+    listeners:
+      - protocol: http
+        addr: 127.0.0.1:18443
+        url_path: /dns-query

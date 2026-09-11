@@ -29,6 +29,8 @@ mosdns start -c examples/control-local.yaml
 
 ## 生产反向代理
 
+从零安装、systemd 启动、双域名 HTTPS 和 HTTP/3 接入，见 [Ubuntu / Debian 部署教程](deployment.md)。配套提供 Mosdns、Caddy 和 systemd 示例。
+
 面板和管理 API 必须通过 HTTPS 暴露，可以由 TLS 反向代理终止连接，并把请求转发给回环监听器。DNS 服务可以直接使用 Mosdns-x 的原生 DoH 和 DoH3 监听器；仅在部署架构需要时才让反向代理终止 DNS 的 HTTP/2 或 HTTP/3。只有明确配置的可信代理 CIDR 可以传递客户端地址；默认 `X-Forwarded-For` 会从右向左剥离可信代理。不要把服务直接配置为信任任意来源的转发头。
 
 设备专属 DoH URL 和 `Authorization: Bearer` 值都是秘密。代理访问日志、错误日志、追踪系统和监控标签应删除 URL 中的设备 token，并删除 `Authorization`、Cookie 和 `X-CSRF-Token`。不要让 CDN、共享代理或浏览器缓存缓存 DNS 响应、管理 API、会话响应或含凭证的页面。管理 API 响应已发送 `Cache-Control: no-store`，外围代理仍需遵守该响应头。
