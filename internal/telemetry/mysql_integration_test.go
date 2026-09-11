@@ -41,12 +41,17 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 	if snapshot.Completed != 1 || snapshot.CacheHits != 1 || len(snapshot.Upstreams) != 1 || snapshot.Upstreams[0].ID != "remote" {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
-	queries, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), Page{})
+	queries, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(queries.Items) != 1 || queries.Items[0].ClientIP != "192.0.2.10" || len(queries.Items[0].AnswerIPs) != 1 || !queries.Items[0].EDNS.DNSSECOK {
 		t.Fatalf("queries=%+v", queries)
+	}
+	cacheHit := true
+	filtered, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{Name: "EXAMPLE.TEST", QType: "a", Rcode: "noerror", CredentialID: "credential-1", Protocol: "DOH", Address: "192.0.2.11", CacheHit: &cacheHit}, Page{})
+	if err != nil || len(filtered.Items) != 1 {
+		t.Fatalf("filtered queries=%+v err=%v", filtered, err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

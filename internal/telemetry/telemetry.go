@@ -107,6 +107,16 @@ type Page struct {
 	Cursor string
 }
 
+type QueryFilter struct {
+	Name         string
+	QType        string
+	Rcode        string
+	CredentialID string
+	Protocol     string
+	Address      string
+	CacheHit     *bool
+}
+
 type QueryPage struct {
 	Items      []QueryRecord `json:"items"`
 	NextCursor string        `json:"next_cursor,omitempty"`
@@ -756,9 +766,9 @@ func (s *Store) Snapshot(ctx context.Context, userID string, from, to time.Time)
 	return snapshot, nil
 }
 
-func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, page Page) (QueryPage, error) {
+func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, filter QueryFilter, page Page) (QueryPage, error) {
 	if s.mysql != nil {
-		return s.mysqlQueries(ctx, userID, from, to, page)
+		return s.mysqlQueries(ctx, userID, from, to, filter, page)
 	}
 	result := QueryPage{Items: []QueryRecord{}}
 	if !s.queryLogEnabled {
@@ -787,12 +797,18 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 			b = tx.Bucket(bucketUserQ)
 			prefix = userID + "\x00"
 		}
-		seek := prefix + fmt.Sprintf("%020d", from.UnixNano())
+		seek := prefix + fmt.Sprintf("%020d", to.UnixNano())
 		if page.Cursor != "" {
 			seek = prefix + page.Cursor
 		}
 		c := b.Cursor()
-		for k, v := c.Seek([]byte(seek)); k != nil && (prefix == "" || strings.HasPrefix(string(k), prefix)); k, v = c.Next() {
+		k, v := c.Seek([]byte(seek))
+		if k == nil {
+			k, v = c.Last()
+		} else {
+			k, v = c.Prev()
+		}
+		for ; k != nil && (prefix == "" || strings.HasPrefix(string(k), prefix)); k, v = c.Prev() {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -809,30 +825,59 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 				r.EDNS.OptionCodes = []uint16{}
 			}
 			if r.Time.Before(from) {
-				continue
+				break
 			}
 			if !r.Time.Before(to) {
-				break
-			}
-			if page.Cursor != "" && r.ID == page.Cursor {
 				continue
 			}
-			if len(result.Items) == page.Limit {
-				result.NextCursor = result.Items[len(result.Items)-1].ID
-				break
+			if !filter.matches(r) {
+				continue
 			}
 			result.Items = append(result.Items, r)
+			if len(result.Items) > page.Limit {
+				result.Items = result.Items[:page.Limit]
+				result.NextCursor = result.Items[page.Limit-1].ID
+				break
+			}
 		}
 		return nil
 	})
 	return result, err
 }
 
+func (f QueryFilter) matches(r QueryRecord) bool {
+	if f.Name != "" && !strings.Contains(strings.ToLower(r.Name), strings.ToLower(f.Name)) {
+		return false
+	}
+	if f.QType != "" && !strings.EqualFold(r.QType, f.QType) {
+		return false
+	}
+	if f.Rcode != "" && !strings.EqualFold(r.Rcode, f.Rcode) {
+		return false
+	}
+	if f.CredentialID != "" && r.CredentialID != f.CredentialID {
+		return false
+	}
+	if f.Protocol != "" && !strings.EqualFold(r.Protocol, f.Protocol) {
+		return false
+	}
+	if f.Address != "" {
+		found := r.ClientIP == f.Address
+		for _, answer := range r.AnswerIPs {
+			found = found || answer == f.Address
+		}
+		if !found {
+			return false
+		}
+	}
+	return f.CacheHit == nil || r.CacheHit == *f.CacheHit
+}
+
 type Service interface {
 	Observe(dns_handler.Result)
 	ObserveUpstream(query_context.UpstreamAttempt)
 	Snapshot(context.Context, string, time.Time, time.Time) (StatsSnapshot, error)
-	Queries(context.Context, string, time.Time, time.Time, Page) (QueryPage, error)
+	Queries(context.Context, string, time.Time, time.Time, QueryFilter, Page) (QueryPage, error)
 	Flush(context.Context) error
 	Close() error
 }

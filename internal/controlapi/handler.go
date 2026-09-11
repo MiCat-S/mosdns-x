@@ -29,7 +29,7 @@ const (
 
 type Telemetry interface {
 	Snapshot(context.Context, string, time.Time, time.Time) (telemetry.StatsSnapshot, error)
-	Queries(context.Context, string, time.Time, time.Time, telemetry.Page) (telemetry.QueryPage, error)
+	Queries(context.Context, string, time.Time, time.Time, telemetry.QueryFilter, telemetry.Page) (telemetry.QueryPage, error)
 }
 
 type SystemInfo struct {
@@ -777,7 +777,11 @@ func (h *Handler) queries(w http.ResponseWriter, r *http.Request, userID string)
 	if !ok {
 		return
 	}
-	v, err := h.opts.Telemetry.Queries(r.Context(), userID, from, to, telemetry.Page{Limit: pg.Limit, Cursor: pg.Cursor})
+	filter, ok := parseQueryFilter(w, r)
+	if !ok {
+		return
+	}
+	v, err := h.opts.Telemetry.Queries(r.Context(), userID, from, to, filter, telemetry.Page{Limit: pg.Limit, Cursor: pg.Cursor})
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable")
 		return
@@ -786,6 +790,41 @@ func (h *Handler) queries(w http.ResponseWriter, r *http.Request, userID string)
 		v.Items = []telemetry.QueryRecord{}
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+func parseQueryFilter(w http.ResponseWriter, r *http.Request) (telemetry.QueryFilter, bool) {
+	q := r.URL.Query()
+	filter := telemetry.QueryFilter{
+		Name:         strings.TrimSpace(q.Get("name")),
+		QType:        strings.ToUpper(strings.TrimSpace(q.Get("qtype"))),
+		Rcode:        strings.ToUpper(strings.TrimSpace(q.Get("rcode"))),
+		CredentialID: strings.TrimSpace(q.Get("credential_id")),
+		Protocol:     strings.ToLower(strings.TrimSpace(q.Get("protocol"))),
+		Address:      strings.TrimSpace(q.Get("address")),
+	}
+	if len(filter.Name) > 255 || len(filter.QType) > 16 || len(filter.Rcode) > 32 || len(filter.CredentialID) > 64 || len(filter.Protocol) > 16 {
+		writeError(w, http.StatusBadRequest, "invalid_input")
+		return telemetry.QueryFilter{}, false
+	}
+	if filter.Address != "" {
+		if _, err := netip.ParseAddr(filter.Address); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return telemetry.QueryFilter{}, false
+		}
+	}
+	switch cache := strings.ToLower(strings.TrimSpace(q.Get("cache"))); cache {
+	case "", "all":
+	case "hit":
+		value := true
+		filter.CacheHit = &value
+	case "miss":
+		value := false
+		filter.CacheHit = &value
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_input")
+		return telemetry.QueryFilter{}, false
+	}
+	return filter, true
 }
 
 func validSpec(v control.UserSpec) bool {

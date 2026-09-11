@@ -4,6 +4,7 @@ import { useSession } from "./session";
 import {
   Login,
   AdminOverview,
+  AdminLogs,
   Users,
   UserDetail,
   AuditPage,
@@ -45,6 +46,7 @@ export function App() {
       <Route path="/login" element={<Login />} />
       <Route element={<Guard role="admin" />}>
         <Route path="/admin" element={<AdminOverview />} />
+        <Route path="/admin/logs" element={<AdminLogs />} />
         <Route path="/admin/users" element={<Users />} />
         <Route path="/admin/users/:id" element={<UserDetail />} />
         <Route path="/admin/audit" element={<AuditPage />} />

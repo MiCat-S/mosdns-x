@@ -45,8 +45,8 @@
 | GET | `/admin/users/{id}/device-usage` | 对应用户设备分钟用量 |
 | GET | `/me/stats` | 当前用户 `StatsSnapshot` |
 | GET | `/admin/stats` | 全局 `StatsSnapshot`；可用 `user_id` 选定用户 |
-| GET | `/me/queries` | 可选查询明细 `PageResult<QueryRecord>` |
-| GET | `/admin/queries` | 管理员查询明细；可用 `user_id` 筛选 |
+| GET | `/me/queries` | 当前用户的可选查询日志 `PageResult<QueryRecord>` |
+| GET | `/admin/queries` | 管理员查询日志；可用 `user_id` 筛选 |
 | GET | `/admin/audit` | `PageResult<AuditRecord>` |
 | GET | `/admin/system` | 安全的系统与配置概览，省略原始插件参数及秘密 |
 
@@ -55,6 +55,7 @@
 - `series` 每项：`time`、`completed`、`failed`、`cache_hits`、`avg_latency_ms`。
 - `upstreams` 每项：`id`、`attempts`、`failures`、`avg_latency_ms`。id 使用安全的配置标识，不能包含上游 URL 中的凭证。
 - `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
+- 查询日志按 `time`、`id` 从新到旧返回。除通用的 `from`、`to`、`limit`、`cursor` 外，还支持 `name`（不区分大小写的包含匹配）、`qtype`、`rcode`、`credential_id`、`protocol`、`address`（客户端 IP 或 Answer IP）和 `cache=all|hit|miss`。继续分页时必须保持时间范围和筛选条件不变。
 - `edns` 包含 `present`、`version`、`udp_size`、`dnssec_ok`、`option_codes`，以及可选的 `ecs`。`ecs` 包含规范化网络地址 `address`、`family`、`source_prefix`、`scope_prefix`。系统只记录 EDNS option code，不保存 Cookie、Padding、NSID 或其他 option 载荷。
 - `completed` 是结果统计采集量，`failed` 是其中的失败量；扣费次数以事务保存的 usage / quota 为准。`dropped` 是当前进程观测到的异步事件丢弃量，包含响应或上游尝试事件，重启后不能据此判断历史数据完整性。统计窗口和更新时刻必须展示。
 - 响应聚合保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细继续保留 24 小时且最多 100,000 条，查询更久区间不会凭空补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。

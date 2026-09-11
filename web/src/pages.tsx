@@ -357,6 +357,53 @@ export function AdminOverview() {
   );
 }
 
+export function AdminLogs() {
+  const [version, setVersion] = useState(0);
+  const params = useMemo(range, [version]);
+  const loader = useCallback(
+    (signal: AbortSignal) =>
+      request<Stats>(query("/admin/stats", params), { signal }),
+    [params],
+  );
+  const { data, error, loading } = useLoad(loader, [loader]);
+  return (
+    <>
+      <PageTitle
+        title="查询日志"
+        description="筛选全站 DNS 查询，并查看客户端、响应地址和 EDNS 详情"
+        action={
+          <button onClick={() => setVersion((value) => value + 1)}>
+            刷新统计
+          </button>
+        }
+      />
+      {loading ? <Spinner /> : <Alert error={error} />}
+      {data ? (
+        <>
+          <div className="metrics log-metrics">
+            <Metric label="处理完成" value={fmt.num(data.completed)} />
+            <Metric label="失败" value={fmt.num(data.failed)} />
+            <Metric
+              label="缓存命中"
+              value={fmt.pct(data.cache_hits, data.completed)}
+            />
+            <Metric
+              label="平均延迟"
+              value={`${data.avg_latency_ms.toFixed(1)} ms`}
+              hint={`P95 ${data.p95_latency_ms.toFixed(1)} ms`}
+            />
+          </div>
+          <QueryDetails
+            path="/admin/queries"
+            enabled={data.query_log_enabled}
+            showPrincipal
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
 const blank = {
   username: "",
   password: "",
@@ -925,6 +972,7 @@ function UserDetailContent({ id }: { id: string }) {
           <QueryDetails
             path={`/admin/queries?user_id=${encodeURIComponent(id)}`}
             enabled={data[1].query_log_enabled}
+            credentialsPath={`${base}/credentials`}
           />
           {edit ? (
             <Modal title="编辑账户" onClose={() => setEdit(false)}>
@@ -1068,95 +1116,463 @@ function DeviceUsage({
   );
 }
 
+const emptyQueryFilters = {
+  hours: "24",
+  name: "",
+  qtype: "",
+  rcode: "",
+  credentialId: "",
+  protocol: "",
+  address: "",
+  cache: "all",
+};
+
+type QueryFilters = typeof emptyQueryFilters;
+
+const ednsOptionNames: Record<number, string> = {
+  3: "NSID",
+  8: "ECS",
+  10: "COOKIE",
+  12: "Padding",
+  15: "EDE",
+};
+
+function logDate(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "medium",
+  }).format(new Date(value));
+}
+
+function QueryLogDetail({
+  record,
+  deviceName,
+  showPrincipal,
+}: {
+  record: QueryRecord;
+  deviceName: string;
+  showPrincipal: boolean;
+}) {
+  const edns = record.edns;
+  return (
+    <div className="log-detail">
+      <div className="log-detail-summary">
+        <span
+          className={`badge ${record.rcode === "NOERROR" ? "ok" : "error"}`}
+        >
+          {record.rcode || "UNKNOWN"}
+        </span>
+        <span className="badge off">{record.qtype || "未知类型"}</span>
+        {record.cache_hit ? (
+          <span className="badge cache">缓存命中</span>
+        ) : null}
+        <time>{logDate(record.time)}</time>
+      </div>
+      <section>
+        <h3>请求</h3>
+        <dl>
+          <div>
+            <dt>查询名称</dt>
+            <dd>{record.name}</dd>
+          </div>
+          <div>
+            <dt>设备</dt>
+            <dd>
+              {deviceName}
+              {record.credential_id ? (
+                <small>{record.credential_id}</small>
+              ) : null}
+            </dd>
+          </div>
+          {showPrincipal ? (
+            <div>
+              <dt>用户 ID</dt>
+              <dd>{record.user_id || "未识别"}</dd>
+            </div>
+          ) : null}
+          <div>
+            <dt>客户端 IP</dt>
+            <dd>{record.client_ip || "未记录"}</dd>
+          </div>
+        </dl>
+      </section>
+      <section>
+        <h3>响应</h3>
+        <dl>
+          <div>
+            <dt>响应码</dt>
+            <dd>{record.rcode || "UNKNOWN"}</dd>
+          </div>
+          <div>
+            <dt>Answer IP</dt>
+            <dd className="answer-list">
+              {record.answer_ips?.length
+                ? record.answer_ips.map((address) => (
+                    <code key={address}>{address}</code>
+                  ))
+                : "无地址记录"}
+            </dd>
+          </div>
+          <div>
+            <dt>处理路径</dt>
+            <dd>{record.cache_hit ? "缓存命中" : "正常解析"}</dd>
+          </div>
+          <div>
+            <dt>处理耗时</dt>
+            <dd>{record.duration_ms.toFixed(2)} ms</dd>
+          </div>
+        </dl>
+      </section>
+      <section>
+        <h3>传输与 EDNS</h3>
+        <dl>
+          <div>
+            <dt>协议</dt>
+            <dd>{record.protocol?.toUpperCase() || "未记录"}</dd>
+          </div>
+          <div>
+            <dt>EDNS</dt>
+            <dd>
+              {edns?.present
+                ? `v${edns.version} · UDP ${edns.udp_size} bytes${edns.dnssec_ok ? " · DNSSEC OK" : ""}`
+                : "未携带"}
+            </dd>
+          </div>
+          <div>
+            <dt>EDNS 选项</dt>
+            <dd>
+              {edns?.option_codes?.length
+                ? edns.option_codes
+                    .map(
+                      (code) =>
+                        `${code}${ednsOptionNames[code] ? ` (${ednsOptionNames[code]})` : ""}`,
+                    )
+                    .join(", ")
+                : "无"}
+            </dd>
+          </div>
+          <div>
+            <dt>ECS</dt>
+            <dd>
+              {edns?.ecs
+                ? `${edns.ecs.address || "地址无效"}/${edns.ecs.source_prefix} · family ${edns.ecs.family} · scope ${edns.ecs.scope_prefix}`
+                : "无"}
+            </dd>
+          </div>
+        </dl>
+      </section>
+    </div>
+  );
+}
+
 export function QueryDetails({
   path,
   enabled,
+  credentialsPath,
+  showPrincipal = false,
+  title = "查询日志",
 }: {
   path: string;
   enabled: boolean;
+  credentialsPath?: string;
+  showPrincipal?: boolean;
+  title?: string;
 }) {
-  const params = useMemo(range, []);
+  const [draft, setDraft] = useState<QueryFilters>({ ...emptyQueryFilters });
+  const [applied, setApplied] = useState<QueryFilters>({
+    ...emptyQueryFilters,
+  });
+  const [selected, setSelected] = useState<QueryRecord | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const queryPath = useMemo(() => {
+    const to = new Date();
+    const from = new Date(
+      to.getTime() - Number(applied.hours) * 60 * 60 * 1000,
+    );
+    const params: Record<string, string> = {
+      from: from.toISOString(),
+      to: to.toISOString(),
+    };
+    if (applied.name) params.name = applied.name;
+    if (applied.qtype) params.qtype = applied.qtype;
+    if (applied.rcode) params.rcode = applied.rcode;
+    if (applied.credentialId) params.credential_id = applied.credentialId;
+    if (applied.protocol) params.protocol = applied.protocol;
+    if (applied.address) params.address = applied.address;
+    if (applied.cache !== "all") params.cache = applied.cache;
+    return query(path, params);
+  }, [path, applied, refreshVersion]);
   const {
     items: data,
     error,
     loading,
     cursor,
     more,
-  } = usePaged<QueryRecord>(query(path, params), 0, enabled);
+  } = usePaged<QueryRecord>(queryPath, 0, enabled);
+  const credentialLoader = useCallback(
+    (signal: AbortSignal) =>
+      enabled && credentialsPath
+        ? allPages<Credential>(credentialsPath, signal)
+        : Promise.resolve([] as Credential[]),
+    [credentialsPath, enabled],
+  );
+  const { data: credentials } = useLoad(credentialLoader, [credentialLoader]);
+  const credentialNames = useMemo(
+    () => new Map((credentials ?? []).map((item) => [item.id, item.name])),
+    [credentials],
+  );
+  const deviceName = (record: QueryRecord) =>
+    record.credential_id
+      ? (credentialNames.get(record.credential_id) ?? "未知设备")
+      : "未标识设备";
+
+  function updateFilter(name: keyof QueryFilters, value: string) {
+    setDraft((current) => ({ ...current, [name]: value }));
+  }
+  function applyFilters(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSelected(null);
+    setApplied({
+      ...draft,
+      name: draft.name.trim(),
+      address: draft.address.trim(),
+    });
+  }
+  function resetFilters() {
+    const filters = { ...emptyQueryFilters };
+    setDraft(filters);
+    setApplied(filters);
+    setSelected(null);
+    setRefreshVersion((value) => value + 1);
+  }
+
   return (
-    <Card title="查询明细">
+    <Card title={title} className="query-console">
       {!enabled ? (
-        <Empty>查询明细未启用。管理员可在服务配置中开启记录。</Empty>
-      ) : loading ? (
-        <Spinner />
-      ) : error ? (
-        <Alert error={error} />
-      ) : data?.length ? (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>名称 / 类型</th>
-                <th>结果</th>
-                <th>客户端 / Answer IP</th>
-                <th>EDNS</th>
-                <th>协议</th>
-                <th>耗时</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((q) => (
-                <tr key={q.id}>
-                  <td>{fmt.date(q.time)}</td>
-                  <td>
-                    {q.name}
-                    <small>{q.qtype}</small>
-                  </td>
-                  <td>
-                    {q.rcode}
-                    {q.cache_hit ? " · 缓存" : ""}
-                  </td>
-                  <td className="query-detail">
-                    {q.client_ip || "未知客户端"}
-                    <small>
-                      {q.answer_ips?.length
-                        ? `Answer: ${q.answer_ips.join(", ")}`
-                        : "无 Answer IP"}
-                    </small>
-                  </td>
-                  <td className="query-detail">
-                    {q.edns?.present
-                      ? `EDNS v${q.edns.version} · UDP ${q.edns.udp_size}${q.edns.dnssec_ok ? " · DO" : ""}`
-                      : "无 EDNS"}
-                    {q.edns?.present ? (
-                      <small>
-                        选项: {q.edns.option_codes?.join(", ") || "无"}
-                      </small>
-                    ) : null}
-                    {q.edns?.ecs ? (
-                      <small>
-                        ECS: {q.edns.ecs.address || "地址无效"}/
-                        {q.edns.ecs.source_prefix} · family {q.edns.ecs.family}{" "}
-                        · scope {q.edns.ecs.scope_prefix}
-                      </small>
-                    ) : null}
-                  </td>
-                  <td>{q.protocol}</td>
-                  <td>{q.duration_ms.toFixed(1)} ms</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Empty>查询日志未启用。管理员可在服务配置中开启 query_log。</Empty>
       ) : (
-        <Empty>当前窗口暂无查询记录</Empty>
+        <>
+          <form className="query-filters" onSubmit={applyFilters}>
+            <Field label="时间范围">
+              <select
+                value={draft.hours}
+                onChange={(event) => updateFilter("hours", event.target.value)}
+              >
+                <option value="1">最近 1 小时</option>
+                <option value="6">最近 6 小时</option>
+                <option value="24">最近 24 小时</option>
+              </select>
+            </Field>
+            <Field label="域名">
+              <input
+                value={draft.name}
+                onChange={(event) => updateFilter("name", event.target.value)}
+                placeholder="包含 example.com"
+                maxLength={255}
+              />
+            </Field>
+            <Field label="查询类型">
+              <select
+                value={draft.qtype}
+                onChange={(event) => updateFilter("qtype", event.target.value)}
+              >
+                <option value="">全部类型</option>
+                {[
+                  "A",
+                  "AAAA",
+                  "HTTPS",
+                  "CNAME",
+                  "MX",
+                  "TXT",
+                  "NS",
+                  "PTR",
+                  "ANY",
+                ].map((value) => (
+                  <option key={value}>{value}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="响应码">
+              <select
+                value={draft.rcode}
+                onChange={(event) => updateFilter("rcode", event.target.value)}
+              >
+                <option value="">全部响应</option>
+                {["NOERROR", "NXDOMAIN", "SERVFAIL", "REFUSED", "FORMERR"].map(
+                  (value) => (
+                    <option key={value}>{value}</option>
+                  ),
+                )}
+              </select>
+            </Field>
+            <Field label="设备">
+              {credentialsPath ? (
+                <select
+                  value={draft.credentialId}
+                  onChange={(event) =>
+                    updateFilter("credentialId", event.target.value)
+                  }
+                >
+                  <option value="">全部设备</option>
+                  {(credentials ?? []).map((credential) => (
+                    <option key={credential.id} value={credential.id}>
+                      {credential.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={draft.credentialId}
+                  onChange={(event) =>
+                    updateFilter("credentialId", event.target.value)
+                  }
+                  placeholder="凭证 ID"
+                  maxLength={64}
+                />
+              )}
+            </Field>
+            <Field label="协议">
+              <select
+                value={draft.protocol}
+                onChange={(event) =>
+                  updateFilter("protocol", event.target.value)
+                }
+              >
+                <option value="">全部协议</option>
+                {["udp", "tcp", "tls", "quic", "http", "https", "h2", "h3"].map(
+                  (value) => (
+                    <option key={value} value={value}>
+                      {value.toUpperCase()}
+                    </option>
+                  ),
+                )}
+              </select>
+            </Field>
+            <Field label="客户端或 Answer IP">
+              <input
+                value={draft.address}
+                onChange={(event) =>
+                  updateFilter("address", event.target.value)
+                }
+                placeholder="192.0.2.1"
+              />
+            </Field>
+            <Field label="缓存">
+              <select
+                value={draft.cache}
+                onChange={(event) => updateFilter("cache", event.target.value)}
+              >
+                <option value="all">全部</option>
+                <option value="hit">命中缓存</option>
+                <option value="miss">未命中缓存</option>
+              </select>
+            </Field>
+            <div className="query-filter-actions">
+              <button type="button" onClick={resetFilters}>
+                重置
+              </button>
+              <button className="primary" type="submit">
+                查询
+              </button>
+            </div>
+          </form>
+          <div className="log-list-heading">
+            <div>
+              <strong>最新记录</strong>
+              <span>已加载 {fmt.num(data.length)} 条，按时间从新到旧</span>
+            </div>
+            <button
+              onClick={() => setRefreshVersion((value) => value + 1)}
+              disabled={loading}
+            >
+              刷新
+            </button>
+          </div>
+          <Alert error={error} />
+          {loading && !data.length ? (
+            <Spinner />
+          ) : data.length ? (
+            <div className="table-wrap query-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>查询</th>
+                    <th>结果</th>
+                    <th>设备 / 客户端</th>
+                    <th>Answer IP</th>
+                    <th>协议 / 耗时</th>
+                    <th>时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.map((record) => (
+                    <tr key={record.id}>
+                      <td className="query-detail">
+                        <button
+                          className="query-name"
+                          aria-label={`查看 ${record.name} 详情`}
+                          onClick={() => setSelected(record)}
+                        >
+                          {record.name}
+                        </button>
+                        <small>{record.qtype}</small>
+                      </td>
+                      <td>
+                        <span
+                          className={`badge ${record.rcode === "NOERROR" ? "ok" : "error"}`}
+                        >
+                          {record.rcode || "UNKNOWN"}
+                        </span>
+                        {record.cache_hit ? (
+                          <small className="cache-text">缓存命中</small>
+                        ) : null}
+                      </td>
+                      <td className="query-detail">
+                        {deviceName(record)}
+                        <small>{record.client_ip || "未记录客户端 IP"}</small>
+                        {showPrincipal ? (
+                          <small>用户 {record.user_id || "未识别"}</small>
+                        ) : null}
+                      </td>
+                      <td className="query-detail answer-preview">
+                        {record.answer_ips?.length
+                          ? record.answer_ips.join(", ")
+                          : "无地址记录"}
+                      </td>
+                      <td>
+                        {record.protocol?.toUpperCase() || "未知"}
+                        <small>{record.duration_ms.toFixed(2)} ms</small>
+                      </td>
+                      <td>{logDate(record.time)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <Empty>当前条件下暂无查询记录</Empty>
+          )}
+          {cursor ? (
+            <div className="query-more">
+              <button onClick={more} disabled={loading}>
+                {loading ? "正在加载…" : "加载更多"}
+              </button>
+            </div>
+          ) : null}
+          {selected ? (
+            <Modal
+              title={selected.name || "查询详情"}
+              onClose={() => setSelected(null)}
+            >
+              <QueryLogDetail
+                record={selected}
+                deviceName={deviceName(selected)}
+                showPrincipal={showPrincipal}
+              />
+            </Modal>
+          ) : null}
+        </>
       )}
-      {enabled && cursor ? (
-        <button onClick={more} disabled={loading}>
-          {loading ? "正在加载…" : "加载更多"}
-        </button>
-      ) : null}
     </Card>
   );
 }
@@ -1237,8 +1653,8 @@ export function UsagePage() {
   return (
     <>
       <PageTitle
-        title="用量与设备"
-        description="过去 24 小时的用量与处理统计"
+        title="统计与日志"
+        description="过去 24 小时的用量、设备和 DNS 查询记录"
         action={<button onClick={() => setVersion((x) => x + 1)}>刷新</button>}
       />
       {loading ? <Spinner /> : <Alert error={error} />}{" "}
@@ -1252,6 +1668,7 @@ export function UsagePage() {
           <QueryDetails
             path="/me/queries"
             enabled={data[0].query_log_enabled}
+            credentialsPath="/me/credentials"
           />
         </>
       ) : null}
@@ -1447,10 +1864,6 @@ export function SystemPage() {
           <Card title="配置摘要">
             <pre>{JSON.stringify(data.config, null, 2)}</pre>
           </Card>
-          <QueryDetails
-            path="/admin/queries"
-            enabled={data.query_log_enabled}
-          />
         </>
       ) : null}
     </>

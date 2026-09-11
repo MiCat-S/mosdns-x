@@ -82,7 +82,7 @@ func TestQueriesEnabledDisabledAndPagination(t *testing.T) {
 	off := openTestStore(t, false, now)
 	off.Observe(result("u1", "c1", 0))
 	flush(t, off)
-	p, err := off.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{})
+	p, err := off.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil || p.Items == nil || len(p.Items) != 0 {
 		t.Fatalf("off=%#v err=%v", p, err)
 	}
@@ -91,20 +91,73 @@ func TestQueriesEnabledDisabledAndPagination(t *testing.T) {
 	on.Observe(result("u1", "c2", 3))
 	on.Observe(result("u2", "c3", 0))
 	flush(t, on)
-	p, err = on.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 1})
-	if err != nil || len(p.Items) != 1 || p.NextCursor == "" {
+	p, err = on.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{Limit: 1})
+	if err != nil || len(p.Items) != 1 || p.Items[0].CredentialID != "c2" || p.NextCursor == "" {
 		t.Fatalf("page1=%#v err=%v", p, err)
 	}
-	p2, err := on.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{Limit: 1, Cursor: p.NextCursor})
+	p2, err := on.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{Limit: 1, Cursor: p.NextCursor})
 	if err != nil || len(p2.Items) != 1 || p2.Items[0].CredentialID == p.Items[0].CredentialID {
 		t.Fatalf("page2=%#v err=%v", p2, err)
 	}
-	all, err := on.Queries(context.Background(), "", now.Add(-time.Minute), now.Add(time.Minute), Page{})
+	all, err := on.Queries(context.Background(), "", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil || len(all.Items) != 3 {
 		t.Fatalf("all=%#v err=%v", all, err)
 	}
-	if _, err = on.Queries(context.Background(), "", now.Add(-32*24*time.Hour), now, Page{}); err == nil {
+	if _, err = on.Queries(context.Background(), "", now.Add(-32*24*time.Hour), now, QueryFilter{}, Page{}); err == nil {
 		t.Fatal("accepted range over 31 days")
+	}
+}
+
+func TestQueryFiltersAndNewestFirst(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	clock := now.Add(-time.Second)
+	var clockMu sync.RWMutex
+	s, err := Open(Options{Path: filepath.Join(t.TempDir(), "telemetry.db"), QueryLogEnabled: true, Now: func() time.Time {
+		clockMu.RLock()
+		defer clockMu.RUnlock()
+		return clock
+	}, BatchSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	older := result("u1", "desktop", dns.RcodeNameError)
+	older.QuestionName = "old.example."
+	s.Observe(older)
+	clockMu.Lock()
+	clock = now
+	clockMu.Unlock()
+	newer := result("u1", "phone", dns.RcodeSuccess)
+	newer.QuestionName = "Api.Example."
+	newer.QuestionType = dns.TypeAAAA
+	newer.Protocol = query_context.ProtocolH2
+	newer.CacheHit = true
+	newer.ClientAddr = netip.MustParseAddr("192.0.2.10")
+	newer.AnswerIPs = []string{"2001:db8::10"}
+	s.Observe(newer)
+	flush(t, s)
+
+	from, to := now.Add(-time.Minute), now.Add(time.Minute)
+	all, err := s.Queries(context.Background(), "u1", from, to, QueryFilter{}, Page{})
+	if err != nil || len(all.Items) != 2 || all.Items[0].CredentialID != "phone" {
+		t.Fatalf("newest first=%+v err=%v", all, err)
+	}
+	cacheHit := true
+	filters := []QueryFilter{
+		{Name: "api.example"},
+		{QType: "aaaa"},
+		{Rcode: "noerror"},
+		{CredentialID: "phone"},
+		{Protocol: "H2"},
+		{Address: "192.0.2.10"},
+		{Address: "2001:db8::10"},
+		{CacheHit: &cacheHit},
+	}
+	for _, filter := range filters {
+		page, queryErr := s.Queries(context.Background(), "u1", from, to, filter, Page{})
+		if queryErr != nil || len(page.Items) != 1 || page.Items[0].CredentialID != "phone" {
+			t.Fatalf("filter=%+v page=%+v err=%v", filter, page, queryErr)
+		}
 	}
 }
 
@@ -120,7 +173,7 @@ func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 	r.EDNS.OptionCodes[0] = dns.EDNS0PADDING
 	r.EDNS.ECS.Address = "203.0.113.0"
 	flush(t, s)
-	page, err := s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{})
+	page, err := s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("queries=%+v err=%v", page, err)
 	}
@@ -139,11 +192,11 @@ func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	page, err = s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), Page{})
+	page, err = s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("queries with legacy=%+v err=%v", page, err)
 	}
-	legacy := page.Items[1]
+	legacy := page.Items[0]
 	if legacy.ClientIP != "" || legacy.AnswerIPs == nil || len(legacy.AnswerIPs) != 0 || legacy.EDNS.Present || legacy.EDNS.OptionCodes == nil {
 		t.Fatalf("legacy normalization=%+v", legacy)
 	}
@@ -279,7 +332,7 @@ func TestRetentionPrunesOldAggregatesAndQueries(t *testing.T) {
 	if snap.Completed != 1 {
 		t.Fatalf("completed=%d", snap.Completed)
 	}
-	queries, err := s.Queries(context.Background(), "", now.Add(-30*24*time.Hour), now.Add(time.Minute), Page{})
+	queries, err := s.Queries(context.Background(), "", now.Add(-30*24*time.Hour), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil {
 		t.Fatal(err)
 	}

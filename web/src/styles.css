@@ -474,6 +474,172 @@ tbody tr:last-child td {
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.query-console {
+  padding: 0;
+  overflow: hidden;
+}
+.query-console > h2 {
+  padding: 1.25rem 1.3rem 0;
+}
+.query-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(145px, 1fr));
+  gap: 0.85rem;
+  padding: 0 1.3rem 1.2rem;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #fff, #f8fbfb);
+}
+.query-filters .field {
+  min-width: 0;
+  margin: 0;
+}
+.query-filter-actions {
+  display: flex;
+  align-items: end;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  grid-column: 1 / -1;
+}
+.query-filter-actions button {
+  min-width: 6rem;
+}
+.log-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.3rem;
+}
+.log-list-heading > div {
+  display: grid;
+  gap: 0.22rem;
+}
+.log-list-heading strong {
+  color: #193741;
+  font-size: 0.92rem;
+}
+.log-list-heading span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+.query-console > .alert {
+  margin: 0 1.3rem 1rem;
+}
+.query-console > .empty,
+.query-console > .state {
+  margin: 0 1.3rem 1.3rem;
+  border: 1px dashed #d4e2e2;
+  border-radius: 0.72rem;
+  background: #fafcfc;
+}
+.query-table {
+  margin: 0;
+  border-width: 1px 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.query-table th,
+.query-table td {
+  padding: 0.78rem 1.3rem;
+}
+.query-name {
+  min-height: auto;
+  max-width: 320px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: #075f68;
+  font-weight: 720;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.query-name:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--teal);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+.answer-preview {
+  max-width: 260px;
+  color: #3f5d66;
+}
+.cache-text {
+  color: #097660;
+}
+.query-more {
+  display: flex;
+  justify-content: center;
+  padding: 1rem 1.3rem 1.2rem;
+}
+.log-detail-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-bottom: 1.1rem;
+}
+.log-detail-summary time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.log-detail section {
+  padding: 0.35rem 0 0.8rem;
+  border-top: 1px solid #e3ecec;
+}
+.log-detail h3 {
+  margin: 0.85rem 0 0.55rem;
+  color: #244650;
+  font-size: 0.83rem;
+  letter-spacing: 0.035em;
+}
+.log-detail dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+}
+.log-detail dl > div {
+  min-width: 0;
+  padding: 0.68rem 0.75rem;
+  border-radius: 0.5rem;
+}
+.log-detail dl > div:nth-child(4n + 2),
+.log-detail dl > div:nth-child(4n + 3) {
+  background: #f5f9f9;
+}
+.log-detail dt {
+  margin-bottom: 0.22rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+.log-detail dd {
+  min-width: 0;
+  margin: 0;
+  color: #1c3a44;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+.log-detail dd small {
+  display: block;
+  margin-top: 0.18rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.answer-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.32rem;
+}
+.answer-list code {
+  padding: 0.16rem 0.38rem;
+  font-size: 0.74rem;
+}
 .badge {
   display: inline-flex;
   align-items: center;
@@ -490,6 +656,17 @@ tbody tr:last-child td {
 .badge.off {
   background: #edf1f3;
   color: #63747c;
+}
+.badge.error {
+  background: #fff0ef;
+  color: #a94242;
+}
+.badge.cache {
+  background: #eaf2ff;
+  color: #3e65a4;
+}
+.log-metrics .metric {
+  min-height: 7.25rem;
 }
 .table-actions {
   display: flex;
@@ -885,6 +1062,9 @@ pre {
   main {
     padding: 3.8rem 1rem 1.25rem;
   }
+  .query-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .login-shell {
     width: min(480px, 100%);
     min-height: 0;
@@ -933,6 +1113,33 @@ pre {
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.7rem;
+  }
+  .query-filters {
+    grid-template-columns: 1fr;
+    padding-inline: 1rem;
+  }
+  .query-filter-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .query-filter-actions button {
+    width: 100%;
+  }
+  .log-list-heading {
+    padding-inline: 1rem;
+  }
+  .query-table th,
+  .query-table td {
+    padding-inline: 1rem;
+  }
+  .log-detail dl {
+    grid-template-columns: 1fr;
+  }
+  .log-detail dl > div:nth-child(odd) {
+    background: #f5f9f9;
+  }
+  .log-detail dl > div:nth-child(even) {
+    background: transparent;
   }
   .metric {
     min-height: 7.35rem;

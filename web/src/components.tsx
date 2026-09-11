@@ -137,6 +137,7 @@ export function useLoad<T>(
 type NavIconName =
   | "overview"
   | "users"
+  | "logs"
   | "audit"
   | "system"
   | "usage"
@@ -146,13 +147,14 @@ type NavItem = { to: string; label: string; icon: NavIconName };
 
 const adminNav: NavItem[] = [
   { to: "/admin", label: "总览", icon: "overview" },
+  { to: "/admin/logs", label: "查询日志", icon: "logs" },
   { to: "/admin/users", label: "用户", icon: "users" },
   { to: "/admin/audit", label: "审计", icon: "audit" },
   { to: "/admin/system", label: "系统", icon: "system" },
 ];
 const userNav: NavItem[] = [
   { to: "/app", label: "我的服务", icon: "overview" },
-  { to: "/app/usage", label: "用量", icon: "usage" },
+  { to: "/app/usage", label: "统计与日志", icon: "usage" },
   { to: "/app/credentials", label: "凭证", icon: "credential" },
   { to: "/app/password", label: "密码", icon: "password" },
 ];
@@ -169,6 +171,12 @@ function NavIcon({ name }: { name: NavIconName }) {
         <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
         <circle cx="9" cy="7" r="4" />
         <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+      </>
+    ),
+    logs: (
+      <>
+        <path d="M4 5h16M4 12h16M4 19h10" />
+        <circle cx="18" cy="19" r="2" />
       </>
     ),
     audit: (

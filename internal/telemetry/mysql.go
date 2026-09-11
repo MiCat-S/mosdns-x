@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -536,9 +535,6 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 }
 
 func mysqlQueryCursor(value string) (int64, string, error) {
-	if value == "" {
-		return math.MinInt64, "", nil
-	}
 	if len(value) < 22 {
 		return 0, "", errors.New("invalid query cursor")
 	}
@@ -549,7 +545,7 @@ func mysqlQueryCursor(value string) (int64, string, error) {
 	return ns, value, nil
 }
 
-func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.Time, page Page) (QueryPage, error) {
+func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.Time, filter QueryFilter, page Page) (QueryPage, error) {
 	result := QueryPage{Items: []QueryRecord{}}
 	if !s.queryLogEnabled {
 		return result, nil
@@ -570,20 +566,52 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	if page.Limit > maxPageLimit {
 		return result, errors.New("limit exceeds 1000")
 	}
-	cursorTime, cursorID, err := mysqlQueryCursor(page.Cursor)
-	if err != nil {
-		return result, err
-	}
 	opCtx, cancel := s.mysqlContext(ctx)
 	defer cancel()
 	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json
-		FROM mosdns_query_logs WHERE time_ns>=? AND time_ns<? AND (time_ns>? OR (time_ns=? AND id>?))`
-	args := []any{from.UnixNano(), to.UnixNano(), cursorTime, cursorTime, cursorID}
+		FROM mosdns_query_logs WHERE time_ns>=? AND time_ns<?`
+	args := []any{from.UnixNano(), to.UnixNano()}
+	if page.Cursor != "" {
+		cursorTime, cursorID, err := mysqlQueryCursor(page.Cursor)
+		if err != nil {
+			return result, err
+		}
+		query += ` AND (time_ns<? OR (time_ns=? AND id<?))`
+		args = append(args, cursorTime, cursorTime, cursorID)
+	}
 	if userID != "" {
 		query += ` AND user_id=?`
 		args = append(args, userID)
 	}
-	query += ` ORDER BY time_ns, id LIMIT ?`
+	if filter.Name != "" {
+		query += ` AND INSTR(LOWER(name), ?)>0`
+		args = append(args, strings.ToLower(filter.Name))
+	}
+	if filter.QType != "" {
+		query += ` AND qtype=?`
+		args = append(args, strings.ToUpper(filter.QType))
+	}
+	if filter.Rcode != "" {
+		query += ` AND rcode=?`
+		args = append(args, strings.ToUpper(filter.Rcode))
+	}
+	if filter.CredentialID != "" {
+		query += ` AND credential_id=?`
+		args = append(args, filter.CredentialID)
+	}
+	if filter.Protocol != "" {
+		query += ` AND protocol=?`
+		args = append(args, strings.ToLower(filter.Protocol))
+	}
+	if filter.Address != "" {
+		query += ` AND (client_ip=? OR answer_ips_json LIKE ?)`
+		args = append(args, filter.Address, `%"`+filter.Address+`"%`)
+	}
+	if filter.CacheHit != nil {
+		query += ` AND cache_hit=?`
+		args = append(args, *filter.CacheHit)
+	}
+	query += ` ORDER BY time_ns DESC, id DESC LIMIT ?`
 	args = append(args, page.Limit+1)
 	rows, err := s.mysql.QueryContext(opCtx, query, args...)
 	if err != nil {

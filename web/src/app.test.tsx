@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -96,15 +102,69 @@ describe("前端访问与秘密处理", () => {
     );
     render(<QueryDetails path="/me/queries" enabled />);
     expect(await screen.findByText("2001:db8::44")).toBeInTheDocument();
+    expect(screen.getByText("192.0.2.1, 2001:db8::1")).toBeInTheDocument();
+    expect(screen.getByText("未记录客户端 IP")).toBeInTheDocument();
+    expect(screen.getByText("无地址记录")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "查看 example.org. 详情" }),
+    );
+    const first = screen.getByRole("dialog");
+    expect(within(first).getByText("192.0.2.1")).toBeInTheDocument();
+    expect(within(first).getByText("2001:db8::1")).toBeInTheDocument();
     expect(
-      screen.getByText(/Answer: 192\.0\.2\.1, 2001:db8::1/),
+      within(first).getByText("v0 · UDP 1232 bytes · DNSSEC OK"),
     ).toBeInTheDocument();
-    expect(screen.getByText("EDNS v0 · UDP 1232 · DO")).toBeInTheDocument();
-    expect(screen.getByText("选项: 8, 10")).toBeInTheDocument();
-    expect(screen.getByText(/ECS: 192\.0\.2\.0\/24/)).toBeInTheDocument();
-    expect(screen.getByText("未知客户端")).toBeInTheDocument();
-    expect(screen.getByText("无 Answer IP")).toBeInTheDocument();
-    expect(screen.getByText("无 EDNS")).toBeInTheDocument();
+    expect(within(first).getByText("8 (ECS), 10 (COOKIE)")).toBeInTheDocument();
+    expect(
+      within(first).getByText("192.0.2.0/24 · family 1 · scope 0"),
+    ).toBeInTheDocument();
+    fireEvent.click(within(first).getByRole("button", { name: "关闭" }));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "查看 empty.example. 详情" }),
+    );
+    const legacy = screen.getByRole("dialog");
+    expect(within(legacy).getByText("未携带")).toBeInTheDocument();
+    expect(within(legacy).getByText("无地址记录")).toBeInTheDocument();
+  });
+  it("查询日志将筛选条件发送到后端", async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ items: [] }));
+    vi.stubGlobal("fetch", fetcher);
+    render(<QueryDetails path="/me/queries" enabled />);
+    await screen.findByText("当前条件下暂无查询记录");
+
+    fireEvent.change(screen.getByLabelText("域名"), {
+      target: { value: "example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("查询类型"), {
+      target: { value: "AAAA" },
+    });
+    fireEvent.change(screen.getByLabelText("响应码"), {
+      target: { value: "NXDOMAIN" },
+    });
+    fireEvent.change(screen.getByLabelText("协议"), {
+      target: { value: "h3" },
+    });
+    fireEvent.change(screen.getByLabelText("客户端或 Answer IP"), {
+      target: { value: "192.0.2.1" },
+    });
+    fireEvent.change(screen.getByLabelText("缓存"), {
+      target: { value: "miss" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    const url = new URL(
+      String(fetcher.mock.calls[1][0]),
+      "https://example.test",
+    );
+    expect(url.searchParams.get("name")).toBe("example.com");
+    expect(url.searchParams.get("qtype")).toBe("AAAA");
+    expect(url.searchParams.get("rcode")).toBe("NXDOMAIN");
+    expect(url.searchParams.get("protocol")).toBe("h3");
+    expect(url.searchParams.get("address")).toBe("192.0.2.1");
+    expect(url.searchParams.get("cache")).toBe("miss");
   });
   it("初始会话服务失败时显示错误和重试入口", async () => {
     vi.stubGlobal(

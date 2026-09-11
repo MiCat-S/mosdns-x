@@ -99,7 +99,7 @@ export interface QueryRecord {
   cache_hit: boolean;
   protocol: string;
   answer_ips: string[];
-  edns: EDNSInfo;
+  edns?: EDNSInfo;
 }
 export interface EDNSInfo {
   present: boolean;

@@ -30,6 +30,7 @@ func (c *apiClock) Set(v time.Time) { c.mu.Lock(); c.t = v; c.mu.Unlock() }
 type fakeTelemetry struct {
 	mu      sync.Mutex
 	userIDs []string
+	filters []telemetry.QueryFilter
 }
 
 func (f *fakeTelemetry) Snapshot(_ context.Context, user string, from, to time.Time) (telemetry.StatsSnapshot, error) {
@@ -38,11 +39,43 @@ func (f *fakeTelemetry) Snapshot(_ context.Context, user string, from, to time.T
 	f.mu.Unlock()
 	return telemetry.StatsSnapshot{From: from, To: to, RcodeCounts: map[string]uint64{}, Series: []telemetry.SeriesPoint{}, Upstreams: []telemetry.UpstreamStats{}}, nil
 }
-func (f *fakeTelemetry) Queries(_ context.Context, user string, _, _ time.Time, p telemetry.Page) (telemetry.QueryPage, error) {
+func (f *fakeTelemetry) Queries(_ context.Context, user string, _, _ time.Time, filter telemetry.QueryFilter, p telemetry.Page) (telemetry.QueryPage, error) {
 	f.mu.Lock()
 	f.userIDs = append(f.userIDs, user)
+	f.filters = append(f.filters, filter)
 	f.mu.Unlock()
 	return telemetry.QueryPage{Items: []telemetry.QueryRecord{}}, nil
+}
+
+func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
+	f := newFixture(t)
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+	values := url.Values{
+		"user_id":       {f.user2.ID},
+		"name":          {"Example.COM"},
+		"qtype":         {"aaaa"},
+		"rcode":         {"nxdomain"},
+		"credential_id": {"device-1"},
+		"protocol":      {"H3"},
+		"address":       {"2001:db8::1"},
+		"cache":         {"hit"},
+	}
+	w := req(f.handler, http.MethodGet, "/api/v1/me/queries?"+values.Encode(), "", alice, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("queries=%d %s", w.Code, w.Body.String())
+	}
+	f.telemetry.mu.Lock()
+	gotUser := f.telemetry.userIDs[len(f.telemetry.userIDs)-1]
+	gotFilter := f.telemetry.filters[len(f.telemetry.filters)-1]
+	f.telemetry.mu.Unlock()
+	if gotUser != f.user1.ID || gotFilter.Name != "Example.COM" || gotFilter.QType != "AAAA" || gotFilter.Rcode != "NXDOMAIN" || gotFilter.CredentialID != "device-1" || gotFilter.Protocol != "h3" || gotFilter.Address != "2001:db8::1" || gotFilter.CacheHit == nil || !*gotFilter.CacheHit {
+		t.Fatalf("user=%q filter=%+v", gotUser, gotFilter)
+	}
+	for _, path := range []string{"/api/v1/me/queries?address=not-an-ip", "/api/v1/me/queries?cache=maybe"} {
+		if invalid := req(f.handler, http.MethodGet, path, "", alice, ""); invalid.Code != http.StatusBadRequest {
+			t.Fatalf("invalid filter %q=%d", path, invalid.Code)
+		}
+	}
 }
 
 type fixture struct {
