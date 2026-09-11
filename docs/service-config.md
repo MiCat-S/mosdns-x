@@ -20,7 +20,7 @@ control:
     - ::1/128
 ```
 
-使用 MySQL 时，`storage.driver: mysql` 会同时让未显式指定驱动的 `telemetry` 使用 MySQL，并复用控制存储的 DSN：
+使用 MySQL 5.7 或 8.4 时，`storage.driver: mysql` 会同时让未显式指定驱动的 `telemetry` 使用 MySQL，并复用控制存储的 DSN：
 
 ```yaml
 control:
