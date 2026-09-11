@@ -6,16 +6,13 @@
 
 ## 前提与网络规划
 
-准备一台 Ubuntu 或 Debian 主机，以及两个解析到该主机公网地址的域名。以下命令使用 Bash、sudo、Git、curl、Python 3 和 ca-certificates。构建要求 Go 1.26.3 或更新版本，以及 Node.js 22.22.2 或同一 22.x 主版本的更新版本。Go 和 Node.js 应分别按 [Go 官方安装说明](https://go.dev/doc/install)和 [Node.js 官方下载说明](https://nodejs.org/en/download)安装；基础工具可用系统包管理器安装：
+准备一台 Ubuntu 或 Debian 主机，以及两个解析到该主机公网地址的域名。生产二进制应在可信的本地构建机生成并发布到 [MiCat-S/mosdns-x Releases](https://github.com/MiCat-S/mosdns-x/releases)；部署机不安装 Git、Go、Node.js，也不 clone 或编译源码。若 GitHub 目前没有所需 Release，发布人应先按[发布流程](releasing.md)生成并发布资产。
 
-全文中的 `panel.example.com` 和 `dns.example.com` 都是占位符，部署前必须替换为自己控制且已正确解析的真实域名。
+部署命令使用 Bash、sudo、curl、Python 3、ca-certificates、unzip 和 sha256sum。全文中的 `panel.example.com` 和 `dns.example.com` 都是占位符，部署前必须替换为自己控制且已正确解析的真实域名。
 
 ```bash
 sudo apt update
-sudo apt install -y bash sudo git curl python3 ca-certificates
-go version
-node --version
-npm --version
+sudo apt install -y bash sudo curl python3 ca-certificates unzip coreutils
 ```
 
 部署前确认公网入口和云防火墙允许 `80/TCP`、`443/TCP` 与 `443/UDP`。Caddy 的 [Automatic HTTPS](https://caddyserver.com/docs/automatic-https)使用 80/443 端口完成重定向、证书验证和 HTTPS 服务；`443/UDP` 用于 HTTP/3。两个域名的 A/AAAA 记录都必须指向实际可达的地址。
@@ -28,22 +25,44 @@ npm --version
 | 管理端回源 | `127.0.0.1:18081` | Mosdns-x | 仅本机 |
 | DoH 明文回源 | `127.0.0.1:18443` | Mosdns-x | 仅本机 |
 
-多用户控制功能的代码基线是 `e2f134d`，部署时应从当前 Fork 的 `main` 取包含后续示例和修正的实际版本，并记录完整提交号。以下命令在 clone 完成后立即记录 HEAD，再切到该固定提交构建嵌入 UI 的二进制：
+多用户控制功能的代码基线是 `e2f134d`。部署时使用明确的 `<RELEASE_TAG>`，并按机器架构选择资产：
+
+| Linux 架构 | Release 资产 |
+| --- | --- |
+| x86-64 通用 | `mosdns-linux-amd64.zip` |
+| x86-64 且确认支持 GOAMD64 v3 | `mosdns-linux-amd64-v3.zip` |
+| ARM64 / aarch64 | `mosdns-linux-arm64.zip` |
+| 32 位 ARM v5/v6/v7 | `mosdns-linux-arm-5.zip` / `-6.zip` / `-7.zip` |
+| MIPS little-endian softfloat | `mosdns-linux-mipsle-softfloat.zip` |
+| MIPS64 little-endian hardfloat | `mosdns-linux-mips64le-hardfloat.zip` |
+| ppc64le | `mosdns-linux-ppc64le.zip` |
+
+`uname -m` 可帮助识别架构。只有明确确认 CPU 支持 x86-64-v3 时才选 v3 包；不确定时选择通用 amd64。下载 zip 和同一 Release 的 `SHA256SUMS`，提取且只校验所选资产对应的一行：
 
 ```bash
-git clone --branch main --single-branch https://github.com/MiCat-S/mosdns-x.git
-cd mosdns-x
-MOSDNS_BUILD_COMMIT=$(git rev-parse HEAD)
-git checkout --detach "$MOSDNS_BUILD_COMMIT"
-printf '构建提交: %s\n' "$MOSDNS_BUILD_COMMIT"
-
-npm ci --prefix web
-npm run build --prefix web
-CGO_ENABLED=0 go build -mod=readonly -tags ui -trimpath -o ./mosdns .
-sudo install -o root -g root -m 0755 ./mosdns /usr/local/bin/mosdns
+(
+set -euo pipefail
+RELEASE_TAG='<RELEASE_TAG>'
+ASSET='mosdns-linux-amd64.zip' # 按上表修改
+RELEASE_BASE="https://github.com/MiCat-S/mosdns-x/releases/download/$RELEASE_TAG"
+INSTALL_DIR=$(mktemp -d)
+chmod 0700 "$INSTALL_DIR"
+trap 'rm -rf "$INSTALL_DIR"' EXIT
+cd "$INSTALL_DIR"
+curl --fail --location --proto '=https' --proto-redir '=https' \
+  --output "$ASSET" "$RELEASE_BASE/$ASSET"
+curl --fail --location --proto '=https' --proto-redir '=https' \
+  --output SHA256SUMS "$RELEASE_BASE/SHA256SUMS"
+CHECKSUM_LINE=$(awk -v asset="$ASSET" '$2 == asset { print }' SHA256SUMS)
+test "$(printf '%s\n' "$CHECKSUM_LINE" | grep -c .)" -eq 1
+printf '%s\n' "$CHECKSUM_LINE" | sha256sum -c -
+mkdir extracted
+unzip -q "$ASSET" -d extracted
+sudo install -o root -g root -m 0755 extracted/mosdns /usr/local/bin/mosdns
+)
 ```
 
-把输出的完整 `MOSDNS_BUILD_COMMIT` 记入变更记录。`git checkout --detach` 固定了这次实际构建版本；后续升级也应明确记录新提交，不要让生产构建直接跟随移动分支。
+校验必须显示所选 zip 为 `OK` 后才能安装。Release 包已经嵌入管理 UI，部署机无需 Node.js 或单独的静态文件。把 Release tag、资产名和校验结果记入变更记录。
 
 ## 创建运行账户和目录
 
@@ -57,7 +76,9 @@ sudo install -d -o root -g mosdns -m 0750 /etc/mosdns
 sudo install -d -o mosdns -g mosdns -m 0700 /var/backups/mosdns
 ```
 
-首次启动前初始化唯一的管理员。密码必须为 12～1024 字节，只从标准输入读取。以下 Bash 命令采用静默输入，密码不会作为命令参数或出现在 shell 历史中：
+首次启动前初始化唯一的管理员。密码必须为 12～1024 字节，只在这次初始化时从标准输入读取，不能写进 YAML。配置文件经常进入 Git、备份和主机分发流程，把明文密码放入配置会扩大泄露范围。初始化后，密码属于可在线修改的账户状态；若 YAML 仍保留初始密码，还会产生重启时是否覆盖数据库现有密码的歧义。控制数据库只保存使用随机盐计算的 Argon2id 密码摘要，不保存可还原的明文。
+
+以下 Bash 命令采用静默输入，密码不会作为命令参数或出现在 shell 历史中：
 
 ```bash
 sudo -v
@@ -72,13 +93,14 @@ unset MOSDNS_ADMIN_PASSWORD
 
 标准输入只能有一行。初始化只允许空数据库；重复执行会失败，不会重置现有管理员。
 
+自动化初始化时，可由受控的 secret manager 在运行时把秘密直接写入该命令的 stdin，并在使用后清理临时变量或文件；不要把密码硬编码到配置、脚本、命令参数、环境清单或 CI 日志中。
+
 ## Mosdns-x 配置
 
-安装仓库中的 [生产反代示例](../examples/control-production-proxy.yaml)，再编辑真实域名和上游：
+仓库中的 [生产反代示例](../examples/control-production-proxy.yaml)与下文一致。部署机没有源码 checkout，因此先创建受限文件，再用 `sudoedit` 粘贴下文并修改真实域名和上游：
 
 ```bash
-sudo install -m 0640 -o root -g mosdns \
-  examples/control-production-proxy.yaml /etc/mosdns/config.yaml
+sudo install -m 0640 -o root -g mosdns /dev/null /etc/mosdns/config.yaml
 sudoedit /etc/mosdns/config.yaml
 ```
 
@@ -136,11 +158,38 @@ servers:
 
 ## systemd 服务
 
-仓库中的 [systemd 示例](../examples/mosdns.service)是本部署的标准单元。直接安装它可以避免文档副本和实际示例漂移：
+仓库中的 [systemd 示例](../examples/mosdns.service)是本部署的标准单元。部署机没有源码 checkout，因此创建文件并用 `sudoedit` 写入以下内容：
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  examples/mosdns.service /etc/systemd/system/mosdns.service
+sudo install -o root -g root -m 0644 /dev/null /etc/systemd/system/mosdns.service
+sudoedit /etc/systemd/system/mosdns.service
+```
+
+```ini
+[Unit]
+Description=mosdns multi-user DNS service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mosdns
+Group=mosdns
+WorkingDirectory=/var/lib/mosdns
+ExecStart=/usr/local/bin/mosdns start -c /etc/mosdns/config.yaml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mosdns
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 该单元以 `mosdns:mosdns` 运行，工作目录为 `/var/lib/mosdns`，将持久化写入限制在数据目录，同时通过 `PrivateTmp` 提供隔离的临时目录；它还设置 `UMask=0077`、`LimitNOFILE=65536` 和 30 秒停止超时，并启用基础 systemd 隔离。
@@ -163,10 +212,10 @@ sudo ss -lntp | grep -E '127\.0\.0\.1:(18081|18443)'
 
 按 [Caddy 官方 Debian/Ubuntu 安装说明](https://caddyserver.com/docs/install#debian-ubuntu-raspbian)添加官方软件源并安装发行包。要求使用 Caddy 2.11.4，或支持下列指令的更新版本；安装后用 `caddy version` 核对版本。官方软件包提供 systemd 服务。Caddy 默认支持 HTTPS，并在客户端和网络支持时提供 HTTP/3；反向代理语法见 [Caddy `reverse_proxy` 文档](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)。
 
-仓库中的 [Caddyfile 示例](../examples/Caddyfile)可用于一台新装且尚未承载其他网站的 Caddy 主机：
+仓库中的 [Caddyfile 示例](../examples/Caddyfile)可用于一台新装且尚未承载其他网站的 Caddy 主机。部署机没有源码 checkout，因此创建文件后用 `sudoedit` 写入下文：
 
 ```bash
-sudo install -o root -g root -m 0644 examples/Caddyfile /etc/caddy/Caddyfile
+sudo install -o root -g root -m 0644 /dev/null /etc/caddy/Caddyfile
 sudoedit /etc/caddy/Caddyfile
 ```
 
@@ -329,7 +378,7 @@ sudo -u mosdns /usr/local/bin/mosdns control restore \
 
 随后将 `/etc/mosdns/config.yaml` 的 `control.database` 改为新路径，检查属主和 `0600` 权限，再启动服务并验证管理员登录、用户额度和已有设备凭证。恢复不会覆盖当前数据库，确认无误前应保留原文件。
 
-升级构建应在维护窗口外完成：记录当前提交和二进制，检出并记录固定的新提交，构建到单独路径并完成基本检查。进入维护窗口后才停止服务、制作离线备份、安装新二进制并启动，然后检查日志、面板、DoH 和额度。
+升级包应由发布人在可信构建机提前生成。维护窗口外先按本页下载流程取得新 tag 的架构匹配 zip，精确校验 SHA-256 并解压到单独临时目录。进入维护窗口后才停止服务、制作离线备份、安装已校验的新二进制并启动，然后检查日志、面板、DoH 和额度。生产机始终无需源码和构建工具。
 
 回滚前必须先停止服务并判断数据兼容性。若新版本没有迁移数据库且旧程序能读取现库，恢复旧二进制可保留升级后的真实用量；若数据库已经发生不向后兼容的迁移，只能把升级前备份恢复到一个新路径。后者会丢失升级后已经受理的用量，不能无条件执行，应延长停服窗口、核对这段期间的计量并制定补偿方案，再由管理员决定恢复点。不要让旧程序直接试开可能已迁移的生产数据库。
 

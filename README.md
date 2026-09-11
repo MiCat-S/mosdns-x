@@ -21,8 +21,10 @@ Mosdns-x 是一个用 Go 编写的高性能 DNS 转发器，支持运行插件�
 
 上述上游发布链接对应原版。构建本 Fork 的网页版本及初始化账户，请阅读：
 
+- [本 Fork 的预编译 Release](https://github.com/MiCat-S/mosdns-x/releases)
 - [部署教程：Ubuntu / Debian + Caddy](docs/deployment.md)
 - [构建说明](docs/building.md)
+- [本地构建并发布 GitHub Release](docs/releasing.md)
 - [配置与本地示例](docs/service-config.md)
 - [初始化、运行与备份恢复](docs/operations.md)
 - [服务架构](docs/service-architecture.md)与 [API 契约](docs/control-api.md)

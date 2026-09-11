@@ -1,54 +1,77 @@
-name: Release mosdns-x
+name: Verify release assets
 
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
 
 jobs:
-
-  build-release:
-    runs-on: ubuntu-24.04
+  verify-assets:
+    runs-on: ubuntu-latest
     steps:
-      - name: get latest go 1.26 version
-        id: go
-        run: |
-          echo version=$(curl -s https://raw.githubusercontent.com/actions/go-versions/update-versions-manifest-file/versions-manifest.json | grep -oE '"version": "1\.26(\.[0-9]{1,})?"' | head -1 | cut -d':' -f2 | sed 's/ //g; s/"//g') >> $GITHUB_OUTPUT
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - name: Check out release tag
+        uses: actions/checkout@v4.2.2
         with:
-          go-version: ${{steps.go.outputs.version}}
-          cache: false
+          ref: ${{ github.event.release.tag_name }}
 
-      - uses: actions/checkout@v4.2.2
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Set up Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.8'
-
-      - name: Build
-        run: |
-          echo "TAG_NAME=v$(date +'%y.%m.%d')" >> "$GITHUB_ENV"
-          python ./release.py
+      - name: Verify uploaded archives and checksums
         env:
-          CGO_ENABLED: '0'
-          TZ: Asia/Hong_Kong
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Publish
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Mosdns-x ${{ env.TAG_NAME }}
-          tag_name: ${{ env.TAG_NAME }}
-          files: './release/mosdns*.zip'
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          expected=(
+            mosdns-darwin-amd64.zip
+            mosdns-darwin-arm64.zip
+            mosdns-linux-amd64.zip
+            mosdns-linux-amd64-v3.zip
+            mosdns-linux-arm-5.zip
+            mosdns-linux-arm-6.zip
+            mosdns-linux-arm-7.zip
+            mosdns-linux-arm64.zip
+            mosdns-linux-mipsle-softfloat.zip
+            mosdns-linux-mips64le-hardfloat.zip
+            mosdns-linux-ppc64le.zip
+            mosdns-freebsd-amd64.zip
+            mosdns-windows-amd64.zip
+          )
+
+          asset_names="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" \
+            --paginate --jq '.[].name')"
+
+          for asset in "${expected[@]}" SHA256SUMS; do
+            if ! grep -Fqx -- "$asset" <<<"$asset_names"; then
+              echo "Missing release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          artifact_dir="${RUNNER_TEMP}/release-assets"
+          mkdir -p "$artifact_dir"
+          for asset in "${expected[@]}" SHA256SUMS; do
+            gh release download "$RELEASE_TAG" \
+              --dir "$artifact_dir" --pattern "$asset"
+          done
+
+          awk '{ name=$2; sub(/^\*/, "", name); print name }' \
+            "$artifact_dir/SHA256SUMS" | LC_ALL=C sort >"$artifact_dir/checksum-files"
+          printf '%s\n' "${expected[@]}" | LC_ALL=C sort >"$artifact_dir/expected-files"
+          if ! diff -u "$artifact_dir/expected-files" "$artifact_dir/checksum-files"; then
+            echo "SHA256SUMS must list exactly the 13 release archives" >&2
+            exit 1
+          fi
+
+          cd "$artifact_dir"
+          sha256sum -c SHA256SUMS
+
+          release_commit="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          for asset in "${expected[@]}"; do
+            test "$(unzip -p "$asset" BUILD-INFO.txt | sed -n 's/^version=//p')" = "$RELEASE_TAG"
+            test "$(unzip -p "$asset" BUILD-INFO.txt | sed -n 's/^commit=//p')" = "$release_commit"
+          done
