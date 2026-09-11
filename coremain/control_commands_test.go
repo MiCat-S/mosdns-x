@@ -70,6 +70,26 @@ func TestControlInitAdminFromStdin(t *testing.T) {
 	}
 }
 
+func TestControlInitAdminReadsStorageFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	database := filepath.Join(dir, "control.db")
+	config := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(config, []byte("control:\n  database: "+database+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeControl(t, context.Background(), "admin-password-value\n", "init-admin", "--config", config, "--username", "root"); err != nil {
+		t.Fatal(err)
+	}
+	store, err := control.Open(database, control.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.AuthenticatePassword(context.Background(), "root", "admin-password-value"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestControlPasswordInputValidation(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "db")
 	for name, input := range map[string]string{"multiple": "valid-password\nextra\n", "too_long": strings.Repeat("x", 1025) + "\r\n", "too_short": "short\n"} {
@@ -85,6 +105,23 @@ func TestControlPasswordInputValidation(t *testing.T) {
 	}
 	if _, err := executeControl(t, context.Background(), "valid-password\n", "init-admin", "--database", db); err == nil {
 		t.Fatal("missing username accepted")
+	}
+	if _, err := executeControl(t, context.Background(), "valid-password\n", "init-admin", "--database", db, "--mysql-dsn", "user:pass@tcp(localhost:3306)/mosdns", "--username", "root"); err == nil {
+		t.Fatal("multiple storage targets accepted")
+	}
+}
+
+func TestControlMigrateMySQLDryRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.db")
+	if _, err := executeControl(t, context.Background(), "admin-password-value\n", "init-admin", "--database", path, "--username", "root"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeControl(t, context.Background(), "", "migrate-mysql", "--component", "control", "--database", path, "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "用户 1") || !strings.Contains(out, "未连接或修改 MySQL") {
+		t.Fatalf("output=%q", out)
 	}
 }
 

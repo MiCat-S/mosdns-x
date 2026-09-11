@@ -71,8 +71,8 @@ type Mosdns struct {
 	providers         []*data_provider.DataProvider
 	servers           []*server.Server
 	ownedClosers      []io.Closer
-	control           *control.Store
-	telemetry         *telemetry.Store
+	control           control.Service
+	telemetry         telemetry.Service
 	controlCfg        *ControlConfig
 	trustedProxies    []netip.Prefix
 	maintenanceCancel context.CancelFunc
@@ -111,7 +111,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 	if cfg.Control != nil {
 		m.trustedProxies = trustedProxies
 		m.controlCfg = cfg.Control
-		m.control, err = control.Open(cfg.Control.Database, control.Options{})
+		m.control, err = openControlStore(cfg.Control)
 		if err != nil {
 			return fmt.Errorf("failed to open control database: %w", err)
 		}
@@ -122,16 +122,20 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if len(users.Items) == 0 {
 			return errors.New("control database has no administrator; run control init-admin first")
 		}
-		m.telemetry, err = telemetry.Open(telemetry.Options{Path: cfg.Control.StatsDatabase, QueryLogEnabled: cfg.Control.QueryLog})
+		m.telemetry, err = openTelemetryStore(cfg.Control)
 		if err != nil {
 			return fmt.Errorf("failed to open telemetry database: %w", err)
 		}
 		maintCtx, cancel := context.WithCancel(context.Background())
 		m.maintenanceCancel = cancel
+		maintainer, ok := m.control.(control.Maintainer)
+		if !ok {
+			return errors.New("control backend does not implement maintenance")
+		}
 		m.maintenanceWG.Add(1)
 		go func() {
 			defer m.maintenanceWG.Done()
-			if err := m.control.RunMaintenance(maintCtx, time.Hour); err != nil && !errors.Is(err, context.Canceled) {
+			if err := maintainer.RunMaintenance(maintCtx, time.Hour); err != nil && !errors.Is(err, context.Canceled) {
 				m.logger.Error("control maintenance stopped", zap.Error(err))
 				m.sc.SendCloseSignal(fmt.Errorf("control maintenance stopped: %w", err))
 			}
@@ -212,7 +216,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if cfg.Control != nil {
 			startedAt := time.Now()
 			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(context.Context) (controlapi.SystemInfo, error) {
-				return controlapi.SystemInfo{Version: constant.Version, StartedAt: startedAt, PublicDNSURL: cfg.Control.PublicDNSURL, QueryLogEnabled: cfg.Control.QueryLog, Config: controlapi.SystemConfig{DNSProtocols: configuredDNSProtocols(cfg), ManagementEnabled: true, PprofEnabled: cfg.Control.EnablePprof}}, nil
+				return controlapi.SystemInfo{Version: constant.Version, StartedAt: startedAt, PublicDNSURL: cfg.Control.PublicDNSURL, QueryLogEnabled: cfg.Control.QueryLog, Config: controlapi.SystemConfig{DNSProtocols: configuredDNSProtocols(cfg), ManagementEnabled: true, PprofEnabled: cfg.Control.EnablePprof, ControlStorage: effectiveControlDriver(cfg.Control), TelemetryStorage: effectiveTelemetryDriver(cfg.Control)}}, nil
 			}})
 			if err != nil {
 				return fmt.Errorf("failed to init control api: %w", err)

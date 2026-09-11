@@ -39,14 +39,37 @@ type Config struct {
 }
 
 type ControlConfig struct {
-	Database       string   `yaml:"database"`
-	StatsDatabase  string   `yaml:"stats_database"`
-	PublicDNSURL   string   `yaml:"public_dns_url"`
-	PanelOrigin    string   `yaml:"panel_origin"`
-	Development    bool     `yaml:"development"`
-	QueryLog       bool     `yaml:"query_log"`
-	EnablePprof    bool     `yaml:"enable_pprof"`
-	TrustedProxies []string `yaml:"trusted_proxies"`
+	Database       string          `yaml:"database"`
+	StatsDatabase  string          `yaml:"stats_database"`
+	PublicDNSURL   string          `yaml:"public_dns_url"`
+	PanelOrigin    string          `yaml:"panel_origin"`
+	Development    bool            `yaml:"development"`
+	QueryLog       bool            `yaml:"query_log"`
+	EnablePprof    bool            `yaml:"enable_pprof"`
+	TrustedProxies []string        `yaml:"trusted_proxies"`
+	Storage        StorageConfig   `yaml:"storage"`
+	Telemetry      TelemetryConfig `yaml:"telemetry"`
+}
+
+type StorageConfig struct {
+	Driver string      `yaml:"driver"`
+	MySQL  MySQLConfig `yaml:"mysql"`
+}
+
+type TelemetryConfig struct {
+	Driver          string      `yaml:"driver"`
+	MySQL           MySQLConfig `yaml:"mysql"`
+	QueueSize       int         `yaml:"queue_size"`
+	BatchSize       int         `yaml:"batch_size"`
+	FlushIntervalMS int         `yaml:"flush_interval_ms"`
+}
+
+type MySQLConfig struct {
+	DSN                string `yaml:"dsn"`
+	MaxOpenConns       int    `yaml:"max_open_conns"`
+	MaxIdleConns       int    `yaml:"max_idle_conns"`
+	ConnMaxLifetimeSec int    `yaml:"conn_max_lifetime_sec"`
+	OperationTimeoutMS int    `yaml:"operation_timeout_ms"`
 }
 
 // PluginConfig represents a plugin config

@@ -129,5 +129,12 @@ export interface SystemInfo {
   started_at: string;
   public_dns_url: string;
   query_log_enabled: boolean;
-  config: Record<string, unknown>;
+  config: SystemConfig;
+}
+export interface SystemConfig {
+  dns_protocols: string[];
+  management_enabled: boolean;
+  pprof_enabled: boolean;
+  control_storage: string;
+  telemetry_storage: string;
 }

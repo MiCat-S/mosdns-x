@@ -1,0 +1,57 @@
+log:
+  level: info
+
+control:
+  public_dns_url: https://dns.example.com/dns-query
+  panel_origin: https://panel.example.com
+  development: false
+  query_log: true
+  enable_pprof: false
+  trusted_proxies:
+    - 127.0.0.1/32
+
+  storage:
+    driver: mysql
+    mysql:
+      dsn: "mosdns:CHANGE_ME@tcp(127.0.0.1:3306)/mosdns?charset=utf8mb4&timeout=5s&readTimeout=5s&writeTimeout=5s"
+      max_open_conns: 32
+      max_idle_conns: 8
+      conn_max_lifetime_sec: 1800
+      operation_timeout_ms: 1500
+
+  # 统计后端默认跟随控制后端，并复用 storage.mysql.dsn。
+  telemetry:
+    driver: mysql
+    queue_size: 8192
+    batch_size: 256
+    flush_interval_ms: 1000
+
+api:
+  http: 127.0.0.1:18081
+
+plugins:
+  - tag: cache
+    type: cache
+    args:
+      size: 10240
+
+  - tag: upstream
+    type: fast_forward
+    args:
+      upstream:
+        - addr: udp://1.1.1.1:53
+        - addr: udp://9.9.9.9:53
+
+  - tag: main
+    type: sequence
+    args:
+      exec:
+        - cache
+        - upstream
+
+servers:
+  - exec: main
+    listeners:
+      - protocol: http
+        addr: 127.0.0.1:18443
+        url_path: /dns-query

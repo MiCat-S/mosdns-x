@@ -115,9 +115,9 @@ export default function UsageChart({
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
     const resultSeries = [
-      line("已完成", "#2667ff", series, "completed"),
-      line("失败", "#d84c4c", series, "failed"),
-      line("缓存命中", "#16a078", series, "cache_hits"),
+      line("已完成", "#0f9f92", series, "completed"),
+      line("失败", "#e05263", series, "failed"),
+      line("缓存命中", "#5974e8", series, "cache_hits"),
     ];
     const bounds = timeAxisBounds(from, to);
     chart.setOption({
@@ -138,7 +138,7 @@ export default function UsageChart({
       yAxis: { type: "value", minInterval: 1 },
       series:
         kind === "usage"
-          ? [line("已受理", "#2667ff", series, "completed")]
+          ? [line("已受理", "#0f9f92", series, "completed")]
           : resultSeries,
     });
     const resize = () => chart.resize();

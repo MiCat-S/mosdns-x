@@ -134,25 +134,89 @@ export function useLoad<T>(
   return { data, error, loading, setData };
 }
 
-const adminNav = [
-  ["/admin", "总览", "⌁"],
-  ["/admin/users", "用户", "♙"],
-  ["/admin/audit", "审计", "◷"],
-  ["/admin/system", "系统", "⚙"],
+type NavIconName =
+  | "overview"
+  | "users"
+  | "audit"
+  | "system"
+  | "usage"
+  | "credential"
+  | "password";
+type NavItem = { to: string; label: string; icon: NavIconName };
+
+const adminNav: NavItem[] = [
+  { to: "/admin", label: "总览", icon: "overview" },
+  { to: "/admin/users", label: "用户", icon: "users" },
+  { to: "/admin/audit", label: "审计", icon: "audit" },
+  { to: "/admin/system", label: "系统", icon: "system" },
 ];
-const userNav = [
-  ["/app", "我的服务", "⌁"],
-  ["/app/usage", "用量", "▥"],
-  ["/app/credentials", "凭证", "⌘"],
-  ["/app/password", "密码", "●"],
+const userNav: NavItem[] = [
+  { to: "/app", label: "我的服务", icon: "overview" },
+  { to: "/app/usage", label: "用量", icon: "usage" },
+  { to: "/app/credentials", label: "凭证", icon: "credential" },
+  { to: "/app/password", label: "密码", icon: "password" },
 ];
+
+function NavIcon({ name }: { name: NavIconName }) {
+  const paths: Record<NavIconName, ReactNode> = {
+    overview: (
+      <>
+        <path d="M4 13h6V4H4v9Zm0 7h6v-4H4v4Zm10 0h6v-9h-6v9Zm0-16v4h6V4h-6Z" />
+      </>
+    ),
+    users: (
+      <>
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+      </>
+    ),
+    audit: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </>
+    ),
+    system: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.55V21h-4v-.08A1.7 1.7 0 0 0 8.94 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.57 15 1.7 1.7 0 0 0 3 14H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.57 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15.06 4.6a1.7 1.7 0 0 0 1.88-.34L17 4.2 19.83 7l-.06.06A1.7 1.7 0 0 0 19.43 9 1.7 1.7 0 0 0 21 10h.08v4H21a1.7 1.7 0 0 0-1.6 1Z" />
+      </>
+    ),
+    usage: (
+      <>
+        <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
+      </>
+    ),
+    credential: (
+      <>
+        <circle cx="8" cy="15" r="4" />
+        <path d="m11 12 8-8 2 2-2 2 2 2-3 3-2-2-2 2" />
+      </>
+    ),
+    password: (
+      <>
+        <rect x="4" y="10" width="16" height="11" rx="2" />
+        <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2" />
+      </>
+    ),
+  };
+  return (
+    <svg aria-hidden viewBox="0 0 24 24">
+      {paths[name]}
+    </svg>
+  );
+}
 export function Shell() {
   const { session, logout } = useSession();
   const navigate = useNavigate();
   const [logoutError, setLogoutError] = useState("");
   const admin = session?.user.role === "admin";
   const links = admin
-    ? [...adminNav, ["/admin/password", "密码", "●"]]
+    ? [
+        ...adminNav,
+        { to: "/admin/password", label: "密码", icon: "password" as const },
+      ]
     : userNav;
   async function exit() {
     setLogoutError("");
@@ -168,19 +232,30 @@ export function Shell() {
       <aside>
         <NavLink className="brand" to={admin ? "/admin" : "/app"}>
           <span className="brandmark">M</span>
-          <span>MosDNS</span>
+          <span className="brand-copy">
+            <strong>MosDNS</strong>
+            <small>Control Center</small>
+          </span>
         </NavLink>
+        <span className="nav-caption">{admin ? "管理控制台" : "用户中心"}</span>
         <nav aria-label="主导航">
-          {links.map(([to, label, icon], i) => (
+          {links.map(({ to, label, icon }, i) => (
             <NavLink key={to} to={to} end={i === 0}>
-              <i aria-hidden>{icon}</i>
-              {label}
+              <i>
+                <NavIcon name={icon} />
+              </i>
+              <span>{label}</span>
             </NavLink>
           ))}
         </nav>
         <div className="account">
-          <span>{session?.user.username}</span>
-          <small>{admin ? "管理员" : "用户"}</small>
+          <span className="account-avatar" aria-hidden>
+            {session?.user.username.slice(0, 1).toUpperCase()}
+          </span>
+          <span className="account-copy">
+            <strong>{session?.user.username}</strong>
+            <small>{admin ? "管理员" : "用户"}</small>
+          </span>
           <button className="link" onClick={exit}>
             退出登录
           </button>

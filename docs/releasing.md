@@ -92,6 +92,7 @@ README.md
 config.yaml
 LICENSE
 examples/control-production-proxy.yaml
+examples/control-production-mysql.yaml
 examples/Caddyfile
 examples/mosdns.service
 BUILD-INFO.txt
@@ -106,7 +107,7 @@ rm -f /tmp/mosdns-expected-assets /tmp/mosdns-actual-assets \
   /tmp/mosdns-expected-members /tmp/mosdns-actual-members
 ```
 
-Windows 包的程序名为 `mosdns.exe`，其他包为 `mosdns`。每个包还包含 `README.md`、`config.yaml`、`LICENSE`、`BUILD-INFO.txt` 和三个生产部署示例。检查生成的 `config.yaml` 不含密码、token 或环境秘密。管理员密码不属于发布配置：部署时只通过 `control init-admin` 的 stdin 输入一次，数据库只保存随机盐和 Argon2id 摘要。
+Windows 包的程序名为 `mosdns.exe`，其他包为 `mosdns`。每个包还包含 `README.md`、`config.yaml`、`LICENSE`、`BUILD-INFO.txt` 和四个生产部署示例。检查生成的 `config.yaml` 不含密码、token 或环境秘密。管理员密码不属于发布配置：部署时只通过 `control init-admin` 的 stdin 输入一次，数据库只保存随机盐和 Argon2id 摘要。
 
 脚本会生成一个覆盖全部且仅覆盖这 13 个 zip 的校验文件。核对文件名清单并立即复验，不要在检查阶段重新生成或覆盖它：
 

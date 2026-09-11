@@ -101,6 +101,8 @@ unset MOSDNS_ADMIN_PASSWORD
 
 仓库中的 [生产反代示例](../examples/control-production-proxy.yaml)与下文一致。部署机没有源码 checkout，因此先创建受限文件，再用 `sudoedit` 粘贴下文并修改真实域名和上游：
 
+需要把账户、额度和统计集中保存到 MySQL 时，改用 [MySQL 生产示例](../examples/control-production-mysql.yaml)，并按[存储文档](storage.md)初始化或迁移数据。反向代理和 systemd 监听方式无需因此改变。
+
 ```bash
 sudo install -m 0640 -o root -g mosdns /dev/null /etc/mosdns/config.yaml
 sudoedit /etc/mosdns/config.yaml

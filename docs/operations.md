@@ -1,6 +1,6 @@
 # 多用户 DoH / DoH3 运维
 
-多用户控制服务按单机、单 Mosdns-x 实例设计。账户状态、设备凭证、QPS 状态和额度扣减保存在同一个 bbolt 数据库中；不要让两个服务实例同时使用同一数据库，也不要用多副本负载均衡共享同一份额度。
+多用户控制服务支持 bbolt 与 MySQL，当前仍按单机、单 Mosdns-x 实例部署和验收。bbolt 适合零依赖运行；MySQL 适合数据持续增长以及使用数据库集中备份的部署。MySQL 的额度扣减和 QPS 状态在行锁事务中更新，但多实例的热点用户性能及故障切换尚未作为生产能力验收。
 
 ## 本地初始化与启动
 
@@ -19,6 +19,16 @@ unset MOSDNS_ADMIN_PASSWORD
 
 命令会以 `0700` 创建缺失的父目录，但不会修改已有目录的权限；数据库文件为 `0600`。`init-admin` 只允许空数据库。初始管理员启用，周期为每日、时区 UTC、周期额度 1,000,000、QPS 1,000、突发量 100、最多 10 个活跃设备凭证。启动后可在管理面板调整这些值。
 
+控制数据使用 MySQL 时，把同一段密码输入改为：
+
+```bash
+printf '%s\n' "$MOSDNS_ADMIN_PASSWORD" | mosdns control init-admin \
+  --config /etc/mosdns/config.yaml \
+  --username admin
+```
+
+`--config` 会按 `control.storage.driver` 选择 bbolt 或 MySQL。也可直接使用 `--database` 或 `--mysql-dsn`，三者必须选择一个。MySQL DSN 放在权限受限的 Mosdns 配置中；面板管理员密码仍只从 stdin 输入，不能写进 YAML。完整参数和迁移步骤见[存储文档](storage.md)。
+
 上面的数据库路径与仓库内的 [本地示例](../examples/control-local.yaml) 一致，仅用于回环地址测试。完成初始化后，在仓库根目录启动：
 
 ```sh
@@ -35,9 +45,11 @@ mosdns start -c examples/control-local.yaml
 
 设备专属 DoH URL 和 `Authorization: Bearer` 值都是秘密。代理访问日志、错误日志、追踪系统和监控标签应删除 URL 中的设备 token，并删除 `Authorization`、Cookie 和 `X-CSRF-Token`。不要让 CDN、共享代理或浏览器缓存缓存 DNS 响应、管理 API、会话响应或含凭证的页面。管理 API 响应已发送 `Cache-Control: no-store`，外围代理仍需遵守该响应头。
 
-查询配额在请求被持久化受理时扣减一次。之后的缓存命中、上游失败或 DNS 执行失败不会退款；客户端重试是新的请求。系统只支持单实例严格额度，不能用多个独立数据库实例拼成共享额度。
+查询配额在请求被持久化受理时扣减一次。之后的缓存命中、上游失败或 DNS 执行失败不会退款；客户端重试是新的请求。统计数据异步批量落库，存储故障时可能丢失统计明细，但不会撤销已经提交的计费扣减。
 
 ## 备份
+
+本节命令仅适用于 bbolt。MySQL 部署使用数据库原生备份与恢复工具，并覆盖所有 `mosdns_*` 表。
 
 CLI 备份要求数据库处于离线、未加锁状态；命令不会自动停止生产实例。先进入维护窗口并正常停止 Mosdns-x，再运行：
 

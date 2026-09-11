@@ -39,7 +39,23 @@ func TestValidateControlConfig(t *testing.T) {
 		want   string
 	}{
 		{name: "valid"},
+		{name: "valid mysql", change: func(c *Config) {
+			c.Control.Database = ""
+			c.Control.StatsDatabase = ""
+			c.Control.Storage = StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: "mosdns:secret@tcp(127.0.0.1:3306)/mosdns"}}
+		}},
 		{name: "same database", change: func(c *Config) { c.Control.StatsDatabase = c.Control.Database }, want: "must differ"},
+		{name: "mysql dsn required", change: func(c *Config) {
+			c.Control.Storage.Driver = "mysql"
+		}, want: "mysql dsn is required"},
+		{name: "mysql pool bounds", change: func(c *Config) {
+			c.Control.Storage = StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: "mosdns:secret@tcp(127.0.0.1:3306)/mosdns", MaxOpenConns: 2, MaxIdleConns: 3}}
+		}, want: "max_idle_conns"},
+		{name: "mysql control with bbolt telemetry", change: func(c *Config) {
+			c.Control.Database = ""
+			c.Control.Storage = StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: "mosdns:secret@tcp(127.0.0.1:3306)/mosdns"}}
+			c.Control.Telemetry.Driver = "bbolt"
+		}},
 		{name: "public api", change: func(c *Config) { c.API.HTTP = "0.0.0.0:8080" }, want: "loopback"},
 		{name: "public raw dns", change: func(c *Config) { c.Servers[0].Listeners[0].Protocol = "udp" }, want: "raw DNS"},
 		{name: "proxy protocol", change: func(c *Config) { c.Servers[0].Listeners[0].ProxyProtocol = true }, want: "proxy_protocol"},

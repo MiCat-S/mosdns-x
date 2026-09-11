@@ -9,8 +9,10 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pmkol/mosdns-x/internal/control"
+	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/query_access"
 )
@@ -20,13 +22,40 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	if c == nil {
 		return nil, nil, nil
 	}
-	if c.Database == "" || c.StatsDatabase == "" {
-		return nil, nil, errors.New("control database and stats_database are required")
+	controlDriver := effectiveControlDriver(c)
+	telemetryDriver := effectiveTelemetryDriver(c)
+	if controlDriver != "bbolt" && controlDriver != "mysql" {
+		return nil, nil, fmt.Errorf("unsupported control storage driver %q", controlDriver)
 	}
-	db, _ := filepath.Abs(c.Database)
-	stats, _ := filepath.Abs(c.StatsDatabase)
-	if filepath.Clean(db) == filepath.Clean(stats) {
-		return nil, nil, errors.New("control database and stats_database must differ")
+	if telemetryDriver != "bbolt" && telemetryDriver != "mysql" {
+		return nil, nil, fmt.Errorf("unsupported telemetry storage driver %q", telemetryDriver)
+	}
+	if controlDriver == "bbolt" && c.Database == "" {
+		return nil, nil, errors.New("control database is required for bbolt storage")
+	}
+	if telemetryDriver == "bbolt" && c.StatsDatabase == "" {
+		return nil, nil, errors.New("control stats_database is required for bbolt telemetry")
+	}
+	if controlDriver == "bbolt" && telemetryDriver == "bbolt" {
+		db, _ := filepath.Abs(c.Database)
+		stats, _ := filepath.Abs(c.StatsDatabase)
+		if filepath.Clean(db) == filepath.Clean(stats) {
+			return nil, nil, errors.New("control database and stats_database must differ")
+		}
+	}
+	if controlDriver == "mysql" {
+		if err := validateMySQLConfig(c.Storage.MySQL, "control storage"); err != nil {
+			return nil, nil, err
+		}
+	}
+	if telemetryDriver == "mysql" {
+		mysqlCfg := effectiveTelemetryMySQL(c)
+		if err := validateMySQLConfig(mysqlCfg, "telemetry storage"); err != nil {
+			return nil, nil, err
+		}
+	}
+	if c.Telemetry.QueueSize < 0 || c.Telemetry.BatchSize < 0 || c.Telemetry.FlushIntervalMS < 0 {
+		return nil, nil, errors.New("telemetry queue, batch and flush settings cannot be negative")
 	}
 	u, err := url.Parse(c.PublicDNSURL)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -88,6 +117,67 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	return u, trusted, nil
 }
 
+func effectiveControlDriver(c *ControlConfig) string {
+	driver := strings.ToLower(strings.TrimSpace(c.Storage.Driver))
+	if driver == "" {
+		return "bbolt"
+	}
+	return driver
+}
+
+func effectiveTelemetryDriver(c *ControlConfig) string {
+	driver := strings.ToLower(strings.TrimSpace(c.Telemetry.Driver))
+	if driver == "" {
+		if effectiveControlDriver(c) == "mysql" {
+			return "mysql"
+		}
+		return "bbolt"
+	}
+	return driver
+}
+
+func effectiveTelemetryMySQL(c *ControlConfig) MySQLConfig {
+	result := c.Telemetry.MySQL
+	if strings.TrimSpace(result.DSN) == "" {
+		result.DSN = c.Storage.MySQL.DSN
+	}
+	return result
+}
+
+func validateMySQLConfig(c MySQLConfig, name string) error {
+	if strings.TrimSpace(c.DSN) == "" {
+		return fmt.Errorf("%s mysql dsn is required", name)
+	}
+	if c.MaxOpenConns < 0 || c.MaxIdleConns < 0 || c.ConnMaxLifetimeSec < 0 || c.OperationTimeoutMS < 0 {
+		return fmt.Errorf("%s mysql pool and timeout settings cannot be negative", name)
+	}
+	if c.MaxOpenConns > 0 && c.MaxIdleConns > c.MaxOpenConns {
+		return fmt.Errorf("%s mysql max_idle_conns exceeds max_open_conns", name)
+	}
+	return nil
+}
+
+func mysqlDurations(c MySQLConfig) (time.Duration, time.Duration) {
+	return time.Duration(c.ConnMaxLifetimeSec) * time.Second, time.Duration(c.OperationTimeoutMS) * time.Millisecond
+}
+
+func openControlStore(c *ControlConfig) (control.Service, error) {
+	if effectiveControlDriver(c) == "bbolt" {
+		return control.Open(c.Database, control.Options{})
+	}
+	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
+	return control.OpenMySQL(control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})
+}
+
+func openTelemetryStore(c *ControlConfig) (telemetry.Service, error) {
+	if effectiveTelemetryDriver(c) == "bbolt" {
+		return telemetry.Open(telemetry.Options{Path: c.StatsDatabase, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog})
+	}
+	mysqlCfg := effectiveTelemetryMySQL(c)
+	lifetime, timeout := mysqlDurations(mysqlCfg)
+	return telemetry.OpenMySQL(telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog})
+}
+
 func loopbackHost(host string) bool {
 	if host == "localhost" {
 		return true
@@ -131,7 +221,7 @@ func identity(p query_context.Principal) control.Identity {
 	return control.Identity{UserID: p.UserID, CredentialID: p.CredentialID, CredentialVersion: p.CredentialVersion}
 }
 
-func authenticate(store *control.Store) func(context.Context, string) (query_context.Principal, error) {
+func authenticate(store control.Service) func(context.Context, string) (query_context.Principal, error) {
 	return func(ctx context.Context, token string) (query_context.Principal, error) {
 		v, err := store.AuthenticateCredential(ctx, token)
 		if err != nil {
@@ -141,7 +231,7 @@ func authenticate(store *control.Store) func(context.Context, string) (query_con
 	}
 }
 
-func admit(store *control.Store) func(context.Context, query_context.Principal) error {
+func admit(store control.Service) func(context.Context, query_context.Principal) error {
 	return func(ctx context.Context, p query_context.Principal) error {
 		if err := store.Admit(ctx, identity(p)); err != nil {
 			return accessError(err)

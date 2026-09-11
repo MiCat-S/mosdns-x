@@ -50,3 +50,34 @@ jobs:
 
       - name: Build with embedded frontend
         run: go build -tags ui
+
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: mosdns_test
+          MYSQL_USER: mosdns
+          MYSQL_PASSWORD: mosdns-test-password
+          MYSQL_ROOT_PASSWORD: root-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root --password=root-test-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test MySQL backends
+        env:
+          MOSDNS_TEST_MYSQL_DSN: "mosdns:mosdns-test-password@tcp(127.0.0.1:3306)/mosdns_test?charset=utf8mb4&timeout=5s&readTimeout=5s&writeTimeout=5s"
+        run: go test ./internal/control ./internal/telemetry

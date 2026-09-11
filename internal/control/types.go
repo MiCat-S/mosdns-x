@@ -151,3 +151,8 @@ type Service interface {
 	ListAudit(ctx context.Context, from, to time.Time, page Page) (PageResult[AuditRecord], error)
 	Close() error
 }
+
+type Maintainer interface {
+	Maintain(context.Context) error
+	RunMaintenance(context.Context, time.Duration) error
+}

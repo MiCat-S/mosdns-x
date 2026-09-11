@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/pmkol/mosdns-x/internal/control"
+	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
 
 const maxPasswordInput = 1026 // 1024-byte password plus one CRLF line ending.
@@ -19,15 +21,38 @@ func init() { AddSubCmd(newControlCommand()) }
 
 func newControlCommand() *cobra.Command {
 	c := &cobra.Command{Use: "control", Short: "Manage the multi-user control database", SilenceUsage: true}
-	c.AddCommand(newControlInitAdminCommand(), newControlBackupCommand(), newControlRestoreCommand())
+	c.AddCommand(newControlInitAdminCommand(), newControlBackupCommand(), newControlRestoreCommand(), newControlMigrateMySQLCommand())
 	return c
 }
 
 func newControlInitAdminCommand() *cobra.Command {
-	var database, username string
+	var configFile, database, mysqlDSN, username string
 	c := &cobra.Command{Use: "init-admin", Short: "Initialize the first administrator using a password from stdin", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		if database == "" || strings.TrimSpace(username) == "" {
-			return errors.New("--database and --username are required")
+		if strings.TrimSpace(username) == "" {
+			return errors.New("--username is required")
+		}
+		if configFile != "" {
+			if database != "" || mysqlDSN != "" {
+				return errors.New("--config cannot be combined with --database or --mysql-dsn")
+			}
+			cfg, _, err := loadConfig(configFile)
+			if err != nil {
+				return err
+			}
+			if cfg.Control == nil {
+				return errors.New("config does not enable control mode")
+			}
+			switch effectiveControlDriver(cfg.Control) {
+			case "mysql":
+				mysqlDSN = cfg.Control.Storage.MySQL.DSN
+			case "bbolt":
+				database = cfg.Control.Database
+			default:
+				return fmt.Errorf("unsupported control storage driver %q", cfg.Control.Storage.Driver)
+			}
+		}
+		if (database == "") == (mysqlDSN == "") {
+			return errors.New("exactly one of --config, --database, or --mysql-dsn must select control storage")
 		}
 		if err := cmd.Context().Err(); err != nil {
 			return err
@@ -36,12 +61,17 @@ func newControlInitAdminCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err = ensureParent(database); err != nil {
-			return fmt.Errorf("prepare database directory: %w", err)
+		var s control.Service
+		if mysqlDSN != "" {
+			s, err = control.OpenMySQL(control.MySQLOptions{DSN: mysqlDSN})
+		} else {
+			if err = ensureParent(database); err != nil {
+				return fmt.Errorf("prepare database directory: %w", err)
+			}
+			s, err = control.Open(database, control.Options{})
 		}
-		s, err := control.Open(database, control.Options{})
 		if err != nil {
-			return fmt.Errorf("open control database: %w", err)
+			return fmt.Errorf("open control storage: %w", err)
 		}
 		_, opErr := s.InitializeAdmin(cmd.Context(), control.UserSpec{Username: username, Password: password, Role: control.RoleAdmin, Enabled: true, Period: control.PeriodDaily, Timezone: "UTC", Limit: 1_000_000, QPS: 1_000, Burst: 100, MaxCredentials: 10})
 		closeErr := s.Close()
@@ -51,9 +81,146 @@ func newControlInitAdminCommand() *cobra.Command {
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "管理员 %q 已初始化。\n", strings.TrimSpace(username))
 		return err
 	}}
+	c.Flags().StringVarP(&configFile, "config", "c", "", "read control storage from a Mosdns config file")
 	c.Flags().StringVar(&database, "database", "", "control database path")
+	c.Flags().StringVar(&mysqlDSN, "mysql-dsn", "", "MySQL DSN for the control storage")
 	c.Flags().StringVar(&username, "username", "", "initial administrator username")
 	return c
+}
+
+func newControlMigrateMySQLCommand() *cobra.Command {
+	var configFile, database, statsDatabase, mysqlDSN, telemetryMySQLDSN, component string
+	var dryRun bool
+	c := &cobra.Command{Use: "migrate-mysql", Short: "Migrate offline bbolt control and telemetry data to empty MySQL tables", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		component = strings.ToLower(strings.TrimSpace(component))
+		if component != "all" && component != "control" && component != "telemetry" {
+			return errors.New("--component must be all, control, or telemetry")
+		}
+		migrateControl := component == "all" || component == "control"
+		migrateTelemetry := component == "all" || component == "telemetry"
+		if migrateControl && database == "" {
+			return errors.New("--database is required for the control component")
+		}
+		if migrateTelemetry && statsDatabase == "" {
+			return errors.New("--stats-database is required for the telemetry component")
+		}
+		if configFile != "" {
+			if mysqlDSN != "" || telemetryMySQLDSN != "" {
+				return errors.New("--config cannot be combined with MySQL DSN flags")
+			}
+			cfg, _, err := loadConfig(configFile)
+			if err != nil {
+				return err
+			}
+			if cfg.Control == nil {
+				return errors.New("config does not enable control mode")
+			}
+			if migrateControl {
+				if effectiveControlDriver(cfg.Control) != "mysql" {
+					return errors.New("config control storage is not mysql")
+				}
+				mysqlDSN = cfg.Control.Storage.MySQL.DSN
+			}
+			if migrateTelemetry {
+				if effectiveTelemetryDriver(cfg.Control) != "mysql" {
+					return errors.New("config telemetry storage is not mysql")
+				}
+				telemetryMySQLDSN = effectiveTelemetryMySQL(cfg.Control).DSN
+			}
+		}
+		if telemetryMySQLDSN == "" {
+			telemetryMySQLDSN = mysqlDSN
+		}
+		if !dryRun && migrateControl && strings.TrimSpace(mysqlDSN) == "" {
+			return errors.New("--mysql-dsn or a MySQL --config is required for the control component")
+		}
+		if !dryRun && migrateTelemetry && strings.TrimSpace(telemetryMySQLDSN) == "" {
+			return errors.New("--telemetry-mysql-dsn, --mysql-dsn, or a MySQL --config is required for the telemetry component")
+		}
+		var controlReport control.MySQLMigrationReport
+		var telemetryReport telemetry.MySQLMigrationReport
+		if migrateControl {
+			if err := requireExistingFile(database); err != nil {
+				return fmt.Errorf("control migration source: %w", err)
+			}
+			report, err := control.InspectBoltForMySQL(cmd.Context(), database)
+			if err != nil {
+				return fmt.Errorf("inspect control migration source: %w", err)
+			}
+			controlReport = report
+		}
+		if migrateTelemetry {
+			if err := requireExistingFile(statsDatabase); err != nil {
+				return fmt.Errorf("telemetry migration source: %w", err)
+			}
+			report, err := telemetry.InspectBoltForMySQL(cmd.Context(), statsDatabase)
+			if err != nil {
+				return fmt.Errorf("inspect telemetry migration source: %w", err)
+			}
+			telemetryReport = report
+		}
+		if dryRun {
+			if migrateControl {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "控制数据：用户 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", controlReport.Users, controlReport.Sessions, controlReport.Credentials, controlReport.Usage, controlReport.Audit); err != nil {
+					return err
+				}
+			}
+			if migrateTelemetry {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "统计数据：分钟聚合 %d，上游聚合 %d，查询明细 %d。\n", telemetryReport.Minutes, telemetryReport.Upstreams, telemetryReport.Queries); err != nil {
+					return err
+				}
+			}
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "检查完成；未连接或修改 MySQL。")
+			return err
+		}
+		if migrateControl {
+			if err := runControlMySQLMigration(cmd, database, mysqlDSN); err != nil {
+				return err
+			}
+		}
+		if migrateTelemetry {
+			if err := runTelemetryMySQLMigration(cmd, statsDatabase, telemetryMySQLDSN); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	c.Flags().StringVarP(&configFile, "config", "c", "", "read destination MySQL DSNs from a Mosdns config file")
+	c.Flags().StringVar(&database, "database", "", "offline bbolt control database path")
+	c.Flags().StringVar(&statsDatabase, "stats-database", "", "offline bbolt telemetry database path")
+	c.Flags().StringVar(&mysqlDSN, "mysql-dsn", "", "destination control MySQL DSN")
+	c.Flags().StringVar(&telemetryMySQLDSN, "telemetry-mysql-dsn", "", "destination telemetry MySQL DSN; defaults to --mysql-dsn")
+	c.Flags().StringVar(&component, "component", "all", "component to migrate: all, control, or telemetry")
+	c.Flags().BoolVar(&dryRun, "dry-run", false, "validate and count source records without connecting to MySQL")
+	return c
+}
+
+func runControlMySQLMigration(cmd *cobra.Command, source, dsn string) error {
+	destination, err := control.OpenMySQL(control.MySQLOptions{DSN: dsn, OperationTimeout: 30 * time.Minute})
+	if err != nil {
+		return fmt.Errorf("open MySQL control destination: %w", err)
+	}
+	report, opErr := control.MigrateBoltToMySQL(cmd.Context(), source, destination)
+	closeErr := destination.Close()
+	if err := operationAndCloseError("migrate control data", opErr, closeErr); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "控制数据迁移完成：用户 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", report.Users, report.Sessions, report.Credentials, report.Usage, report.Audit)
+	return err
+}
+
+func runTelemetryMySQLMigration(cmd *cobra.Command, source, dsn string) error {
+	destination, err := telemetry.OpenMySQL(telemetry.MySQLOptions{DSN: dsn, OperationTimeout: 30 * time.Minute, QueryLogEnabled: true})
+	if err != nil {
+		return fmt.Errorf("open MySQL telemetry destination: %w", err)
+	}
+	report, opErr := telemetry.MigrateBoltToMySQL(cmd.Context(), source, destination)
+	closeErr := destination.Close()
+	if err := operationAndCloseError("migrate telemetry data", opErr, closeErr); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "统计数据迁移完成：分钟聚合 %d，上游聚合 %d，查询明细 %d。\n", report.Minutes, report.Upstreams, report.Queries)
+	return err
 }
 
 func newControlBackupCommand() *cobra.Command {
@@ -159,7 +326,7 @@ func operationAndCloseError(operation string, operationErr, closeErr error) erro
 		errs = append(errs, fmt.Errorf("%s: %w", operation, operationErr))
 	}
 	if closeErr != nil {
-		errs = append(errs, fmt.Errorf("close control database: %w", closeErr))
+		errs = append(errs, fmt.Errorf("close storage: %w", closeErr))
 	}
 	return errors.Join(errs...)
 }

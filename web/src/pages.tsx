@@ -184,31 +184,58 @@ export function Login() {
   }
   return (
     <div className="login">
-      <section>
-        <div className="brand login-brand">
-          <span className="brandmark">M</span>
-          <span>MosDNS</span>
+      <div className="login-shell">
+        <div className="login-intro" aria-hidden>
+          <div className="login-orbit">
+            <span />
+            <span />
+            <span />
+            <strong>M</strong>
+          </div>
+          <p className="login-kicker">PRIVATE DNS PLATFORM</p>
+          <h2>
+            让每一次查询
+            <br />
+            都清晰可控
+          </h2>
+          <p>统一管理用户、凭证、配额与 DNS 运行数据。</p>
         </div>
-        <h1>欢迎回来</h1>
-        <p>登录管理你的 DNS 服务</p>
-        <Alert error={error} />
-        <form onSubmit={submit}>
-          <Field label="用户名">
-            <input name="username" autoComplete="username" required autoFocus />
-          </Field>
-          <Field label="密码">
-            <input
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-            />
-          </Field>
-          <button className="primary wide" disabled={busy}>
-            {busy ? "正在登录…" : "登录"}
-          </button>
-        </form>
-      </section>
+        <section>
+          <div className="brand login-brand">
+            <span className="brandmark">M</span>
+            <span className="brand-copy">
+              <strong>MosDNS</strong>
+              <small>Control Center</small>
+            </span>
+          </div>
+          <h1>欢迎回来</h1>
+          <p>登录后管理你的 DNS 服务</p>
+          <Alert error={error} />
+          <form onSubmit={submit}>
+            <Field label="用户名">
+              <input
+                name="username"
+                autoComplete="username"
+                required
+                autoFocus
+                placeholder="请输入用户名"
+              />
+            </Field>
+            <Field label="密码">
+              <input
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                placeholder="请输入密码"
+              />
+            </Field>
+            <button className="primary wide login-submit" disabled={busy}>
+              {busy ? "正在登录…" : "登录"}
+            </button>
+          </form>
+        </section>
+      </div>
     </div>
   );
 }
@@ -1411,6 +1438,8 @@ export function SystemPage() {
               label="查询明细"
               value={data.query_log_enabled ? "已启用" : "未启用"}
             />
+            <Metric label="控制数据" value={data.config.control_storage} />
+            <Metric label="统计数据" value={data.config.telemetry_storage} />
           </div>
           <Card title="公共 DNS 地址">
             <code className="block">{data.public_dns_url}</code>

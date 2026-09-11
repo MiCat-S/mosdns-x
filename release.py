@@ -37,6 +37,7 @@ ARCHIVE_FILES = (
     (Path("README.md"), "README.md"),
     (Path("LICENSE"), "LICENSE"),
     (Path("examples/control-production-proxy.yaml"), "examples/control-production-proxy.yaml"),
+    (Path("examples/control-production-mysql.yaml"), "examples/control-production-mysql.yaml"),
     (Path("examples/Caddyfile"), "examples/Caddyfile"),
     (Path("examples/mosdns.service"), "examples/mosdns.service"),
 )

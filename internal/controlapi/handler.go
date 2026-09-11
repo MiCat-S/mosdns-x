@@ -44,6 +44,8 @@ type SystemConfig struct {
 	DNSProtocols      []string `json:"dns_protocols"`
 	ManagementEnabled bool     `json:"management_enabled"`
 	PprofEnabled      bool     `json:"pprof_enabled"`
+	ControlStorage    string   `json:"control_storage"`
+	TelemetryStorage  string   `json:"telemetry_storage"`
 }
 
 type Options struct {

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -135,6 +136,9 @@ type event struct {
 
 type Store struct {
 	db              *bolt.DB
+	mysql           *sql.DB
+	mysqlTimeout    time.Duration
+	mysqlPrunedAt   atomic.Int64
 	queue           chan event
 	stop            chan struct{}
 	done            chan struct{}
@@ -325,7 +329,14 @@ func (s *Store) Close() error {
 		close(s.stop)
 		s.enqueueMu.Unlock()
 		<-s.done
-		s.closeErr = errors.Join(s.runErr, s.db.Close())
+		var backendErr error
+		if s.db != nil {
+			backendErr = s.db.Close()
+		}
+		if s.mysql != nil {
+			backendErr = errors.Join(backendErr, s.mysql.Close())
+		}
+		s.closeErr = errors.Join(s.runErr, backendErr)
 	})
 	return s.closeErr
 }
@@ -380,6 +391,9 @@ func (s *Store) run() {
 }
 
 func (s *Store) writeBatch(events []event) error {
+	if s.mysql != nil {
+		return s.writeMySQLBatch(events)
+	}
 	now := s.now().UTC()
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		for _, e := range events {
@@ -617,6 +631,9 @@ type storedKV struct {
 }
 
 func (s *Store) Snapshot(ctx context.Context, userID string, from, to time.Time) (StatsSnapshot, error) {
+	if s.mysql != nil {
+		return s.mysqlSnapshot(ctx, userID, from, to)
+	}
 	if err := validateRange(from, to); err != nil {
 		return StatsSnapshot{}, err
 	}
@@ -740,6 +757,9 @@ func (s *Store) Snapshot(ctx context.Context, userID string, from, to time.Time)
 }
 
 func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, page Page) (QueryPage, error) {
+	if s.mysql != nil {
+		return s.mysqlQueries(ctx, userID, from, to, page)
+	}
 	result := QueryPage{Items: []QueryRecord{}}
 	if !s.queryLogEnabled {
 		return result, nil
@@ -807,3 +827,14 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 	})
 	return result, err
 }
+
+type Service interface {
+	Observe(dns_handler.Result)
+	ObserveUpstream(query_context.UpstreamAttempt)
+	Snapshot(context.Context, string, time.Time, time.Time) (StatsSnapshot, error)
+	Queries(context.Context, string, time.Time, time.Time, Page) (QueryPage, error)
+	Flush(context.Context) error
+	Close() error
+}
+
+var _ Service = (*Store)(nil)
