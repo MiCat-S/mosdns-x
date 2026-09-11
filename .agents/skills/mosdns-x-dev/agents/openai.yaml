@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mosdns-x 开发"
+  short_description: "Mosdns-x 源码开发、插件扩展、配置编排与本地验证指南"
+  default_prompt: "使用 $mosdns-x-dev，依据当前 Mosdns-x 源码完成开发或配置任务，并验证相关行为。"
