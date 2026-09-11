@@ -1,5 +1,7 @@
 # Ubuntu / Debian 单机部署
 
+只需要安装 Mosdns-x 和 systemd 服务时，使用[一键安装脚本](installation.md)。本页余下内容用于需要自行配置多用户面板、Caddy 公网 HTTPS 和 HTTP/3 的部署。
+
 本文部署一个 Mosdns-x 进程，由同机 Caddy 统一对外提供管理面板和公共 DoH。Caddy 在公网 `443/TCP` 接收 HTTPS/HTTP/2，在 `443/UDP` 接收 HTTP/3，并把两个域名分别反向代理到 Mosdns-x 的回环 HTTP 监听器。
 
 此架构的 HTTP/3 终止在 Caddy。Mosdns-x 的 DNS 监听器必须使用明文 `http` 协议和回环地址，不要同时套用原生 `doh`/`doh3` 监听器、证书或公网 `:443` 配置。单机额度依赖单个进程和单份控制数据库，不要启动多个实例共享数据库。

@@ -19,9 +19,18 @@ Mosdns-x 是一个用 Go 编写的高性能 DNS 转发器，支持运行插件�
 
 提供管理端与用户端网页、DoH / DoH3 设备专属 URL 和 Bearer 凭证、每日／每月额度、到期与用户 QPS 限制，以及按用户和设备记录的用量。管理 API、统计和网页资源集成在一个 Mosdns 进程中。
 
+Linux + systemd 可直接安装或升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | sudo bash
+```
+
+脚本会识别架构、校验 GitHub Release、安装二进制和 `mosdns.service`，然后启动服务；不会安装 Caddy、创建服务账户或覆盖已有配置。详细说明见[一键安装](docs/installation.md)。
+
 上述上游发布链接对应原版。构建本 Fork 的网页版本及初始化账户，请阅读：
 
 - [本 Fork 的预编译 Release](https://github.com/MiCat-S/mosdns-x/releases)
+- [Linux 一键安装](docs/installation.md)
 - [部署教程：Ubuntu / Debian + Caddy](docs/deployment.md)
 - [构建说明](docs/building.md)
 - [本地构建并发布 GitHub Release](docs/releasing.md)
