@@ -137,6 +137,6 @@ gh release create "$RELEASE_TAG" \
   release/mosdns-*.zip release/SHA256SUMS
 ```
 
-首个多用户版本先按 prerelease 发布；完成生产验收后，可在 GitHub 上提升为正式 Release。发布事件会触发只读的 `Verify release assets` 工作流，再次检查 13 个包和校验文件。
+首个多用户版本先按 prerelease 发布；完成生产验收后，可在 GitHub 上提升为正式 Release。发布事件会触发只读的 `Verify release assets` 工作流，再次检查 13 个包和校验文件。若需要重新运行校验，可执行 `gh workflow run release.yml --repo MiCat-S/mosdns-x -f tag="$RELEASE_TAG"`，该工作流只下载和验证已有资产，不在 GitHub 上构建。
 
 完成后打开该 Release，确认 tag 指向本次记录的 `origin/main` 提交、13 个 zip 和 `SHA256SUMS` 均可下载。再从一个空临时目录按[部署教程](deployment.md)的单文件校验方式下载一个资产，确认公开下载的校验结果为 `OK`。
