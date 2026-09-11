@@ -65,6 +65,9 @@ func (e *Engine) Before(ctx context.Context, principal query_context.Principal, 
 	if err != nil {
 		return nil, err
 	}
+	if policyPaused(p.settings, e.now()) {
+		return nil, nil
+	}
 	if p.settings.StripECS {
 		stripECS(request)
 	}
@@ -77,7 +80,7 @@ func (e *Engine) Before(ctx context.Context, principal query_context.Principal, 
 	}
 	name := strings.ToLower(strings.TrimSuffix(question.Name, "."))
 	for _, candidate := range p.rules {
-		if !candidate.rule.Enabled || !matches(candidate, name) {
+		if !candidate.rule.Enabled || !ruleActionEnabled(p.settings, candidate.rule.Action) || !matches(candidate, name) {
 			continue
 		}
 		switch candidate.rule.Action {
@@ -103,6 +106,9 @@ func (e *Engine) After(ctx context.Context, principal query_context.Principal, r
 	if err != nil {
 		return nil, err
 	}
+	if policyPaused(p.settings, e.now()) {
+		return response, nil
+	}
 	if !p.settings.BlockPrivateAnswers {
 		return response, nil
 	}
@@ -112,6 +118,23 @@ func (e *Engine) After(ctx context.Context, principal query_context.Principal, r
 		}
 	}
 	return response, nil
+}
+
+func policyPaused(settings control.DNSPolicySettings, now time.Time) bool {
+	return settings.PolicyPausedUntil != nil && now.Before(*settings.PolicyPausedUntil)
+}
+
+func ruleActionEnabled(settings control.DNSPolicySettings, action control.DNSPolicyAction) bool {
+	switch action {
+	case control.DNSPolicyAllow:
+		return settings.CustomAllowEnabled
+	case control.DNSPolicyBlock:
+		return settings.CustomBlockEnabled
+	case control.DNSPolicyRewrite:
+		return settings.CustomRewriteEnabled
+	default:
+		return false
+	}
 }
 
 func (e *Engine) load(ctx context.Context, userID string) (policy, error) {

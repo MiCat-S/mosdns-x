@@ -280,7 +280,7 @@ func validateSchema(tx *bbolt.Tx) error {
 			return fmt.Errorf("missing bucket %q", bCredentialTokens)
 		}
 		return nil
-	case schemaVersion:
+	case policySchemaVersion, schemaVersion:
 		for _, name := range [][]byte{bCredentialTokens, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules} {
 			if tx.Bucket(name) == nil {
 				return fmt.Errorf("missing bucket %q", name)

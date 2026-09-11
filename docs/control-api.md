@@ -47,9 +47,11 @@
 | DELETE | `/me/rules/{id}` | 删除规则 |
 | POST | `/me/lookup` | `{name,qtype}` → 当前执行链的结构化 DNS 结果 |
 
-`DNSPolicySettings` 支持移除 ECS、拦截私有地址应答和拒绝指定 QTYPE。规则动作是 `allow`、`block`、`rewrite`，匹配方式是 `exact`、`suffix`、`keyword`、`regexp`；重写支持 A、AAAA、CNAME。每个用户最多 1000 条规则，按 `priority ASC, id ASC` 判断，第一条匹配规则生效。相同优先级的规则不保证创建顺序，存在覆盖关系时应使用不同优先级。拦截返回 NXDOMAIN；A/AAAA/CNAME 重写 TTL 为 60 秒。
+`DNSPolicySettings` 支持移除 ECS、拦截私有地址应答、拒绝指定 QTYPE、分别启停自定义拦截／放行／重写规则，以及临时暂停全部用户策略。对应字段为 `strip_ecs`、`block_private_answers`、`blocked_qtypes`、`custom_block_enabled`、`custom_allow_enabled`、`custom_rewrite_enabled` 和可空的 `policy_paused_until`。暂停截止时间使用 RFC3339，最长可设为服务端当前时间之后 24 小时；过去时间或 JSON `null` 表示取消暂停。
 
-DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因此被用户规则拦截的有效请求仍计入额度。QTYPE 拦截和请求规则在 sequence 前执行；ECS 从请求副本中移除，原始请求快照仍可用于查询明细；私有地址检查在 sequence 和缓存返回后执行。默认设置全部关闭，升级不会改变已有解析行为。
+规则动作是 `allow`、`block`、`rewrite`，匹配方式是 `exact`、`suffix`、`keyword`、`regexp`；重写支持 A、AAAA、CNAME。每个用户最多 1000 条规则，按 `priority ASC, id ASC` 判断，第一条匹配规则生效。相同优先级的规则不保证创建顺序，存在覆盖关系时应使用不同优先级。拦截返回 NXDOMAIN；A/AAAA/CNAME 重写 TTL 为 60 秒。
+
+DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因此被用户规则拦截的有效请求仍计入额度。QTYPE 拦截和请求规则在 sequence 前执行；ECS 从请求副本中移除，原始请求快照仍可用于查询明细；私有地址检查在 sequence 和缓存返回后执行。暂停期间这些请求与响应策略全部绕过，到期后无需后台任务即可恢复。ECS、私有地址和 QTYPE 设置默认关闭，三个自定义规则总开关默认开启；升级会保持已有规则继续生效。
 
 Lookup 只接受 A、AAAA、CNAME、NS、MX、TXT，使用当前实例的同一入口 sequence 和用户策略，返回 `question`、`rcode`、`duration_ms`、`answers`、`authority`、`additional`、`edns`。它只供面板诊断，不扣周期额度，也不写查询统计；已到期用户不能调用。服务默认限制每个客户端地址每分钟 60 次、全局同时 8 次，避免把面板接口当作免费解析入口。
 

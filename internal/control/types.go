@@ -142,17 +142,25 @@ const (
 )
 
 type DNSPolicySettings struct {
-	UserID              string    `json:"user_id"`
-	StripECS            bool      `json:"strip_ecs"`
-	BlockPrivateAnswers bool      `json:"block_private_answers"`
-	BlockedQTypes       []string  `json:"blocked_qtypes"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	UserID               string     `json:"user_id"`
+	StripECS             bool       `json:"strip_ecs"`
+	BlockPrivateAnswers  bool       `json:"block_private_answers"`
+	BlockedQTypes        []string   `json:"blocked_qtypes"`
+	CustomBlockEnabled   bool       `json:"custom_block_enabled"`
+	CustomAllowEnabled   bool       `json:"custom_allow_enabled"`
+	CustomRewriteEnabled bool       `json:"custom_rewrite_enabled"`
+	PolicyPausedUntil    *time.Time `json:"policy_paused_until"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 type DNSPolicySettingsPatch struct {
-	StripECS            *bool     `json:"strip_ecs,omitempty"`
-	BlockPrivateAnswers *bool     `json:"block_private_answers,omitempty"`
-	BlockedQTypes       *[]string `json:"blocked_qtypes,omitempty"`
+	StripECS             *bool      `json:"strip_ecs,omitempty"`
+	BlockPrivateAnswers  *bool      `json:"block_private_answers,omitempty"`
+	BlockedQTypes        *[]string  `json:"blocked_qtypes,omitempty"`
+	CustomBlockEnabled   *bool      `json:"custom_block_enabled,omitempty"`
+	CustomAllowEnabled   *bool      `json:"custom_allow_enabled,omitempty"`
+	CustomRewriteEnabled *bool      `json:"custom_rewrite_enabled,omitempty"`
+	PolicyPausedUntil    *time.Time `json:"policy_paused_until,omitempty"`
 }
 
 type DNSPolicyRule struct {

@@ -127,6 +127,7 @@ func requireEmptyMySQLControl(ctx context.Context, tx *sql.Tx) error {
 
 func migrateDNSPolicies(ctx context.Context, source *bbolt.Tx, target *sql.Tx, report *MySQLMigrationReport) error {
 	settingsBucket := source.Bucket(bDNSPolicySettings)
+	sourceVersion := binary.BigEndian.Uint64(source.Bucket(bMeta).Get(kSchema))
 	if err := source.Bucket(bUsers).ForEach(func(userID, value []byte) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -147,6 +148,11 @@ func migrateDNSPolicies(ctx context.Context, source *bbolt.Tx, target *sql.Tx, r
 			}
 		}
 		settings.UserID = string(userID)
+		if sourceVersion < schemaVersion {
+			settings.CustomBlockEnabled = true
+			settings.CustomAllowEnabled = true
+			settings.CustomRewriteEnabled = true
+		}
 		if err := insertMySQLDNSPolicySettings(ctx, target, settings); err != nil {
 			return err
 		}

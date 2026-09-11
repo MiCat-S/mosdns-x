@@ -25,7 +25,8 @@ import (
 const (
 	legacySchemaVersion             = 1
 	credentialSchemaVersion         = 2
-	schemaVersion                   = 3
+	policySchemaVersion             = 3
+	schemaVersion                   = 4
 	defaultPage                     = 100
 	maxPage                         = 1000
 	maxUsageRange                   = 31 * 24 * time.Hour
@@ -126,13 +127,14 @@ func Open(path string, opts Options) (*Store, error) {
 		if err != nil {
 			return err
 		}
+		previousVersion := uint64(0)
 		v := meta.Get(kSchema)
 		if v != nil {
 			if len(v) != 8 {
 				return fmt.Errorf("unsupported schema version")
 			}
-			version := binary.BigEndian.Uint64(v)
-			if version != legacySchemaVersion && version != credentialSchemaVersion && version != schemaVersion {
+			previousVersion = binary.BigEndian.Uint64(v)
+			if previousVersion != legacySchemaVersion && previousVersion != credentialSchemaVersion && previousVersion != policySchemaVersion && previousVersion != schemaVersion {
 				return fmt.Errorf("unsupported schema version")
 			}
 		}
@@ -144,7 +146,7 @@ func Open(path string, opts Options) (*Store, error) {
 		if err := rebuildCredentialTokenIndex(tx); err != nil {
 			return err
 		}
-		if err := initializeDNSPolicyData(tx); err != nil {
+		if err := initializeDNSPolicyData(tx, previousVersion); err != nil {
 			return err
 		}
 		var buf [8]byte

@@ -19,10 +19,15 @@ import (
 const (
 	maxDNSPolicyValueLength  = 1024
 	maxDNSPolicyRulesPerUser = 1000
+	maxDNSPolicyPause        = 24 * time.Hour
 )
 
 func defaultDNSPolicySettings(userID string, updatedAt time.Time) DNSPolicySettings {
-	return DNSPolicySettings{UserID: userID, BlockedQTypes: []string{}, UpdatedAt: updatedAt.UTC()}
+	return DNSPolicySettings{
+		UserID: userID, BlockedQTypes: []string{},
+		CustomBlockEnabled: true, CustomAllowEnabled: true, CustomRewriteEnabled: true,
+		UpdatedAt: updatedAt.UTC(),
+	}
 }
 
 func putDefaultDNSPolicySettings(tx *bbolt.Tx, userID string, updatedAt time.Time) error {
@@ -33,13 +38,31 @@ func putDefaultDNSPolicySettings(tx *bbolt.Tx, userID string, updatedAt time.Tim
 	return marshalPut(b, []byte(userID), defaultDNSPolicySettings(userID, updatedAt))
 }
 
-func initializeDNSPolicyData(tx *bbolt.Tx) error {
+func initializeDNSPolicyData(tx *bbolt.Tx, previousVersion uint64) error {
 	if err := tx.Bucket(bUsers).ForEach(func(userID, value []byte) error {
 		var user userRecord
 		if err := decode(value, &user); err != nil {
 			return err
 		}
-		return putDefaultDNSPolicySettings(tx, string(userID), user.CreatedAt)
+		settingsBucket := tx.Bucket(bDNSPolicySettings)
+		encoded := settingsBucket.Get(userID)
+		if encoded == nil {
+			return putDefaultDNSPolicySettings(tx, string(userID), user.CreatedAt)
+		}
+		if previousVersion >= schemaVersion {
+			return nil
+		}
+		var settings DNSPolicySettings
+		if err := decode(encoded, &settings); err != nil {
+			return err
+		}
+		settings.CustomBlockEnabled = true
+		settings.CustomAllowEnabled = true
+		settings.CustomRewriteEnabled = true
+		if settings.BlockedQTypes == nil {
+			settings.BlockedQTypes = []string{}
+		}
+		return marshalPut(settingsBucket, userID, settings)
 	}); err != nil {
 		return err
 	}
@@ -62,8 +85,8 @@ func initializeDNSPolicyData(tx *bbolt.Tx) error {
 	})
 }
 
-func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySettingsPatch) (DNSPolicySettings, error) {
-	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil {
+func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySettingsPatch, now time.Time) (DNSPolicySettings, error) {
+	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil {
 		return current, ErrInvalidInput
 	}
 	if patch.StripECS != nil {
@@ -71,6 +94,26 @@ func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySetti
 	}
 	if patch.BlockPrivateAnswers != nil {
 		current.BlockPrivateAnswers = *patch.BlockPrivateAnswers
+	}
+	if patch.CustomBlockEnabled != nil {
+		current.CustomBlockEnabled = *patch.CustomBlockEnabled
+	}
+	if patch.CustomAllowEnabled != nil {
+		current.CustomAllowEnabled = *patch.CustomAllowEnabled
+	}
+	if patch.CustomRewriteEnabled != nil {
+		current.CustomRewriteEnabled = *patch.CustomRewriteEnabled
+	}
+	if patch.PolicyPausedUntil != nil {
+		pausedUntil := patch.PolicyPausedUntil.UTC()
+		if !pausedUntil.After(now) {
+			current.PolicyPausedUntil = nil
+		} else {
+			if pausedUntil.After(now.Add(maxDNSPolicyPause)) {
+				return current, fmt.Errorf("%w: policy_paused_until cannot exceed 24 hours", ErrInvalidInput)
+			}
+			current.PolicyPausedUntil = &pausedUntil
+		}
 	}
 	if patch.BlockedQTypes != nil {
 		seen := make(map[string]struct{}, len(*patch.BlockedQTypes))
@@ -269,7 +312,7 @@ func (s *Store) UpdateDNSPolicySettings(ctx context.Context, actor, userID strin
 		if err := decode(tx.Bucket(bDNSPolicySettings).Get([]byte(userID)), &current); err != nil {
 			return err
 		}
-		updated, err := applyDNSPolicySettingsPatch(current, patch)
+		updated, err := applyDNSPolicySettingsPatch(current, patch, now)
 		if err != nil {
 			return err
 		}

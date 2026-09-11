@@ -69,6 +69,57 @@ func TestInitializeMySQLControlUpgradesV1Schema(t *testing.T) {
 	}
 }
 
+func TestInitializeMySQLControlUpgradesV2PolicySettings(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT GET_LOCK('mosdns_x_control_schema', 10)`)).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlControlMigrations[0])).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT version FROM mosdns_schema_migrations WHERE component = 'control'`)).WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(policyMySQLControlSchemaVersion))
+	mock.ExpectQuery(regexp.QuoteMeta(mysqlControlV3ColumnsQuery)).WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlControlV3Alter(nil))).WillReturnResult(sqlmock.NewResult(0, 0))
+	for _, statement := range mysqlControlMigrations[1:] {
+		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := initializeMySQLControl(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitializeMySQLControlResumesV3UpgradeAfterAlter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT GET_LOCK('mosdns_x_control_schema', 10)`)).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlControlMigrations[0])).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT version FROM mosdns_schema_migrations WHERE component = 'control'`)).WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(policyMySQLControlSchemaVersion))
+	columns := sqlmock.NewRows([]string{"COLUMN_NAME"})
+	for _, column := range mysqlControlV3Columns {
+		columns.AddRow(column.name)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(mysqlControlV3ColumnsQuery)).WillReturnRows(columns)
+	for _, statement := range mysqlControlMigrations[1:] {
+		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := initializeMySQLControl(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMySQLAdmitUpdatesQuotaRateAndUsageAtomically(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

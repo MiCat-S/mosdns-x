@@ -5,6 +5,7 @@ import (
 	"net"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 
@@ -119,6 +120,78 @@ func TestInvalidateAppliesSavedSettingsOnNextQuery(t *testing.T) {
 	response, err := engine.Before(ctx, principal, question("example.org", dns.TypeTXT))
 	if err != nil || response == nil || response.Rcode != dns.RcodeNameError {
 		t.Fatalf("updated response=%v err=%v", response, err)
+	}
+}
+
+func TestPolicyPauseSkipsRequestAndResponsePolicyThenExpires(t *testing.T) {
+	engine, store, principal := testEngine(t)
+	ctx := context.Background()
+	base := time.Now().UTC()
+	engine.now = func() time.Time { return base }
+	pausedUntil := base.Add(time.Hour)
+	qtypes := []string{"A"}
+	if _, err := store.UpdateDNSPolicySettings(ctx, principal.UserID, principal.UserID, control.DNSPolicySettingsPatch{
+		StripECS: boolPtr(true), BlockPrivateAnswers: boolPtr(true), BlockedQTypes: &qtypes, PolicyPausedUntil: &pausedUntil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := question("example.org", dns.TypeA)
+	req.SetEdns0(1232, false)
+	req.IsEdns0().Option = append(req.IsEdns0().Option, &dns.EDNS0_SUBNET{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, Address: net.ParseIP("192.0.2.1")})
+	if response, err := engine.Before(ctx, principal, req); err != nil || response != nil || len(req.IsEdns0().Option) != 1 {
+		t.Fatalf("paused before response=%v options=%v err=%v", response, req.IsEdns0().Option, err)
+	}
+	upstream := new(dns.Msg)
+	upstream.SetReply(req)
+	upstream.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET}, A: net.ParseIP("192.168.1.1")}}
+	if response, err := engine.After(ctx, principal, req, upstream); err != nil || response != upstream {
+		t.Fatalf("paused after response=%v err=%v", response, err)
+	}
+	base = pausedUntil.Add(time.Nanosecond)
+	response, err := engine.Before(ctx, principal, question("example.org", dns.TypeA))
+	if err != nil || response == nil || response.Rcode != dns.RcodeNameError {
+		t.Fatalf("expired pause response=%v err=%v", response, err)
+	}
+}
+
+func TestRuleActionSwitches(t *testing.T) {
+	engine, store, principal := testEngine(t)
+	ctx := context.Background()
+	for _, spec := range []control.DNSPolicyRuleSpec{
+		{Enabled: true, Priority: 1, Action: control.DNSPolicyAllow, Match: control.DNSPolicyMatchExact, Pattern: "safe.block.example"},
+		{Enabled: true, Priority: 2, Action: control.DNSPolicyBlock, Match: control.DNSPolicyMatchSuffix, Pattern: "block.example"},
+		{Enabled: true, Priority: 3, Action: control.DNSPolicyRewrite, Match: control.DNSPolicyMatchExact, Pattern: "rewrite.example", RecordType: control.DNSPolicyRewriteA, Value: "192.0.2.7"},
+	} {
+		if _, err := store.CreateDNSPolicyRule(ctx, principal.UserID, principal.UserID, spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disabled := false
+	if _, err := store.UpdateDNSPolicySettings(ctx, principal.UserID, principal.UserID, control.DNSPolicySettingsPatch{CustomBlockEnabled: &disabled, CustomAllowEnabled: &disabled, CustomRewriteEnabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"safe.block.example", "bad.block.example", "rewrite.example"} {
+		if response, err := engine.Before(ctx, principal, question(name, dns.TypeA)); err != nil || response != nil {
+			t.Fatalf("disabled name=%s response=%v err=%v", name, response, err)
+		}
+	}
+	enabled := true
+	if _, err := store.UpdateDNSPolicySettings(ctx, principal.UserID, principal.UserID, control.DNSPolicySettingsPatch{CustomBlockEnabled: &enabled, CustomRewriteEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	engine.Invalidate(principal.UserID)
+	if response, err := engine.Before(ctx, principal, question("bad.block.example", dns.TypeA)); err != nil || response == nil || response.Rcode != dns.RcodeNameError {
+		t.Fatalf("block enabled response=%v err=%v", response, err)
+	}
+	if response, err := engine.Before(ctx, principal, question("rewrite.example", dns.TypeA)); err != nil || response == nil || len(response.Answer) != 1 {
+		t.Fatalf("rewrite enabled response=%v err=%v", response, err)
+	}
+	if _, err := store.UpdateDNSPolicySettings(ctx, principal.UserID, principal.UserID, control.DNSPolicySettingsPatch{CustomAllowEnabled: &enabled}); err != nil {
+		t.Fatal(err)
+	}
+	engine.Invalidate(principal.UserID)
+	if response, err := engine.Before(ctx, principal, question("safe.block.example", dns.TypeA)); err != nil || response != nil {
+		t.Fatalf("allow enabled response=%v err=%v", response, err)
 	}
 }
 

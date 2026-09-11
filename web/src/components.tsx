@@ -147,7 +147,9 @@ type NavIconName =
   | "rules"
   | "lookup"
   | "account"
-  | "help";
+  | "help"
+  | "list"
+  | "lab";
 type NavItem = { to: string; label: string; icon: NavIconName };
 
 const adminNav: NavItem[] = [
@@ -158,13 +160,15 @@ const adminNav: NavItem[] = [
   { to: "/admin/system", label: "系统", icon: "system" },
 ];
 const userNav: NavItem[] = [
-  { to: "/app", label: "我的服务", icon: "overview" },
-  { to: "/app/lookup", label: "DNS Lookup", icon: "lookup" },
+  { to: "/app", label: "首页", icon: "overview" },
+  { to: "/app/privacy", label: "安全与隐私保护", icon: "shield" },
+  { to: "/app/lists", label: "订阅的公共列表", icon: "list" },
   { to: "/app/rules", label: "自定义规则", icon: "rules" },
-  { to: "/app/privacy", label: "安全与隐私", icon: "shield" },
   { to: "/app/usage", label: "统计与日志", icon: "usage" },
-  { to: "/app/account", label: "账户中心", icon: "account" },
-  { to: "/app/help", label: "帮助", icon: "help" },
+  { to: "/app/labs", label: "实验性功能", icon: "lab" },
+  { to: "/app/advanced", label: "高级设置", icon: "system" },
+  { to: "/app/lookup", label: "Lookup", icon: "lookup" },
+  { to: "/app/help", label: "获取支持", icon: "help" },
 ];
 
 function NavIcon({ name }: { name: NavIconName }) {
@@ -246,6 +250,20 @@ function NavIcon({ name }: { name: NavIconName }) {
         <path d="M9.6 9a2.6 2.6 0 1 1 4.58 1.7c-.78.86-1.93 1.24-1.93 2.8M12 17h.01" />
       </>
     ),
+    list: (
+      <>
+        <path d="M7 6h13M7 12h13M7 18h13" />
+        <circle cx="4" cy="6" r="1" />
+        <circle cx="4" cy="12" r="1" />
+        <circle cx="4" cy="18" r="1" />
+      </>
+    ),
+    lab: (
+      <>
+        <path d="M9 3h6M10 3v6l-5.5 9a2 2 0 0 0 1.72 3h11.56a2 2 0 0 0 1.72-3L14 9V3" />
+        <path d="M8 16h8" />
+      </>
+    ),
   };
   return (
     <svg aria-hidden viewBox="0 0 24 24">
@@ -274,7 +292,7 @@ export function Shell() {
     }
   }
   return (
-    <div className="shell">
+    <div className={admin ? "shell admin-shell" : "shell user-shell"}>
       <aside>
         <NavLink className="brand" to={admin ? "/admin" : "/app"}>
           <span className="brandmark">M</span>
@@ -294,20 +312,32 @@ export function Shell() {
             </NavLink>
           ))}
         </nav>
-        <div className="account">
-          <span className="account-avatar" aria-hidden>
-            {session?.user.username.slice(0, 1).toUpperCase()}
-          </span>
-          <span className="account-copy">
-            <strong>{session?.user.username}</strong>
-            <small>{admin ? "管理员" : "用户"}</small>
-          </span>
-          <button className="link" onClick={exit}>
-            退出登录
-          </button>
-        </div>
+        {admin ? (
+          <div className="account">
+            <span className="account-avatar" aria-hidden>
+              {session?.user.username.slice(0, 1).toUpperCase()}
+            </span>
+            <span className="account-copy">
+              <strong>{session?.user.username}</strong>
+              <small>管理员</small>
+            </span>
+            <button className="link" onClick={exit}>
+              退出登录
+            </button>
+          </div>
+        ) : null}
       </aside>
       <main>
+        {!admin ? (
+          <header className="topbar">
+            <NavLink className="topbar-user" to="/app/account">
+              {session?.user.username}
+            </NavLink>
+            <button className="link" onClick={exit}>
+              退出登录
+            </button>
+          </header>
+        ) : null}
         {logoutError ? <Alert error={logoutError} /> : null}
         <Outlet />
       </main>

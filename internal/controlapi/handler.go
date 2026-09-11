@@ -764,8 +764,13 @@ func (h *Handler) settings(w http.ResponseWriter, r *http.Request, userID string
 		}
 		writeJSON(w, http.StatusOK, settings)
 	case http.MethodPatch:
-		var patch control.DNSPolicySettingsPatch
-		if decodeJSON(w, r, &patch) != nil {
+		var request dnsPolicySettingsPatchRequest
+		if decodeJSON(w, r, &request) != nil {
+			return
+		}
+		patch, err := request.controlPatch(h.opts.Now())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request")
 			return
 		}
 		settings, err := h.opts.Control.UpdateDNSPolicySettings(r.Context(), userID, userID, patch)
@@ -781,6 +786,44 @@ func (h *Handler) settings(w http.ResponseWriter, r *http.Request, userID string
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+type dnsPolicySettingsPatchRequest struct {
+	StripECS             *bool           `json:"strip_ecs"`
+	BlockPrivateAnswers  *bool           `json:"block_private_answers"`
+	BlockedQTypes        *[]string       `json:"blocked_qtypes"`
+	CustomBlockEnabled   *bool           `json:"custom_block_enabled"`
+	CustomAllowEnabled   *bool           `json:"custom_allow_enabled"`
+	CustomRewriteEnabled *bool           `json:"custom_rewrite_enabled"`
+	PolicyPausedUntil    json.RawMessage `json:"policy_paused_until"`
+}
+
+func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (control.DNSPolicySettingsPatch, error) {
+	patch := control.DNSPolicySettingsPatch{
+		StripECS: request.StripECS, BlockPrivateAnswers: request.BlockPrivateAnswers, BlockedQTypes: request.BlockedQTypes,
+		CustomBlockEnabled: request.CustomBlockEnabled, CustomAllowEnabled: request.CustomAllowEnabled,
+		CustomRewriteEnabled: request.CustomRewriteEnabled,
+	}
+	if request.PolicyPausedUntil == nil {
+		return patch, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(request.PolicyPausedUntil), []byte("null")) {
+		zero := time.Time{}
+		patch.PolicyPausedUntil = &zero
+		return patch, nil
+	}
+	var value time.Time
+	if err := json.Unmarshal(request.PolicyPausedUntil, &value); err != nil {
+		return patch, err
+	}
+	value = value.UTC()
+	if !value.After(now) {
+		value = time.Time{}
+	} else if value.After(now.Add(24 * time.Hour)) {
+		return patch, errors.New("policy pause cannot exceed 24 hours")
+	}
+	patch.PolicyPausedUntil = &value
+	return patch, nil
 }
 
 func (h *Handler) rules(w http.ResponseWriter, r *http.Request, userID, ruleID string) {

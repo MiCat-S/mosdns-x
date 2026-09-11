@@ -262,11 +262,25 @@ func TestUserPolicySettingsAndRules(t *testing.T) {
 		}
 		invalidations++
 	}
-	if w := req(f.handler, http.MethodGet, "/api/v1/me/settings", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"blocked_qtypes":[]`) {
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/settings", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"blocked_qtypes":[]`) || !strings.Contains(w.Body.String(), `"custom_block_enabled":true`) || !strings.Contains(w.Body.String(), `"policy_paused_until":null`) {
 		t.Fatalf("settings=%d %s", w.Code, w.Body.String())
 	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"strip_ecs":true,"block_private_answers":true,"blocked_qtypes":["AAAA","TXT"]}`, alice, csrf); w.Code != http.StatusOK {
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"strip_ecs":true,"block_private_answers":true,"blocked_qtypes":["AAAA","TXT"],"custom_block_enabled":false,"custom_allow_enabled":false,"custom_rewrite_enabled":false}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"custom_rewrite_enabled":false`) {
 		t.Fatalf("update settings=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"policy_paused_until":"2026-01-15T13:00:00Z"}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"policy_paused_until":"2026-01-15T13:00:00Z"`) {
+		t.Fatalf("pause policy=%d %s", w.Code, w.Body.String())
+	}
+	for _, body := range []string{`{"policy_paused_until":"2026-01-16T12:00:01Z"}`, `{"policy_paused_until":"tomorrow"}`} {
+		if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", body, alice, csrf); w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid pause body=%s status=%d response=%s", body, w.Code, w.Body.String())
+		}
+	}
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"policy_paused_until":"2026-01-15T11:59:59Z"}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"policy_paused_until":null`) {
+		t.Fatalf("past pause=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"policy_paused_until":null}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"policy_paused_until":null`) {
+		t.Fatalf("cancel pause=%d %s", w.Code, w.Body.String())
 	}
 	w := req(f.handler, http.MethodPost, "/api/v1/me/rules", `{"enabled":true,"action":"rewrite","match":"exact","pattern":"example.org","record_type":"A","value":"192.0.2.1"}`, alice, csrf)
 	if w.Code != http.StatusCreated {
@@ -285,7 +299,7 @@ func TestUserPolicySettingsAndRules(t *testing.T) {
 	if w = req(f.handler, http.MethodDelete, "/api/v1/me/rules/"+rule.ID, "", alice, csrf); w.Code != http.StatusNoContent {
 		t.Fatalf("delete rule=%d %s", w.Code, w.Body.String())
 	}
-	if invalidations != 4 {
+	if invalidations != 7 {
 		t.Fatalf("invalidations=%d", invalidations)
 	}
 }

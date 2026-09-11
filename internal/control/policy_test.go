@@ -29,17 +29,32 @@ func TestDNSPolicySettingsDefaultsUpdateAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.StripECS || settings.BlockPrivateAnswers || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 {
+	if settings.StripECS || settings.BlockPrivateAnswers || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 || !settings.CustomBlockEnabled || !settings.CustomAllowEnabled || !settings.CustomRewriteEnabled || settings.PolicyPausedUntil != nil {
 		t.Fatalf("unexpected defaults: %+v", settings)
 	}
 	strip, block := true, true
+	customBlock, customAllow, customRewrite := false, false, false
+	pausedUntil := now.Add(time.Hour)
 	qtypes := []string{"aaaa", " A ", "AAAA"}
-	settings, err = s.UpdateDNSPolicySettings(ctx, user.ID, user.ID, DNSPolicySettingsPatch{StripECS: &strip, BlockPrivateAnswers: &block, BlockedQTypes: &qtypes})
+	settings, err = s.UpdateDNSPolicySettings(ctx, user.ID, user.ID, DNSPolicySettingsPatch{
+		StripECS: &strip, BlockPrivateAnswers: &block, BlockedQTypes: &qtypes,
+		CustomBlockEnabled: &customBlock, CustomAllowEnabled: &customAllow, CustomRewriteEnabled: &customRewrite,
+		PolicyPausedUntil: &pausedUntil,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !settings.StripECS || !settings.BlockPrivateAnswers || !reflect.DeepEqual(settings.BlockedQTypes, []string{"AAAA", "A"}) {
+	if !settings.StripECS || !settings.BlockPrivateAnswers || settings.CustomBlockEnabled || settings.CustomAllowEnabled || settings.CustomRewriteEnabled || settings.PolicyPausedUntil == nil || !settings.PolicyPausedUntil.Equal(pausedUntil) || !reflect.DeepEqual(settings.BlockedQTypes, []string{"AAAA", "A"}) {
 		t.Fatalf("normalized settings: %+v", settings)
+	}
+	tooFar := now.Add(maxDNSPolicyPause + time.Second)
+	if _, err := s.UpdateDNSPolicySettings(ctx, user.ID, user.ID, DNSPolicySettingsPatch{PolicyPausedUntil: &tooFar}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("excessive pause error=%v", err)
+	}
+	past := now.Add(-time.Second)
+	settings, err = s.UpdateDNSPolicySettings(ctx, user.ID, user.ID, DNSPolicySettingsPatch{PolicyPausedUntil: &past})
+	if err != nil || settings.PolicyPausedUntil != nil {
+		t.Fatalf("cancel pause settings=%+v err=%v", settings, err)
 	}
 	invalid := []string{"NOT-A-QTYPE"}
 	if _, err := s.UpdateDNSPolicySettings(ctx, user.ID, user.ID, DNSPolicySettingsPatch{BlockedQTypes: &invalid}); !errors.Is(err, ErrInvalidInput) {
@@ -54,8 +69,56 @@ func TestDNSPolicySettingsDefaultsUpdateAndPersistence(t *testing.T) {
 	}
 	defer reopened.Close()
 	settings, err = reopened.GetDNSPolicySettings(ctx, user.ID)
-	if err != nil || !reflect.DeepEqual(settings.BlockedQTypes, []string{"AAAA", "A"}) {
+	if err != nil || settings.CustomBlockEnabled || settings.CustomAllowEnabled || settings.CustomRewriteEnabled || settings.PolicyPausedUntil != nil || !reflect.DeepEqual(settings.BlockedQTypes, []string{"AAAA", "A"}) {
 		t.Fatalf("reopened settings=%+v err=%v", settings, err)
+	}
+}
+
+func TestDNSPolicySchemaV3UpgradeEnablesExistingRuleActions(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "control-v3.db")
+	s, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := s.InitializeAdmin(ctx, adminSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bbolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.Update(func(tx *bbolt.Tx) error {
+		var settings DNSPolicySettings
+		if err := decode(tx.Bucket(bDNSPolicySettings).Get([]byte(admin.ID)), &settings); err != nil {
+			return err
+		}
+		settings.CustomBlockEnabled, settings.CustomAllowEnabled, settings.CustomRewriteEnabled = false, false, false
+		if err := marshalPut(tx.Bucket(bDNSPolicySettings), []byte(admin.ID), settings); err != nil {
+			return err
+		}
+		var version [8]byte
+		binary.BigEndian.PutUint64(version[:], policySchemaVersion)
+		return tx.Bucket(bMeta).Put(kSchema, version[:])
+	})
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	settings, err := reopened.GetDNSPolicySettings(ctx, admin.ID)
+	if err != nil || !settings.CustomBlockEnabled || !settings.CustomAllowEnabled || !settings.CustomRewriteEnabled {
+		t.Fatalf("upgraded settings=%+v err=%v", settings, err)
 	}
 }
 

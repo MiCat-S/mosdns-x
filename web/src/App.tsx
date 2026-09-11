@@ -13,10 +13,13 @@ import {
   UsagePage,
   AccountPage,
   HelpPage,
+  LabsPage,
   LookupPage,
   PasswordPage,
   PrivacyPage,
+  PublicListsPage,
   RulesPage,
+  AdvancedPage,
 } from "./pages";
 function Guard({ role }: { role: "admin" | "user" }) {
   const { session, loading, error, retry } = useSession();
@@ -61,7 +64,10 @@ export function App() {
         <Route path="/app" element={<ServicePage />} />
         <Route path="/app/usage" element={<UsagePage />} />
         <Route path="/app/privacy" element={<PrivacyPage />} />
+        <Route path="/app/lists" element={<PublicListsPage />} />
         <Route path="/app/rules" element={<RulesPage />} />
+        <Route path="/app/labs" element={<LabsPage />} />
+        <Route path="/app/advanced" element={<AdvancedPage />} />
         <Route path="/app/lookup" element={<LookupPage />} />
         <Route path="/app/account" element={<AccountPage />} />
         <Route path="/app/help" element={<HelpPage />} />

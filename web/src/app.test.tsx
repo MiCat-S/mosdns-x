@@ -63,31 +63,20 @@ describe("前端访问与秘密处理", () => {
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(response(settings))
-      .mockResolvedValueOnce(
-        response({ ...settings, strip_ecs: true, blocked_qtypes: ["AAAA"] }),
-      );
+      .mockResolvedValueOnce(response({ ...settings, strip_ecs: true }));
     vi.stubGlobal("fetch", fetcher);
     render(<PrivacyPage />);
     const stripECS = await screen.findByRole("checkbox", {
-      name: "移除 ECS",
+      name: "停用 ECS",
     });
     fireEvent.click(stripECS);
-    fireEvent.change(screen.getByLabelText("拒绝的查询类型"), {
-      target: { value: "AAAA" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
     expect(String(fetcher.mock.calls[1][0])).toContain("/me/settings");
     const init = fetcher.mock.calls[1][1] as RequestInit;
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(String(init.body))).toEqual({
       strip_ecs: true,
-      block_private_answers: false,
-      blocked_qtypes: ["AAAA"],
     });
-    expect(
-      await screen.findByText("安全与隐私设置已保存。"),
-    ).toBeInTheDocument();
   });
   it("DNS Lookup 发送限定记录类型并展示应答", async () => {
     const fetcher = vi.fn().mockResolvedValue(
@@ -128,39 +117,87 @@ describe("前端访问与秘密处理", () => {
     });
   });
   it("自定义规则页使用用户规则接口", async () => {
+    const settings = {
+      user_id: "u1",
+      strip_ecs: false,
+      block_private_answers: false,
+      blocked_qtypes: [],
+      custom_block_enabled: true,
+      custom_allow_enabled: true,
+      custom_rewrite_enabled: true,
+      policy_paused_until: "0001-01-01T00:00:00Z",
+      updated_at: "2026-09-12T00:00:00Z",
+    };
+    const writes: Array<Record<string, unknown>> = [];
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(response([]))
-      .mockResolvedValueOnce(
-        response({
-          id: "r1",
-          user_id: "u1",
-          action: "block",
-          match: "suffix",
-          pattern: "ads.example",
-          enabled: true,
-          created_at: "2026-09-12T00:00:00Z",
-          updated_at: "2026-09-12T00:00:00Z",
-        }),
-      );
+      .mockImplementation((url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        if (method === "PATCH") {
+          const body = JSON.parse(String(init?.body));
+          writes.push(body);
+          return Promise.resolve(
+            response({ ...settings, custom_block_enabled: false }),
+          );
+        }
+        if (method === "POST") {
+          const body = JSON.parse(String(init?.body));
+          writes.push(body);
+          return Promise.resolve(
+            response({
+              id: `r${writes.length}`,
+              user_id: "u1",
+              ...body,
+              created_at: "2026-09-12T00:00:00Z",
+              updated_at: "2026-09-12T00:00:00Z",
+            }),
+          );
+        }
+        return Promise.resolve(
+          url.includes("/me/settings")
+            ? response(settings)
+            : response({ items: [] }),
+        );
+      });
     vi.stubGlobal("fetch", fetcher);
     render(<RulesPage />);
-    expect(await screen.findByText("尚未设置自定义规则")).toBeInTheDocument();
+    expect(await screen.findByText("尚未添加拦截规则。")).toBeInTheDocument();
     expect(String(fetcher.mock.calls[0][0])).toContain("/me/rules");
-    fireEvent.change(screen.getAllByRole("textbox")[0], {
+    fireEvent.click(screen.getByRole("checkbox", { name: "自定义拦截" }));
+    await waitFor(() =>
+      expect(writes).toContainEqual({ custom_block_enabled: false }),
+    );
+    fireEvent.change(screen.getAllByRole("textbox", { name: "规则域名" })[0], {
       target: { value: "ads.example" },
     });
     fireEvent.click(screen.getByRole("button", { name: "添加规则" }));
-    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
-    expect(
-      JSON.parse(String((fetcher.mock.calls[1][1] as RequestInit).body)),
-    ).toEqual({
-      action: "block",
-      match: "suffix",
-      pattern: "ads.example",
-      priority: 100,
-      enabled: true,
+    await waitFor(() =>
+      expect(writes).toContainEqual({
+        action: "block",
+        match: "suffix",
+        pattern: "ads.example",
+        priority: 100,
+        enabled: true,
+      }),
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "重写域名" }), {
+      target: { value: "router.example" },
     });
+    fireEvent.change(screen.getByRole("textbox", { name: "重写值" }), {
+      target: { value: "192.0.2.9" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加重写" }));
+    await waitFor(() =>
+      expect(writes).toContainEqual({
+        action: "rewrite",
+        match: "exact",
+        pattern: "router.example",
+        priority: 100,
+        record_type: "A",
+        value: "192.0.2.9",
+        enabled: true,
+      }),
+    );
   });
   it("查询明细显示客户端、Answer IP、EDNS 和 ECS，并兼容空字段", async () => {
     vi.stubGlobal(
@@ -323,6 +360,26 @@ describe("前端访问与秘密处理", () => {
     expect(await screen.findByText("网络中断")).toBeInTheDocument();
     expect(screen.getByText("alice")).toBeInTheDocument();
   });
+  it("管理员布局保留退出登录入口", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) =>
+        url.endsWith("/session")
+          ? Promise.resolve(
+              response({
+                user: { ...user, role: "admin" },
+                csrf_token: "c",
+                expires_at: "2027-01-01T00:00:00Z",
+              }),
+            )
+          : Promise.resolve(response({ items: [] })),
+      ),
+    );
+    mount("/admin/users");
+    expect(
+      await screen.findByRole("button", { name: "退出登录" }),
+    ).toBeInTheDocument();
+  });
   it("本地时间往返保持同一时刻", () => {
     const value = "2026-07-04T16:30:00.000Z";
     const local = toLocalDateTime(value);
@@ -389,7 +446,7 @@ describe("前端访问与秘密处理", () => {
     );
     mount("/admin/users");
     expect(
-      await screen.findByRole("heading", { name: "我的服务" }),
+      await screen.findByRole("heading", { name: "主页" }),
     ).toBeInTheDocument();
   });
   it("API 错误呈现给用户", async () => {

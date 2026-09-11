@@ -1591,23 +1591,67 @@ export function ServicePage() {
       Promise.all([
         request<Me>("/me", { signal: s }),
         request<Stats>(query("/me/stats", range()), { signal: s }),
+        allPages<Credential>("/me/credentials", s),
+        request<UserSettings>("/me/settings", { signal: s }),
       ]),
     [],
   );
-  const { data, error, loading } = useLoad(load, [load]);
+  const { data, error, loading, setData } = useLoad(load, [load]);
+  const [pauseBusy, setPauseBusy] = useState(false);
+  const [pauseError, setPauseError] = useState("");
+  const settings = data ? normalizeSettings(data[3]) : undefined;
+  async function updatePause(value: string) {
+    if (!data || !settings) return;
+    setPauseBusy(true);
+    setPauseError("");
+    try {
+      const settings = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", { policy_paused_until: pauseUntil(value) }),
+      );
+      setData([data[0], data[1], data[2], normalizeSettings(settings)]);
+    } catch (reason) {
+      setPauseError(message(reason));
+    } finally {
+      setPauseBusy(false);
+    }
+  }
   if (loading)
     return (
       <>
-        <PageTitle title="我的服务" />
+        <PageTitle title="主页" />
         <Spinner />
       </>
     );
   return (
     <>
-      <PageTitle title="我的服务" description="当前服务期限、额度与运行状态" />
-      <Alert error={error} />
-      {data ? (
+      <PageTitle title="主页" description="连接信息、服务额度与设备接入。" />
+      <Alert error={error || pauseError} />
+      {data && settings ? (
         <>
+          <Card title="连接信息" className="service-connection">
+            <div className="connection-row">
+              <div>
+                <span>公共 DoH 地址</span>
+                <code className="block">{data[0].public_dns_url}</code>
+              </div>
+              <Link className="primary action-link" to="/app/account">
+                管理设备凭证
+              </Link>
+            </div>
+            <div className="credential-summary">
+              <span>设备凭证</span>
+              {data[2].length ? (
+                <div>
+                  {data[2].map((credential) => (
+                    <code key={credential.id}>{credential.name}</code>
+                  ))}
+                </div>
+              ) : (
+                <p>尚未创建设备凭证。每台设备请使用独立凭证接入。</p>
+              )}
+            </div>
+          </Card>
           <div className="metrics">
             <Metric
               label="剩余额度"
@@ -1640,21 +1684,45 @@ export function ServicePage() {
               />
             </div>
           </Card>
-          <Card title="连接指引" className="connection-guide">
+          <Card title="订阅与 DNS 策略">
+            <div className="rows">
+              <div>
+                <span>服务周期</span>
+                <strong>
+                  {data[0].quota.period === "daily" ? "每日" : "每月"} 额度
+                </strong>
+              </div>
+              <div>
+                <span>暂停客制化 DNS</span>
+                <select
+                  aria-label="暂停客制化 DNS"
+                  value={pauseSelection(settings.policy_paused_until)}
+                  onChange={(event) => updatePause(event.target.value)}
+                  disabled={pauseBusy}
+                >
+                  {policyPaused(settings.policy_paused_until) ? (
+                    <option value="paused" disabled>
+                      已暂停至 {fmt.date(settings.policy_paused_until)}
+                    </option>
+                  ) : null}
+                  <option value="0">不暂停</option>
+                  <option value="900">暂停 15 分钟</option>
+                  <option value="1800">暂停 30 分钟</option>
+                  <option value="3600">暂停 1 小时</option>
+                  <option value="10800">暂停 3 小时</option>
+                  <option value="21600">暂停 6 小时</option>
+                  <option value="43200">暂停 12 小时</option>
+                  <option value="86400">暂停 1 天</option>
+                </select>
+              </div>
+            </div>
+          </Card>
+          <Card title="设备接入" className="connection-guide">
             <ol>
-              <li>
-                在<Link to="/app/account">账户中心</Link>
-                为每台设备创建独立凭证。
-              </li>
-              <li>创建成功时保存一次性显示的专属 DoH 地址或 Bearer Token。</li>
-              <li>
-                将地址填入支持 DoH / DoH3 的客户端；公共服务地址为
-                <code>{data[0].public_dns_url}</code>。
-              </li>
+              <li>为每台设备创建独立凭证，专属 DoH 地址和令牌只显示一次。</li>
+              <li>在客户端填写专属地址，或使用对应的 Bearer Token。</li>
+              <li>设备遗失或不再使用时，请在账户中心轮换或撤销其凭证。</li>
             </ol>
-            <p className="caption">
-              凭证令牌仅在签发和轮换时显示一次。遗失后请轮换或撤销该设备凭证。
-            </p>
           </Card>
           <StatsBlocks stats={data[1]} />
         </>
@@ -1818,35 +1886,68 @@ function splitQTypes(value: string) {
   ];
 }
 
+const zeroTime = "0001-01-01T00:00:00Z";
+
+type NormalizedUserSettings = Omit<
+  UserSettings,
+  | "blocked_qtypes"
+  | "custom_block_enabled"
+  | "custom_allow_enabled"
+  | "custom_rewrite_enabled"
+  | "policy_paused_until"
+> & {
+  blocked_qtypes: string[];
+  custom_block_enabled: boolean;
+  custom_allow_enabled: boolean;
+  custom_rewrite_enabled: boolean;
+  policy_paused_until: string;
+};
+
+function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
+  return {
+    ...settings,
+    blocked_qtypes: settings.blocked_qtypes ?? [],
+    custom_block_enabled: settings.custom_block_enabled ?? true,
+    custom_allow_enabled: settings.custom_allow_enabled ?? true,
+    custom_rewrite_enabled: settings.custom_rewrite_enabled ?? true,
+    policy_paused_until: settings.policy_paused_until || zeroTime,
+  };
+}
+
+function policyPaused(until: string) {
+  return !until.startsWith("0001-") && new Date(until).getTime() > Date.now();
+}
+
+function pauseUntil(seconds: string) {
+  const duration = Number(seconds);
+  return duration > 0
+    ? new Date(Date.now() + duration * 1000).toISOString()
+    : zeroTime;
+}
+
+function pauseSelection(until: string) {
+  return policyPaused(until) ? "paused" : "0";
+}
+
 export function PrivacyPage() {
   const load = useCallback(
     (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
     [],
   );
   const { data, error: loadError, loading, setData } = useLoad(load, [load]);
-  const [draft, setDraft] = useState<UserSettings | null>(null);
   const [error, setError] = useState("");
-  const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => setDraft(data ?? null), [data]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!draft) return;
+  const settings = data ? normalizeSettings(data) : undefined;
+  async function update(patch: Partial<UserSettings>) {
+    if (!settings) return;
     setBusy(true);
     setError("");
-    setSaved("");
     try {
       const updated = await request<UserSettings>(
         "/me/settings",
-        json("PATCH", {
-          strip_ecs: draft.strip_ecs,
-          block_private_answers: draft.block_private_answers,
-          blocked_qtypes: draft.blocked_qtypes,
-        }),
+        json("PATCH", patch),
       );
-      setData(updated);
-      setSaved("安全与隐私设置已保存。");
+      setData(normalizeSettings(updated));
     } catch (reason) {
       setError(message(reason));
     } finally {
@@ -1857,69 +1958,105 @@ export function PrivacyPage() {
   return (
     <>
       <PageTitle
-        title="安全与隐私"
-        description="设置只对你的 DNS 请求生效，并在保存后立即应用。"
+        title="安全与隐私保护"
+        description="每项切换会立即保存并应用到你的 DNS 请求。"
       />
       {loading ? <Spinner /> : <Alert error={loadError || error} />}
-      {draft ? (
-        <Card className="narrow" title="请求处理偏好">
-          <form onSubmit={submit}>
-            <label className="setting-option">
-              <input
-                type="checkbox"
-                aria-label="移除 ECS"
-                checked={draft.strip_ecs}
-                onChange={(event) =>
-                  setDraft({ ...draft, strip_ecs: event.target.checked })
-                }
-              />
-              <span>
-                <strong>移除 ECS</strong>
-                <small>不向上游携带 EDNS Client Subnet 客户端网段信息。</small>
-              </span>
-            </label>
-            <label className="setting-option">
-              <input
-                type="checkbox"
-                aria-label="拦截私有地址应答"
-                checked={draft.block_private_answers}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    block_private_answers: event.target.checked,
-                  })
-                }
-              />
-              <span>
-                <strong>拦截私有地址应答</strong>
-                <small>拒绝返回私有或本地网络地址的解析结果。</small>
-              </span>
-            </label>
-            <Field
-              label="拒绝的查询类型"
-              hint="用逗号分隔，例如 AAAA, TXT。留空表示不按类型拒绝。"
-            >
-              <input
-                aria-label="拒绝的查询类型"
-                value={draft.blocked_qtypes.join(", ")}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    blocked_qtypes: splitQTypes(event.target.value),
-                  })
-                }
-                maxLength={300}
-                placeholder="例如：AAAA, TXT"
-              />
-            </Field>
-            {saved ? <p className="success-note">{saved}</p> : null}
-            <button className="primary" disabled={busy}>
-              {busy ? "正在保存…" : "保存设置"}
-            </button>
-          </form>
+      {settings ? (
+        <Card title="可用保护" className="settings-list">
+          <SettingsRow
+            title="DNS 重绑定防护"
+            description="拦截指向私有或本地网络地址的 DNS 应答。"
+            checked={settings.block_private_answers}
+            disabled={busy}
+            onChange={(value) => update({ block_private_answers: value })}
+          />
+          <SettingsRow
+            title="停用 ECS"
+            description="不向上游携带 EDNS Client Subnet 客户端网段信息。"
+            checked={settings.strip_ecs}
+            disabled={busy}
+            onChange={(value) => update({ strip_ecs: value })}
+          />
+          <div className="settings-row qtype-row">
+            <div>
+              <strong>查询类型拦截</strong>
+              <small>点击类型即可立即加入或移出拒绝列表。</small>
+            </div>
+            <div className="qtype-switches" aria-label="查询类型拦截">
+              {["AAAA", "TXT", "MX", "NS"].map((type) => {
+                const checked = settings.blocked_qtypes.includes(type);
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    className={checked ? "switch-chip active" : "switch-chip"}
+                    aria-pressed={checked}
+                    disabled={busy}
+                    onClick={() =>
+                      update({
+                        blocked_qtypes: checked
+                          ? settings.blocked_qtypes.filter(
+                              (item) => item !== type,
+                            )
+                          : [...settings.blocked_qtypes, type],
+                      })
+                    }
+                  >
+                    {type}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <SettingsRow
+            title="DNSSEC 强制验证"
+            description="节点未配置此能力。"
+            checked={false}
+            disabled
+          />
+          <SettingsRow
+            title="恶意域名情报"
+            description="节点未配置此能力。"
+            checked={false}
+            disabled
+          />
         </Card>
       ) : null}
     </>
+  );
+}
+
+function SettingsRow({
+  title,
+  description,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange?: (value: boolean) => void;
+}) {
+  return (
+    <div className="settings-row">
+      <div>
+        <strong>{title}</strong>
+        <small>{description}</small>
+      </div>
+      <label className="switch">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          aria-label={title}
+          onChange={(event) => onChange?.(event.target.checked)}
+        />
+        <span aria-hidden />
+      </label>
+    </div>
   );
 }
 
@@ -2056,16 +2193,204 @@ function RuleForm({
   );
 }
 
+function CompactRuleForm({
+  action,
+  onDone,
+}: {
+  action: RuleAction | "decision";
+  onDone: () => void;
+}) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const fields = new FormData(form);
+    const selectedAction =
+      action === "decision"
+        ? (String(fields.get("action")) as RuleAction)
+        : action;
+    const rewrite = selectedAction === "rewrite";
+    const pattern = String(fields.get("pattern")).trim();
+    const value = String(fields.get("value")).trim();
+    const recordType = String(fields.get("record_type")) as RuleRecordType;
+    if (!pattern || (rewrite && (!recordType || !value))) {
+      setError(rewrite ? "请填写域名、记录类型和重写值。" : "请填写域名。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await request<Rule>(
+        "/me/rules",
+        json("POST", {
+          action: selectedAction,
+          match: String(fields.get("match")) as RuleMatch,
+          pattern,
+          priority: 100,
+          ...(rewrite ? { record_type: recordType, value } : {}),
+          enabled: true,
+        }),
+      );
+      form.reset();
+      onDone();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="compact-rule-form" onSubmit={submit}>
+      <Alert error={error} />
+      {action === "rewrite" ? (
+        <>
+          <input type="hidden" name="match" value="exact" />
+          <select name="record_type" aria-label="重写记录类型" defaultValue="A">
+            {ruleRecordTypes.map((type) => (
+              <option key={type}>{type}</option>
+            ))}
+          </select>
+          <input
+            name="pattern"
+            aria-label="重写域名"
+            placeholder="域名"
+            maxLength={1024}
+            required
+          />
+          <input
+            name="value"
+            aria-label="重写值"
+            placeholder="IP 地址或 CNAME"
+            maxLength={1024}
+            required
+          />
+        </>
+      ) : (
+        <>
+          <select name="match" aria-label="匹配方式" defaultValue="suffix">
+            <option value="exact">@ 完全匹配</option>
+            <option value="suffix">suffix 后缀</option>
+            <option value="keyword">contains 包含</option>
+            <option value="regexp">regexp 正则</option>
+          </select>
+          <input
+            name="pattern"
+            aria-label="规则域名"
+            placeholder="域名或匹配内容"
+            maxLength={1024}
+            required
+          />
+          {action === "decision" ? (
+            <select name="action" aria-label="规则动作" defaultValue="block">
+              <option value="block">拦截</option>
+              <option value="allow">放行</option>
+            </select>
+          ) : null}
+        </>
+      )}
+      <button className="primary" disabled={busy}>
+        {busy
+          ? "正在添加…"
+          : action === "rewrite"
+            ? "添加重写"
+            : action === "block"
+              ? "添加拦截"
+              : action === "allow"
+                ? "添加放行"
+                : "添加规则"}
+      </button>
+    </form>
+  );
+}
+
+function RuleGroup({
+  title,
+  description,
+  rules,
+  onEdit,
+  onDelete,
+}: {
+  title: string;
+  description: string;
+  rules: Rule[];
+  onEdit: (rule: Rule) => void;
+  onDelete: (rule: Rule) => void;
+}) {
+  return (
+    <Card className="rule-group">
+      <div className="rule-group-header">
+        <div>
+          <h2>{title}</h2>
+          <p className="caption">{description}</p>
+        </div>
+      </div>
+      {rules.length ? (
+        <div className="flat-rule-list">
+          {rules.map((rule) => (
+            <div key={rule.id}>
+              <code>{rule.pattern}</code>
+              <span>{rule.match}</span>
+              {rule.value ? (
+                <span>
+                  {rule.record_type} → {rule.value}
+                </span>
+              ) : null}
+              <span>优先级 {rule.priority}</span>
+              <span className={`badge ${rule.enabled ? "ok" : "off"}`}>
+                {rule.enabled ? "启用" : "停用"}
+              </span>
+              <button onClick={() => onEdit(rule)}>编辑</button>
+              <button className="danger" onClick={() => onDelete(rule)}>
+                删除
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="caption rule-empty">尚未添加{title}。</p>
+      )}
+    </Card>
+  );
+}
+
 export function RulesPage() {
   const [version, setVersion] = useState(0);
   const [editing, setEditing] = useState<Rule | null>(null);
   const [error, setError] = useState("");
+  const [updating, setUpdating] = useState(false);
   const load = useCallback(
-    (signal: AbortSignal) => allPages<Rule>("/me/rules", signal),
+    (signal: AbortSignal) =>
+      Promise.all([
+        allPages<Rule>("/me/rules", signal),
+        request<UserSettings>("/me/settings", { signal }),
+      ]),
     [],
   );
-  const { data, error: loadError, loading } = useLoad(load, [load, version]);
-  const rules = data ? normalizeRuleList(data) : [];
+  const {
+    data,
+    error: loadError,
+    loading,
+    setData,
+  } = useLoad(load, [load, version]);
+  const rules = data ? normalizeRuleList(data[0]) : [];
+  const settings = data ? normalizeSettings(data[1]) : undefined;
+  async function updateSettings(patch: Partial<UserSettings>) {
+    if (!data) return;
+    setUpdating(true);
+    setError("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", patch),
+      );
+      setData([data[0], normalizeSettings(updated)]);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setUpdating(false);
+    }
+  }
   async function remove(rule: Rule) {
     if (!confirm(`删除规则“${rule.pattern}”？`)) return;
     setError("");
@@ -2080,69 +2405,76 @@ export function RulesPage() {
     <>
       <PageTitle
         title="自定义规则"
-        description="按域名匹配允许、拦截或重写你的 DNS 查询。"
+        description="为你的 DNS 请求添加拦截、放行或重写规则。"
       />
-      <Card title="添加规则">
-        <RuleForm onDone={() => setVersion((current) => current + 1)} />
-      </Card>
       <Alert error={loadError || error} />
-      {loading ? (
+      {loading || !settings ? (
         <Spinner />
-      ) : rules.length ? (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>动作</th>
-                <th>匹配</th>
-                <th>类型</th>
-                <th>优先级</th>
-                <th>目标</th>
-                <th>状态</th>
-                <th>
-                  <span className="sr-only">操作</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rules.map((rule) => (
-                <tr key={rule.id}>
-                  <td>
-                    <span
-                      className={`badge ${rule.action === "block" ? "error" : "ok"}`}
-                    >
-                      {rule.action === "allow"
-                        ? "允许"
-                        : rule.action === "block"
-                          ? "拦截"
-                          : "重写"}
-                    </span>
-                  </td>
-                  <td>
-                    <code>{rule.pattern}</code>
-                    <small>{rule.match}</small>
-                  </td>
-                  <td>{rule.record_type ?? "—"}</td>
-                  <td>{rule.priority}</td>
-                  <td className="query-detail">{rule.value ?? "—"}</td>
-                  <td>
-                    <span className={`badge ${rule.enabled ? "ok" : "off"}`}>
-                      {rule.enabled ? "已启用" : "已停用"}
-                    </span>
-                  </td>
-                  <td className="table-actions">
-                    <button onClick={() => setEditing(rule)}>编辑</button>
-                    <button className="danger" onClick={() => remove(rule)}>
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       ) : (
-        <Empty>尚未设置自定义规则</Empty>
+        <>
+          <Card title="规则开关" className="settings-list">
+            <SettingsRow
+              title="自定义拦截"
+              description="启用自定义域名拦截规则。"
+              checked={settings.custom_block_enabled}
+              disabled={updating}
+              onChange={(value) =>
+                updateSettings({ custom_block_enabled: value })
+              }
+            />
+            <SettingsRow
+              title="自定义放行"
+              description="启用自定义域名放行规则。"
+              checked={settings.custom_allow_enabled}
+              disabled={updating}
+              onChange={(value) =>
+                updateSettings({ custom_allow_enabled: value })
+              }
+            />
+            <SettingsRow
+              title="自定义重写"
+              description="启用自定义 A、AAAA 和 CNAME 重写规则。"
+              checked={settings.custom_rewrite_enabled}
+              disabled={updating}
+              onChange={(value) =>
+                updateSettings({ custom_rewrite_enabled: value })
+              }
+            />
+          </Card>
+          <Card title="添加拦截或放行规则">
+            <CompactRuleForm
+              action="decision"
+              onDone={() => setVersion((current) => current + 1)}
+            />
+          </Card>
+          <Card title="添加重写规则">
+            <CompactRuleForm
+              action="rewrite"
+              onDone={() => setVersion((current) => current + 1)}
+            />
+          </Card>
+          <RuleGroup
+            title="拦截规则"
+            description="匹配后阻止该 DNS 查询。"
+            rules={rules.filter((rule) => rule.action === "block")}
+            onEdit={setEditing}
+            onDelete={remove}
+          />
+          <RuleGroup
+            title="放行规则"
+            description="匹配后允许查询继续执行。"
+            rules={rules.filter((rule) => rule.action === "allow")}
+            onEdit={setEditing}
+            onDelete={remove}
+          />
+          <RuleGroup
+            title="重写规则"
+            description="以指定 A、AAAA 或 CNAME 应答替代查询结果。"
+            rules={rules.filter((rule) => rule.action === "rewrite")}
+            onEdit={setEditing}
+            onDelete={remove}
+          />
+        </>
       )}
       {editing ? (
         <Modal title="编辑规则" onClose={() => setEditing(null)}>
@@ -2227,20 +2559,11 @@ export function LookupPage() {
   return (
     <>
       <PageTitle
-        title="DNS Lookup"
+        title="Lookup"
         description="使用当前账户策略执行一次 DNS 查询。"
       />
       <Card title="查询">
         <form className="lookup-form" onSubmit={submit}>
-          <Field label="域名">
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="example.com"
-              maxLength={255}
-              required
-            />
-          </Field>
           <Field label="记录类型">
             <select
               value={qtype}
@@ -2252,6 +2575,18 @@ export function LookupPage() {
                 <option key={type}>{type}</option>
               ))}
             </select>
+          </Field>
+          <Field label="域名">
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="example.com"
+              maxLength={255}
+              required
+            />
+          </Field>
+          <Field label="ECS（CIDR）" hint="此节点未支持 Lookup ECS。">
+            <input disabled placeholder="例如 203.0.113.0/24" />
           </Field>
           <button className="primary" disabled={busy}>
             {busy ? "正在查询…" : "开始查询"}
@@ -2347,7 +2682,7 @@ export function AccountPage() {
 export function HelpPage() {
   return (
     <>
-      <PageTitle title="帮助" description="面板内的常用功能说明。" />
+      <PageTitle title="帮助与支持" description="面板内的常用功能说明。" />
       <div className="grid2 help-grid">
         <Card title="设备接入">
           <p>
@@ -2375,6 +2710,200 @@ export function HelpPage() {
           </p>
         </Card>
       </div>
+    </>
+  );
+}
+
+export function PublicListsPage() {
+  return (
+    <>
+      <PageTitle
+        title="订阅的公共列表"
+        description="将公共规则源加入 DNS 策略需要由节点管理员配置。"
+      />
+      <UnavailableGroup title="公共列表总开关" items={["启用公共订阅列表"]} />
+      <UnavailableGroup
+        title="广告与追踪"
+        items={["广告域名列表", "追踪与遥测域名列表", "应用内广告列表"]}
+      />
+      <UnavailableGroup
+        title="隐私增强"
+        items={["反跟踪列表", "恶意与钓鱼域名列表", "成人内容分级列表"]}
+      />
+      <UnavailableGroup
+        title="功能性分类"
+        items={["社交媒体列表", "流媒体与游戏平台列表", "自定义远程列表"]}
+      />
+    </>
+  );
+}
+
+export function LabsPage() {
+  return (
+    <>
+      <PageTitle
+        title="实验性功能"
+        description="以下功能需要节点提供额外实现，当前服务未启用。"
+      />
+      <UnavailableGroup
+        title="Web3 与替代根"
+        items={["ENS / Web3 域名解析", "替代 DNS 根"]}
+      />
+      <UnavailableGroup
+        title="快捷功能与自定义上游"
+        items={["一键安全模式", "自定义实验上游"]}
+      />
+      <UnavailableGroup
+        title="网络与响应优化"
+        items={["ECS 实验模式", "IPv4 / IPv6 响应偏好", "响应记录优化"]}
+      />
+      <UnavailableGroup
+        title="实验查询类型"
+        items={["HTTPS / SVCB 处理", "新兴 qtype 分流"]}
+      />
+    </>
+  );
+}
+
+function UnavailableGroup({
+  title,
+  items,
+}: {
+  title: string;
+  items: string[];
+}) {
+  return (
+    <Card title={title}>
+      <div className="capability-list">
+        {items.map((item) => (
+          <div key={item}>
+            <div>
+              <strong>{item}</strong>
+              <small>节点未配置此能力。</small>
+            </div>
+            <label className="switch">
+              <input type="checkbox" disabled aria-label={item} />
+              <span aria-hidden />
+            </label>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+export function AdvancedPage() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const settings = data ? normalizeSettings(data) : undefined;
+  async function update(patch: Partial<UserSettings>) {
+    if (!settings) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", patch),
+      );
+      setData(normalizeSettings(updated));
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title="高级设置"
+        description="集中调整当前节点实际支持的 DNS 策略。"
+      />
+      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {settings ? (
+        <Card title="安全与规则" className="settings-list">
+          <SettingsRow
+            title="DNS 重绑定防护"
+            description="拦截私有地址应答。"
+            checked={settings.block_private_answers}
+            disabled={busy}
+            onChange={(value) => update({ block_private_answers: value })}
+          />
+          <SettingsRow
+            title="停用 ECS"
+            description="不向上游携带客户端网段。"
+            checked={settings.strip_ecs}
+            disabled={busy}
+            onChange={(value) => update({ strip_ecs: value })}
+          />
+          <SettingsRow
+            title="启用拦截规则"
+            description="应用自定义拦截规则组。"
+            checked={settings.custom_block_enabled}
+            disabled={busy}
+            onChange={(value) => update({ custom_block_enabled: value })}
+          />
+          <SettingsRow
+            title="启用放行规则"
+            description="应用自定义放行规则组。"
+            checked={settings.custom_allow_enabled}
+            disabled={busy}
+            onChange={(value) => update({ custom_allow_enabled: value })}
+          />
+          <SettingsRow
+            title="启用重写规则"
+            description="应用自定义重写规则组。"
+            checked={settings.custom_rewrite_enabled}
+            disabled={busy}
+            onChange={(value) => update({ custom_rewrite_enabled: value })}
+          />
+          <div className="settings-row">
+            <div>
+              <strong>暂停客制化 DNS</strong>
+              <small>暂停期间临时绕过本账户的安全设置和自定义规则。</small>
+            </div>
+            <select
+              aria-label="暂停客制化 DNS"
+              value={pauseSelection(settings.policy_paused_until)}
+              disabled={busy}
+              onChange={(event) =>
+                update({ policy_paused_until: pauseUntil(event.target.value) })
+              }
+            >
+              {policyPaused(settings.policy_paused_until) ? (
+                <option value="paused" disabled>
+                  当前暂停至 {fmt.date(settings.policy_paused_until)}
+                </option>
+              ) : null}
+              <option value="0">不暂停</option>
+              <option value="900">暂停 15 分钟</option>
+              <option value="1800">暂停 30 分钟</option>
+              <option value="3600">暂停 1 小时</option>
+              <option value="10800">暂停 3 小时</option>
+              <option value="21600">暂停 6 小时</option>
+              <option value="43200">暂停 12 小时</option>
+              <option value="86400">暂停 1 天</option>
+            </select>
+          </div>
+        </Card>
+      ) : null}
+      <UnavailableGroup
+        title="缓存 / ECS"
+        items={["自定义缓存策略", "ECS 地址覆写"]}
+      />
+      <UnavailableGroup title="日志" items={["扩展查询日志", "长期日志保留"]} />
+      <UnavailableGroup
+        title="兼容"
+        items={["客户端兼容模式", "传统 DNS 协议接入"]}
+      />
+      <UnavailableGroup
+        title="功能管理"
+        items={["按设备功能配置", "服务端插件管理"]}
+      />
     </>
   );
 }

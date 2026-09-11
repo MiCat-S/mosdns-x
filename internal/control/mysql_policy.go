@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const mysqlDNSPolicyRuleColumns = `id, user_id, enabled, priority, action, match_kind, pattern, record_type, rewrite_value, created_at_ns, updated_at_ns`
+const (
+	mysqlDNSPolicySettingsColumns = `user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns`
+	mysqlDNSPolicyRuleColumns     = `id, user_id, enabled, priority, action, match_kind, pattern, record_type, rewrite_value, created_at_ns, updated_at_ns`
+)
 
 func insertMySQLDNSPolicySettings(ctx context.Context, tx *sql.Tx, settings DNSPolicySettings) error {
 	qtypes := settings.BlockedQTypes
@@ -21,16 +24,28 @@ func insertMySQLDNSPolicySettings(ctx context.Context, tx *sql.Tx, settings DNSP
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_dns_policy_settings
-		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?)`, settings.UserID, settings.StripECS, settings.BlockPrivateAnswers, encoded, settings.UpdatedAt.UnixNano())
+		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled,
+		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, settings.UserID, settings.StripECS, settings.BlockPrivateAnswers, encoded,
+		settings.CustomBlockEnabled, settings.CustomAllowEnabled, settings.CustomRewriteEnabled,
+		mysqlPolicyPauseValue(settings.PolicyPausedUntil), settings.UpdatedAt.UnixNano())
 	return err
+}
+
+func mysqlPolicyPauseValue(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return value.UnixNano()
 }
 
 func scanMySQLDNSPolicySettings(row sqlScanner) (DNSPolicySettings, error) {
 	var out DNSPolicySettings
 	var encoded []byte
+	var paused sql.NullInt64
 	var updated int64
-	err := row.Scan(&out.UserID, &out.StripECS, &out.BlockPrivateAnswers, &encoded, &updated)
+	err := row.Scan(&out.UserID, &out.StripECS, &out.BlockPrivateAnswers, &encoded,
+		&out.CustomBlockEnabled, &out.CustomAllowEnabled, &out.CustomRewriteEnabled, &paused, &updated)
 	if err != nil {
 		return out, err
 	}
@@ -40,6 +55,10 @@ func scanMySQLDNSPolicySettings(row sqlScanner) (DNSPolicySettings, error) {
 	if out.BlockedQTypes == nil {
 		out.BlockedQTypes = []string{}
 	}
+	if paused.Valid {
+		value := time.Unix(0, paused.Int64).UTC()
+		out.PolicyPausedUntil = &value
+	}
 	out.UpdatedAt = time.Unix(0, updated).UTC()
 	return out, nil
 }
@@ -47,7 +66,7 @@ func scanMySQLDNSPolicySettings(row sqlScanner) (DNSPolicySettings, error) {
 func mysqlDNSPolicySettings(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, userID string, lock bool) (DNSPolicySettings, error) {
-	query := `SELECT user_id, strip_ecs, block_private_answers, blocked_qtypes_json, updated_at_ns FROM mosdns_dns_policy_settings WHERE user_id=?`
+	query := `SELECT ` + mysqlDNSPolicySettingsColumns + ` FROM mosdns_dns_policy_settings WHERE user_id=?`
 	if lock {
 		query += ` FOR UPDATE`
 	}
@@ -85,7 +104,7 @@ func (s *MySQLStore) UpdateDNSPolicySettings(ctx context.Context, actor, userID 
 		if err != nil {
 			return err
 		}
-		out, err = applyDNSPolicySettingsPatch(current, patch)
+		out, err = applyDNSPolicySettingsPatch(current, patch, now)
 		if err != nil {
 			return err
 		}
@@ -94,7 +113,9 @@ func (s *MySQLStore) UpdateDNSPolicySettings(ctx context.Context, actor, userID 
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, updated_at_ns=? WHERE user_id=?`, out.StripECS, out.BlockPrivateAnswers, encoded, now.UnixNano(), userID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, updated_at_ns=? WHERE user_id=?`,
+			out.StripECS, out.BlockPrivateAnswers, encoded, out.CustomBlockEnabled, out.CustomAllowEnabled,
+			out.CustomRewriteEnabled, mysqlPolicyPauseValue(out.PolicyPausedUntil), now.UnixNano(), userID); err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "update_dns_policy_settings", "dns_policy_settings", userID, map[string]any{"before": current, "after": out}, now)

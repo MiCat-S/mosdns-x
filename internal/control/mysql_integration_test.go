@@ -35,7 +35,7 @@ func TestMySQLIntegrationControlLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings, err := store.GetDNSPolicySettings(ctx, user.ID)
-	if err != nil || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 {
+	if err != nil || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 || !settings.CustomBlockEnabled || !settings.CustomAllowEnabled || !settings.CustomRewriteEnabled || settings.PolicyPausedUntil != nil {
 		t.Fatalf("default policy settings=%+v err=%v", settings, err)
 	}
 	rule, err := store.CreateDNSPolicyRule(ctx, user.ID, user.ID, DNSPolicyRuleSpec{Enabled: true, Priority: 10, Action: DNSPolicyRewrite, Match: DNSPolicyMatchExact, Pattern: "internal.example", RecordType: DNSPolicyRewriteA, Value: "192.0.2.10"})

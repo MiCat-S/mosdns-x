@@ -39,6 +39,10 @@ export interface UserSettings {
   strip_ecs: boolean;
   block_private_answers: boolean;
   blocked_qtypes: string[];
+  custom_block_enabled: boolean;
+  custom_allow_enabled: boolean;
+  custom_rewrite_enabled: boolean;
+  policy_paused_until: string | null;
   updated_at: string;
 }
 export type RuleAction = "allow" | "block" | "rewrite";

@@ -20,7 +20,8 @@ import (
 
 const (
 	legacyMySQLControlSchemaVersion = 1
-	mysqlControlSchemaVersion       = 2
+	policyMySQLControlSchemaVersion = 2
+	mysqlControlSchemaVersion       = 3
 )
 
 type MySQLOptions struct {
@@ -132,6 +133,10 @@ var mysqlControlMigrations = []string{
 		strip_ecs BOOLEAN NOT NULL DEFAULT FALSE,
 		block_private_answers BOOLEAN NOT NULL DEFAULT FALSE,
 		blocked_qtypes_json LONGTEXT NOT NULL,
+		custom_block_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		custom_allow_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		custom_rewrite_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		policy_paused_until_ns BIGINT NULL,
 		updated_at_ns BIGINT NOT NULL,
 		CONSTRAINT fk_mosdns_dns_policy_settings_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
@@ -151,10 +156,25 @@ var mysqlControlMigrations = []string{
 		CONSTRAINT fk_mosdns_dns_policy_rules_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
 	`INSERT INTO mosdns_dns_policy_settings
-		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, updated_at_ns)
-		SELECT id, FALSE, FALSE, '[]', created_at_ns FROM mosdns_users
+		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled,
+		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns)
+		SELECT id, FALSE, FALSE, '[]', TRUE, TRUE, TRUE, NULL, created_at_ns FROM mosdns_users
 		ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
 }
+
+var mysqlControlV3Columns = []struct {
+	name       string
+	definition string
+}{
+	{"custom_block_enabled", "custom_block_enabled BOOLEAN NOT NULL DEFAULT TRUE"},
+	{"custom_allow_enabled", "custom_allow_enabled BOOLEAN NOT NULL DEFAULT TRUE"},
+	{"custom_rewrite_enabled", "custom_rewrite_enabled BOOLEAN NOT NULL DEFAULT TRUE"},
+	{"policy_paused_until_ns", "policy_paused_until_ns BIGINT NULL"},
+}
+
+const mysqlControlV3ColumnsQuery = `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mosdns_dns_policy_settings'
+	AND COLUMN_NAME IN ('custom_block_enabled', 'custom_allow_enabled', 'custom_rewrite_enabled', 'policy_paused_until_ns')`
 
 func OpenMySQL(opts MySQLOptions) (*MySQLStore, error) {
 	if strings.TrimSpace(opts.DSN) == "" {
@@ -238,6 +258,11 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 	if err == nil && (version > mysqlControlSchemaVersion || version < legacyMySQLControlSchemaVersion) {
 		return fmt.Errorf("%w: unsupported mysql control schema version %d", ErrUnavailable, version)
 	}
+	if err == nil && version == policyMySQLControlSchemaVersion {
+		if migrationErr := ensureMySQLControlV3Columns(ctx, conn); migrationErr != nil {
+			return mysqlStoreError(migrationErr)
+		}
+	}
 	for _, statement := range mysqlControlMigrations[1:] {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return mysqlStoreError(err)
@@ -253,6 +278,47 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 	default:
 		return nil
 	}
+}
+
+func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, mysqlControlV3ColumnsQuery)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]struct{}, len(mysqlControlV3Columns))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	migration := mysqlControlV3Alter(existing)
+	if migration == "" {
+		return nil
+	}
+	_, err = conn.ExecContext(ctx, migration)
+	return err
+}
+
+func mysqlControlV3Alter(existing map[string]struct{}) string {
+	missing := make([]string, 0, len(mysqlControlV3Columns))
+	for _, column := range mysqlControlV3Columns {
+		if _, ok := existing[column.name]; !ok {
+			missing = append(missing, "ADD COLUMN "+column.definition)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return `ALTER TABLE mosdns_dns_policy_settings ` + strings.Join(missing, ", ")
 }
 
 func (s *MySQLStore) operationContext(parent context.Context) (context.Context, context.CancelFunc) {
