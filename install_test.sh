@@ -81,6 +81,45 @@ assert_eq mosdns-linux-amd64.zip \
   "$(bash "$test_dir/install.sh" --print-asset x86_64 --github-proxy https://mirror.example///)" \
   'valid custom proxy CLI option'
 
+valid_generated_unit='[Unit]
+Description=A DNS forwarder
+ConditionFileIsExecutable=/usr/local/bin/mosdns
+
+[Service]
+ExecStart=/usr/local/bin/mosdns start --as-service -d /etc/mosdns -c /etc/mosdns/config.yaml'
+unit_uses_installed_binary <<< "$valid_generated_unit" ||
+  fail 'generated unit using installed binary was rejected'
+
+valid_custom_unit='[Service]
+ExecStart=/usr/local/bin/mosdns start -c /etc/mosdns/config.yaml'
+unit_uses_installed_binary <<< "$valid_custom_unit" ||
+  fail 'valid unit without executable condition was rejected'
+
+wrong_condition_unit='[Unit]
+ConditionFileIsExecutable=/etc/mosdns/mosdns
+[Service]
+ExecStart=/usr/local/bin/mosdns start --as-service -d /etc/mosdns -c /etc/mosdns/config.yaml'
+assert_fails 'unit with stale executable condition was accepted' \
+  unit_uses_installed_binary <<< "$wrong_condition_unit"
+
+wrong_exec_start_unit='[Unit]
+ConditionFileIsExecutable=/etc/mosdns/mosdns
+[Service]
+ExecStart=/etc/mosdns/mosdns start --as-service -d /etc/mosdns -c /etc/mosdns/config.yaml'
+assert_fails 'unit using stale executable path was accepted' \
+  unit_uses_installed_binary <<< "$wrong_exec_start_unit"
+
+reset_exec_start_unit='[Service]
+ExecStart=/etc/mosdns/mosdns start --as-service
+ExecStart=
+ExecStart=/usr/local/bin/mosdns start -c /etc/mosdns/config.yaml'
+unit_uses_installed_binary <<< "$reset_exec_start_unit" ||
+  fail 'systemd ExecStart reset was not honored'
+
+assert_fails 'unit without ExecStart was accepted' \
+  unit_uses_installed_binary <<< '[Unit]
+Description=A DNS forwarder'
+
 checksum_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-installer-test.XXXXXXXX")
 trap 'rm -rf -- "$checksum_dir"' EXIT
 asset=mosdns-linux-amd64.zip

@@ -145,6 +145,33 @@ extract_release_files() {
   IFS= read -r -n 4 magic < "$destination/mosdns" || true
   [[ $magic == $'\177ELF' ]] || die "Release 中的 mosdns 不是 Linux ELF 可执行文件"
 }
+unit_uses_installed_binary() {
+  local line value
+  local exec_start_seen=false
+  local exec_start_matches=true
+  local executable_condition_matches=true
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    if [[ $line =~ ^[[:space:]]*ExecStart=[[:space:]]*(.*)$ ]]; then
+      value=${BASH_REMATCH[1]}
+      if [[ -z $value ]]; then
+        exec_start_seen=false
+        exec_start_matches=true
+      else
+        exec_start_seen=true
+        [[ $value == "$BINARY_PATH" || $value == "$BINARY_PATH "* ]] || exec_start_matches=false
+      fi
+    elif [[ $line =~ ^[[:space:]]*ConditionFileIsExecutable=[[:space:]]*(.*)$ ]]; then
+      value=${BASH_REMATCH[1]}
+      if [[ -z $value ]]; then
+        executable_condition_matches=true
+      elif [[ $value != "$BINARY_PATH" ]]; then
+        executable_condition_matches=false
+      fi
+    fi
+  done
+  [[ $exec_start_seen == true && $exec_start_matches == true && $executable_condition_matches == true ]]
+}
 cleanup() {
   local status=$?
   if [[ -n ${staged_binary:-} && ( -e ${staged_binary:-} || -L ${staged_binary:-} ) ]]; then
@@ -274,12 +301,22 @@ main() {
     printf '已安装默认配置：%s\n' "$CONFIG_PATH"
   fi
   local unit_exists=false
-  if systemctl cat mosdns.service >/dev/null 2>&1; then
+  local unit_text=''
+  if unit_text=$(systemctl cat mosdns.service 2>/dev/null); then
     unit_exists=true
+    if ! unit_uses_installed_binary <<< "$unit_text"; then
+      printf '检测到 mosdns.service 未使用 %s，正在重新安装服务。\n' "$BINARY_PATH"
+      "$BINARY_PATH" service uninstall || die '移除旧 mosdns.service 失败'
+      "$BINARY_PATH" service install -d "$CONFIG_DIR" -c "$CONFIG_PATH" ||
+        die '重新安装 mosdns.service 失败'
+    fi
   else
     "$BINARY_PATH" service install -d "$CONFIG_DIR" -c "$CONFIG_PATH" ||
       die 'mosdns service install 失败'
   fi
+  unit_text=$(systemctl cat mosdns.service 2>/dev/null) || die '无法读取 mosdns.service'
+  unit_uses_installed_binary <<< "$unit_text" ||
+    die "mosdns.service 未使用 $BINARY_PATH"
   systemctl enable mosdns.service
   if [[ $unit_exists == true ]]; then
     systemctl restart mosdns.service

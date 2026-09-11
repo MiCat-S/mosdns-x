@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | 
 2. 下载 zip 和 `SHA256SUMS`，精确校验所选文件。
 3. 安装 `/usr/local/bin/mosdns`。
 4. 如果 `/etc/mosdns/config.yaml` 不存在，安装 Release 自带的默认配置；已有配置保持原样。
-5. 首次安装时调用 `mosdns service install` 创建并启用 systemd 服务，随后启动；再次运行时升级二进制并重启已有服务。
+5. 首次安装时调用 `mosdns service install` 创建并启用 systemd 服务，随后启动；再次运行时升级二进制并重启已有服务。如果旧服务仍引用 `/etc/mosdns/mosdns` 等过期路径，脚本会重新安装服务，使 `ExecStart` 和 `ConditionFileIsExecutable` 指向 `/usr/local/bin/mosdns`。
 
 它不会安装 Caddy、软件包或防火墙规则，也不会创建服务账户、域名或管理员密码。运行前确保主机已有 `bash`、`curl`、`unzip`、`sha256sum` 和 systemd。
 
