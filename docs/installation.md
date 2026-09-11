@@ -16,6 +16,8 @@ curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | 
 
 它不会安装 Caddy、软件包或防火墙规则，也不会创建服务账户、域名或管理员密码。运行前确保主机已有 `bash`、`curl`、`unzip`、`sha256sum` 和 systemd。
 
+安装器会通过 Cloudflare trace 判断当前出口国家。检测到 `CN` 时，GitHub Release 下载默认使用 `https://gh-proxy.com/` 前缀；非中国出口或检测失败时直接连接 GitHub。检测过程不会输出公网 IP。
+
 安装完成后检查：
 
 ```bash
@@ -29,6 +31,16 @@ journalctl -u mosdns -n 50 --no-pager
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | \
   sudo bash -s -- --version vYY.MM.DD
+```
+
+需要绕过自动判断时，可以明确禁用代理或指定 HTTPS 代理前缀：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | \
+  sudo bash -s -- --no-github-proxy
+
+curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | \
+  sudo bash -s -- --github-proxy https://gh-proxy.com/
 ```
 
 默认配置监听 `127.0.0.1:5533` 的 UDP 和 TCP。修改 `/etc/mosdns/config.yaml` 后执行：

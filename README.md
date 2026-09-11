@@ -25,7 +25,7 @@ Linux + systemd 可直接安装或升级：
 curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | sudo bash
 ```
 
-脚本会识别架构、校验 GitHub Release、安装二进制和 `mosdns.service`，然后启动服务；不会安装 Caddy、创建服务账户或覆盖已有配置。详细说明见[一键安装](docs/installation.md)。
+脚本会识别架构、校验 GitHub Release、安装二进制和 `mosdns.service`，然后启动服务；中国大陆出口默认通过 `gh-proxy.com` 下载 Release。它不会安装 Caddy、创建服务账户或覆盖已有配置。详细说明见[一键安装](docs/installation.md)。
 
 上述上游发布链接对应原版。构建本 Fork 的网页版本及初始化账户，请阅读：
 

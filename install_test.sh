@@ -16,6 +16,14 @@ assert_eq() {
   [[ $actual == "$expected" ]] || fail "$message: expected ${expected@Q}, got ${actual@Q}"
 }
 
+assert_fails() {
+  local message=$1
+  shift
+  if ("$@" >/dev/null 2>&1); then
+    fail "$message"
+  fi
+}
+
 assert_eq mosdns-linux-amd64.zip "$(asset_for_arch x86_64)" 'x86_64 mapping'
 assert_eq mosdns-linux-arm64.zip "$(asset_for_arch aarch64)" 'aarch64 mapping'
 assert_eq mosdns-linux-arm-5.zip "$(asset_for_arch armv5tel)" 'ARM v5 mapping'
@@ -33,6 +41,45 @@ fi
 if (validate_version 'v26.13.01' >/dev/null 2>&1); then
   fail 'invalid month was accepted'
 fi
+
+trace_is_china <<'EOF'
+fl=29f202
+loc=CN
+tls=TLSv1.3
+EOF
+printf 'loc=CN\r\n' | trace_is_china
+assert_fails 'loc=cn was treated as China' trace_is_china <<< 'loc=cn'
+assert_fails 'embedded loc=CN was treated as China' trace_is_china <<< 'note=loc=CN'
+assert_fails 'loc=CN with a suffix was treated as China' trace_is_china <<< 'loc=CN-extra'
+assert_fails 'loc=US was treated as China' trace_is_china <<< 'loc=US'
+assert_fails 'missing loc was treated as China' trace_is_china <<< 'warp=off'
+
+detect_china_ip() { return 0; }
+assert_eq "$DEFAULT_GITHUB_PROXY" "$(choose_github_proxy auto)" 'China IP default proxy'
+detect_china_ip() { return 1; }
+assert_eq '' "$(choose_github_proxy auto)" 'non-China or failed detection direct download'
+assert_eq '' "$(choose_github_proxy disabled)" 'disabled proxy'
+assert_eq 'https://mirror.example/path/' "$(choose_github_proxy custom 'https://mirror.example/path///')" 'custom proxy normalization'
+assert_eq 'https://gh-proxy.com/https://github.com/MiCat-S/mosdns-x/releases/download/v26.09.11/mosdns-linux-amd64.zip' \
+  "$(github_download_url 'https://gh-proxy.com/' 'https://github.com/MiCat-S/mosdns-x/releases/download/v26.09.11/mosdns-linux-amd64.zip')" \
+  'proxy URL composition'
+assert_eq 'https://github.com/MiCat-S/mosdns-x/releases/download/v26.09.11/SHA256SUMS' \
+  "$(github_download_url '' 'https://github.com/MiCat-S/mosdns-x/releases/download/v26.09.11/SHA256SUMS')" \
+  'direct URL composition'
+assert_fails 'HTTP custom proxy was accepted' normalize_github_proxy 'http://mirror.example/'
+assert_fails 'custom proxy with whitespace was accepted' normalize_github_proxy $'https://mirror.example/\nmalicious'
+assert_fails 'custom proxy with query was accepted' normalize_github_proxy 'https://mirror.example/?target=x'
+assert_fails 'mutually exclusive proxy options were accepted' bash "$test_dir/install.sh" \
+  --print-asset x86_64 --no-github-proxy --github-proxy https://mirror.example/
+assert_fails 'duplicate custom proxy options were accepted' bash "$test_dir/install.sh" \
+  --print-asset x86_64 --github-proxy https://one.example/ --github-proxy https://two.example/
+assert_fails 'missing custom proxy value was accepted' bash "$test_dir/install.sh" --github-proxy
+assert_eq mosdns-linux-amd64.zip \
+  "$(bash "$test_dir/install.sh" --print-asset x86_64 --no-github-proxy)" \
+  'valid disabled proxy CLI option'
+assert_eq mosdns-linux-amd64.zip \
+  "$(bash "$test_dir/install.sh" --print-asset x86_64 --github-proxy https://mirror.example///)" \
+  'valid custom proxy CLI option'
 
 checksum_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-installer-test.XXXXXXXX")
 trap 'rm -rf -- "$checksum_dir"' EXIT

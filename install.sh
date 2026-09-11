@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 readonly DEFAULT_VERSION="v26.09.11"
 readonly RELEASE_REPOSITORY="MiCat-S/mosdns-x"
+readonly DEFAULT_GITHUB_PROXY="https://gh-proxy.com/"
+readonly CLOUDFLARE_TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
 readonly BINARY_PATH="/usr/local/bin/mosdns"
 readonly CONFIG_DIR="/etc/mosdns"
 readonly CONFIG_PATH="${CONFIG_DIR}/config.yaml"
@@ -13,7 +15,7 @@ die() {
 usage() {
   cat <<'EOF'
 用法：
-  install.sh [--version vYY.MM.DD]
+  install.sh [--version vYY.MM.DD] [--no-github-proxy | --github-proxy PREFIX]
   install.sh --print-asset [ARCH]
   install.sh --help
 
@@ -21,13 +23,16 @@ usage() {
 缺失的默认配置，然后安装或重启 mosdns systemd 服务。
 
 选项：
-  --version TAG       安装指定 Release；默认 v26.09.11
-  --print-asset ARCH  输出 ARCH 对应的 Release 资产；省略 ARCH 时使用 uname -m
-  -h, --help          显示帮助
+  --version TAG          安装指定 Release；默认 v26.09.11
+  --no-github-proxy     禁用中国 IP 自动使用的 GitHub 下载代理
+  --github-proxy PREFIX 指定并强制使用 HTTPS GitHub 下载代理前缀
+  --print-asset ARCH    输出 ARCH 对应的 Release 资产；省略 ARCH 时使用 uname -m
+  -h, --help            显示帮助
 
 示例：
   curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | sudo bash
   sudo bash install.sh --version v26.09.11
+  sudo bash install.sh --github-proxy https://gh-proxy.com/
 EOF
 }
 validate_version() {
@@ -51,6 +56,51 @@ asset_for_arch() {
 }
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "缺少必需命令：$1"
+}
+trace_is_china() {
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    [[ $line == 'loc=CN' ]] && return 0
+  done
+  return 1
+}
+detect_china_ip() {
+  local trace
+  trace=$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 3 --max-time 5 "$CLOUDFLARE_TRACE_URL" 2>/dev/null) || return 1
+  trace_is_china <<< "$trace"
+}
+normalize_github_proxy() {
+  local prefix=$1
+  [[ $prefix == https://* ]] || die 'GitHub 代理前缀必须使用 https://'
+  [[ $prefix != *[$'\t\r\n ']* ]] || die 'GitHub 代理前缀不能包含空白字符'
+  [[ $prefix != *['?'#]* ]] || die 'GitHub 代理前缀不能包含查询串或片段'
+  [[ $prefix =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[-A-Za-z0-9._~!$\&\'()*+,\;=:@%/]*)?$ ]] ||
+    die "无效 GitHub 代理前缀 ${prefix@Q}"
+  while [[ $prefix == */ ]]; do
+    prefix=${prefix%/}
+  done
+  printf '%s/\n' "$prefix"
+}
+choose_github_proxy() {
+  local mode=$1
+  local custom_prefix=${2:-}
+  case "$mode" in
+    auto)
+      if detect_china_ip; then
+        printf '%s\n' "$DEFAULT_GITHUB_PROXY"
+      fi
+      ;;
+    disabled) ;;
+    custom) normalize_github_proxy "$custom_prefix" ;;
+    *) die "未知 GitHub 代理模式 ${mode@Q}" ;;
+  esac
+}
+github_download_url() {
+  local prefix=$1
+  local source_url=$2
+  printf '%s%s\n' "$prefix" "$source_url"
 }
 select_checksum_line() {
   local sums_file=$1
@@ -111,11 +161,27 @@ main() {
   local version=$DEFAULT_VERSION
   local print_asset=false
   local requested_arch=''
+  local github_proxy_mode=auto
+  local github_proxy_arg=''
   while (($#)); do
     case "$1" in
       --version)
         (($# >= 2)) || die '--version 缺少参数'
         version=$2
+        shift 2
+        ;;
+      --no-github-proxy)
+        [[ $github_proxy_mode == auto ]] ||
+          die '--no-github-proxy 与 --github-proxy 互斥，且每项只能指定一次'
+        github_proxy_mode=disabled
+        shift
+        ;;
+      --github-proxy)
+        (($# >= 2)) || die '--github-proxy 缺少参数'
+        [[ $github_proxy_mode == auto ]] ||
+          die '--no-github-proxy 与 --github-proxy 互斥，且每项只能指定一次'
+        github_proxy_mode=custom
+        github_proxy_arg=$2
         shift 2
         ;;
       --print-asset)
@@ -139,6 +205,9 @@ main() {
     esac
   done
   validate_version "$version"
+  if [[ $github_proxy_mode == custom ]]; then
+    github_proxy_arg=$(normalize_github_proxy "$github_proxy_arg")
+  fi
   if [[ $print_asset == true ]]; then
     [[ -n $requested_arch ]] || requested_arch=$(uname -m)
     asset_for_arch "$requested_arch"
@@ -154,19 +223,33 @@ main() {
     die "$BINARY_PATH 已存在且不是普通文件，拒绝覆盖"
   [[ ( ! -e $CONFIG_PATH && ! -L $CONFIG_PATH ) || -f $CONFIG_PATH ]] ||
     die "$CONFIG_PATH 已存在且不是普通文件，拒绝使用"
-  local arch asset release_base
+  local arch asset release_base github_proxy asset_url checksum_url
   arch=$(uname -m)
   asset=$(asset_for_arch "$arch")
   release_base="https://github.com/${RELEASE_REPOSITORY}/releases/download/${version}"
+  github_proxy=$(choose_github_proxy "$github_proxy_mode" "$github_proxy_arg")
+  if [[ -n $github_proxy ]]; then
+    if [[ $github_proxy_mode == auto ]]; then
+      printf 'GitHub 下载：检测到中国 IP，使用代理 %s\n' "$github_proxy"
+    else
+      printf 'GitHub 下载：使用指定代理 %s\n' "$github_proxy"
+    fi
+  elif [[ $github_proxy_mode == disabled ]]; then
+    printf 'GitHub 下载：代理已禁用，使用直连。\n'
+  else
+    printf 'GitHub 下载：未检测到中国 IP，使用直连。\n'
+  fi
+  asset_url=$(github_download_url "$github_proxy" "$release_base/$asset")
+  checksum_url=$(github_download_url "$github_proxy" "$release_base/SHA256SUMS")
   install_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-install.XXXXXXXX") || die '无法创建临时目录'
   chmod 0700 "$install_temp_dir"
   trap cleanup EXIT
   trap 'exit 130' INT TERM HUP
   printf '下载 Mosdns-x %s（%s）...\n' "$version" "$asset"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    --output "$install_temp_dir/$asset" "$release_base/$asset"
+    --output "$install_temp_dir/$asset" "$asset_url"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    --output "$install_temp_dir/SHA256SUMS" "$release_base/SHA256SUMS"
+    --output "$install_temp_dir/SHA256SUMS" "$checksum_url"
   verify_checksum "$install_temp_dir" "$asset" || die 'Release SHA-256 校验失败'
   extract_release_files "$install_temp_dir/$asset" "$install_temp_dir"
   chmod 0755 "$install_temp_dir/mosdns"
