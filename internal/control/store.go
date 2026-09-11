@@ -24,7 +24,8 @@ import (
 
 const (
 	legacySchemaVersion             = 1
-	schemaVersion                   = 2
+	credentialSchemaVersion         = 2
+	schemaVersion                   = 3
 	defaultPage                     = 100
 	maxPage                         = 1000
 	maxUsageRange                   = 31 * 24 * time.Hour
@@ -32,18 +33,21 @@ const (
 )
 
 var (
-	bMeta              = []byte("meta")
-	bUsers             = []byte("users")
-	bUsernames         = []byte("usernames")
-	bSessions          = []byte("sessions")
-	bUserSessions      = []byte("user_sessions")
-	bCredentials       = []byte("credentials")
-	bCredentialTokens  = []byte("credential_tokens")
-	bUserCredentials   = []byte("user_credentials")
-	bActiveCredentials = []byte("active_credentials")
-	bUsage             = []byte("usage")
-	bAudit             = []byte("audit")
-	kSchema            = []byte("schema_version")
+	bMeta               = []byte("meta")
+	bUsers              = []byte("users")
+	bUsernames          = []byte("usernames")
+	bSessions           = []byte("sessions")
+	bUserSessions       = []byte("user_sessions")
+	bCredentials        = []byte("credentials")
+	bCredentialTokens   = []byte("credential_tokens")
+	bUserCredentials    = []byte("user_credentials")
+	bActiveCredentials  = []byte("active_credentials")
+	bUsage              = []byte("usage")
+	bAudit              = []byte("audit")
+	bDNSPolicySettings  = []byte("dns_policy_settings")
+	bDNSPolicyRules     = []byte("dns_policy_rules")
+	bUserDNSPolicyRules = []byte("user_dns_policy_rules")
+	kSchema             = []byte("schema_version")
 )
 
 type Clock interface{ Now() time.Time }
@@ -128,16 +132,19 @@ func Open(path string, opts Options) (*Store, error) {
 				return fmt.Errorf("unsupported schema version")
 			}
 			version := binary.BigEndian.Uint64(v)
-			if version != legacySchemaVersion && version != schemaVersion {
+			if version != legacySchemaVersion && version != credentialSchemaVersion && version != schemaVersion {
 				return fmt.Errorf("unsupported schema version")
 			}
 		}
-		for _, name := range [][]byte{bUsers, bUsernames, bSessions, bUserSessions, bCredentials, bCredentialTokens, bUserCredentials, bActiveCredentials, bUsage, bAudit} {
+		for _, name := range [][]byte{bUsers, bUsernames, bSessions, bUserSessions, bCredentials, bCredentialTokens, bUserCredentials, bActiveCredentials, bUsage, bAudit, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
 		}
 		if err := rebuildCredentialTokenIndex(tx); err != nil {
+			return err
+		}
+		if err := initializeDNSPolicyData(tx); err != nil {
 			return err
 		}
 		var buf [8]byte
@@ -481,6 +488,9 @@ func (s *Store) InitializeAdmin(ctx context.Context, spec UserSpec) (User, error
 		if err := marshalPut(tx.Bucket(bUsers), []byte(id), r); err != nil {
 			return err
 		}
+		if err := putDefaultDNSPolicySettings(tx, id, now); err != nil {
+			return err
+		}
 		if err := tx.Bucket(bUsernames).Put([]byte(strings.ToLower(u.Username)), []byte(id)); err != nil {
 			return err
 		}
@@ -514,6 +524,9 @@ func (s *Store) CreateUser(ctx context.Context, actor string, spec UserSpec) (Us
 		}
 		r := userRecord{User: u, PasswordSalt: salt, PasswordHash: ph, PasswordVersion: 1, RateTokens: float64(u.QPS) + float64(u.Burst), RateAt: now.UnixNano()}
 		if err := marshalPut(tx.Bucket(bUsers), []byte(id), r); err != nil {
+			return err
+		}
+		if err := putDefaultDNSPolicySettings(tx, id, now); err != nil {
 			return err
 		}
 		if err := names.Put([]byte(strings.ToLower(u.Username)), []byte(id)); err != nil {

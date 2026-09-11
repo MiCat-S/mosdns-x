@@ -9,8 +9,10 @@ flowchart TD
   Client[DoH / DoH3 客户端] --> Auth[专属 URL 或 Bearer 鉴权]
   Auth --> Entry[报文校验 + 事务受理]
   Entry --> Control
-  Entry --> Chain[现有 sequence / cache / fast_forward]
-  Chain --> Upstream[现有上游协议]
+	Entry --> Policy[用户请求策略]
+	Policy --> Chain[现有 sequence / cache / fast_forward]
+	Chain --> Upstream[现有上游协议]
+	Chain --> ResponsePolicy[私有地址应答检查]
   Entry --> Stats[异步结果统计]
   Upstream --> Stats
   Control --> DB[(bbolt / MySQL 控制存储)]
@@ -23,14 +25,15 @@ flowchart TD
 | 模块 | 职责 |
 |---|---|
 | `coremain` | 配置、命令行、依赖组装、监听器、关闭顺序 |
-| `internal/control` | 密码、会话、设备凭证、额度与 QPS、准确用量、审计、存储维护 |
+| `internal/control` | 密码、会话、设备凭证、额度与 QPS、用户 DNS 策略、准确用量、审计、存储维护 |
+| `internal/dnspolicy` | 编译并缓存用户规则，在执行链前后应用请求和响应策略 |
 | `internal/controlapi` | 管理员和用户 API、CSRF、访问范围、旧 API 保护、静态资源 |
 | `internal/telemetry` | 有界异步队列、分钟聚合、可选查询明细、上游尝试统计 |
 | `pkg/server` | 协议解析与入口；通过回调使用鉴权和受理服务 |
 | `pkg/query_context` | 请求只读身份及上游观察器、分支私有的响应与缓存标记 |
 | `web` | 管理端、用户端、构建时嵌入的网页资源 |
 
-`internal/control.Service` 和 `internal/telemetry.Service` 隔离存储实现，`coremain` 根据配置创建 bbolt 或 MySQL 后端。`pkg` 不导入 `internal/control`；适配发生在 `coremain`。插件不直接维护用户账户或扣减额度，因此缓存提前返回、fallback 和并行上游不会绕过受理，也不会重复扣额。
+`internal/control.Service` 和 `internal/telemetry.Service` 隔离存储实现，`coremain` 根据配置创建 bbolt 或 MySQL 后端。`pkg` 不导入 `internal/control`；适配发生在 `coremain`。插件不直接维护用户账户或扣减额度，因此缓存提前返回、fallback 和并行上游不会绕过受理，也不会重复扣额。用户策略按用户缓存五秒，面板写入成功后立即使对应缓存失效。
 
 ## 身份和权限
 
@@ -50,11 +53,11 @@ flowchart TD
 
 bbolt 把控制与统计放在两个本地文件中。MySQL 使用规范化表：控制事务锁定用户和凭证行后完成额度、令牌桶与用量写入；统计通过有界队列批量 `UPSERT`。两个后端保持相同的服务接口和 API 语义，迁移工具在服务停止后把 bbolt 数据导入空的 MySQL 表组。
 
-首版所有用户使用同一 DNS 解析策略和共享缓存。未来加入用户专属过滤、ECS 或不同上游策略时，必须先隔离缓存键或缓存实例，不能仅在缓存之后分流。
+所有用户仍共享 YAML 定义的 sequence 和缓存。用户的拦截、允许和重写在 sequence 前完成，不会把合成应答写入共享缓存；私有地址检查在最终响应上完成。移除 ECS 会改变进入缓存插件的请求，缓存插件继续按其现有请求键行为工作。用户策略当前不能选择不同上游。
 
 ## 页面范围
 
-管理端提供用户开通／停用、到期与配额、设备凭证、全局和单用户用量、响应统计、审计及安全的系统概览。用户端提供自身额度、用量、设备凭证和密码管理。
+管理端提供用户开通／停用、到期与配额、设备凭证、全局和单用户用量、响应统计、审计及安全的系统概览。用户端提供连接指引、额度和查询统计、DNS 安全设置、自定义规则、Lookup、设备凭证、密码和帮助页面。
 
 系统概览只导出经过白名单筛选的配置摘要。DNS YAML 的在线修改、热重载、支付、自助注册和多实例共享配额不属于首版。
 

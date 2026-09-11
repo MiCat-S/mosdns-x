@@ -142,7 +142,12 @@ type NavIconName =
   | "system"
   | "usage"
   | "credential"
-  | "password";
+  | "password"
+  | "shield"
+  | "rules"
+  | "lookup"
+  | "account"
+  | "help";
 type NavItem = { to: string; label: string; icon: NavIconName };
 
 const adminNav: NavItem[] = [
@@ -154,9 +159,12 @@ const adminNav: NavItem[] = [
 ];
 const userNav: NavItem[] = [
   { to: "/app", label: "我的服务", icon: "overview" },
+  { to: "/app/lookup", label: "DNS Lookup", icon: "lookup" },
+  { to: "/app/rules", label: "自定义规则", icon: "rules" },
+  { to: "/app/privacy", label: "安全与隐私", icon: "shield" },
   { to: "/app/usage", label: "统计与日志", icon: "usage" },
-  { to: "/app/credentials", label: "凭证", icon: "credential" },
-  { to: "/app/password", label: "密码", icon: "password" },
+  { to: "/app/account", label: "账户中心", icon: "account" },
+  { to: "/app/help", label: "帮助", icon: "help" },
 ];
 
 function NavIcon({ name }: { name: NavIconName }) {
@@ -206,6 +214,36 @@ function NavIcon({ name }: { name: NavIconName }) {
       <>
         <rect x="4" y="10" width="16" height="11" rx="2" />
         <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2" />
+      </>
+    ),
+    shield: (
+      <>
+        <path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6l8-3Z" />
+        <path d="m9 12 2 2 4-4" />
+      </>
+    ),
+    rules: (
+      <>
+        <path d="M5 4h14M5 10h14M5 16h9M5 22h9" />
+        <circle cx="17" cy="19" r="3" />
+      </>
+    ),
+    lookup: (
+      <>
+        <circle cx="11" cy="11" r="6" />
+        <path d="m16 16 4 4M8.5 11h5M11 8.5v5" />
+      </>
+    ),
+    account: (
+      <>
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4 21a8 8 0 0 1 16 0" />
+      </>
+    ),
+    help: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.6 9a2.6 2.6 0 1 1 4.58 1.7c-.78.86-1.93 1.24-1.93 2.8M12 17h.01" />
       </>
     ),
   };

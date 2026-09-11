@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
@@ -58,6 +59,8 @@ type Options struct {
 	SessionTTL        time.Duration
 	CookieName        string
 	SystemInfo        func(context.Context) (SystemInfo, error)
+	Lookup            func(context.Context, string, string, uint16) (*dns.Msg, error)
+	InvalidatePolicy  func(string)
 	Assets            fs.FS
 	Legacy            http.Handler
 	EnablePprof       bool
@@ -67,14 +70,20 @@ type Options struct {
 	LoginRateLimit    int
 	LoginRateWindow   time.Duration
 	LoginIPCapacity   int
+	LookupConcurrency int
+	LookupRateLimit   int
+	LookupRateWindow  time.Duration
+	LookupIPCapacity  int
 	Now               func() time.Time
 }
 
 type Handler struct {
-	opts      Options
-	publicURL *url.URL
-	kdfSlots  chan struct{}
-	limiter   *ipLimiter
+	opts          Options
+	publicURL     *url.URL
+	kdfSlots      chan struct{}
+	lookupSlots   chan struct{}
+	limiter       *ipLimiter
+	lookupLimiter *ipLimiter
 }
 
 func New(opts Options) (*Handler, error) {
@@ -135,10 +144,33 @@ func New(opts Options) (*Handler, error) {
 	if opts.LoginRateLimit < 1 || opts.LoginIPCapacity < 1 || opts.LoginRateWindow <= 0 {
 		return nil, errors.New("invalid login rate options")
 	}
+	if opts.LookupConcurrency == 0 {
+		opts.LookupConcurrency = 8
+	}
+	if opts.LookupConcurrency < 1 || opts.LookupConcurrency > 128 {
+		return nil, errors.New("invalid lookup concurrency")
+	}
+	if opts.LookupRateLimit == 0 {
+		opts.LookupRateLimit = 60
+	}
+	if opts.LookupRateWindow == 0 {
+		opts.LookupRateWindow = time.Minute
+	}
+	if opts.LookupIPCapacity == 0 {
+		opts.LookupIPCapacity = 4096
+	}
+	if opts.LookupRateLimit < 1 || opts.LookupRateWindow <= 0 || opts.LookupIPCapacity < 1 {
+		return nil, errors.New("invalid lookup rate options")
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Handler{opts: opts, publicURL: u, kdfSlots: make(chan struct{}, opts.LoginConcurrency), limiter: newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now)}, nil
+	return &Handler{
+		opts: opts, publicURL: u,
+		kdfSlots: make(chan struct{}, opts.LoginConcurrency), lookupSlots: make(chan struct{}, opts.LookupConcurrency),
+		limiter:       newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
+		lookupLimiter: newIPLimiter(opts.LookupRateLimit, opts.LookupRateWindow, opts.LookupIPCapacity, opts.Now),
+	}, nil
 }
 
 func validatePublicURL(raw string, dev bool) (*url.URL, error) {
@@ -248,7 +280,7 @@ func (h *Handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 			h.serviceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"user": u, "quota": q})
+		writeJSON(w, http.StatusOK, map[string]any{"user": u, "quota": q, "public_dns_url": h.opts.PublicDNSURL})
 		return
 	}
 	if strings.HasPrefix(p, "/me/") {
@@ -453,6 +485,19 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request, ss control.Session,
 			return
 		}
 		h.queries(w, r, u.ID)
+		return
+	case "/lookup":
+		h.lookup(w, r, u)
+		return
+	case "/settings":
+		h.settings(w, r, u.ID)
+		return
+	case "/rules":
+		h.rules(w, r, u.ID, "")
+		return
+	}
+	if strings.HasPrefix(p, "/rules/") {
+		h.rules(w, r, u.ID, strings.TrimPrefix(p, "/rules/"))
 		return
 	}
 	if strings.HasPrefix(p, "/credentials/") {
@@ -704,6 +749,280 @@ func (h *Handler) dohURL(token string) string {
 	u := *h.publicURL
 	u.Path = strings.TrimRight(u.Path, "/") + "/" + url.PathEscape(token)
 	return u.String()
+}
+
+func (h *Handler) settings(w http.ResponseWriter, r *http.Request, userID string) {
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := h.opts.Control.GetDNSPolicySettings(r.Context(), userID)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		if settings.BlockedQTypes == nil {
+			settings.BlockedQTypes = []string{}
+		}
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodPatch:
+		var patch control.DNSPolicySettingsPatch
+		if decodeJSON(w, r, &patch) != nil {
+			return
+		}
+		settings, err := h.opts.Control.UpdateDNSPolicySettings(r.Context(), userID, userID, patch)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		h.invalidatePolicy(userID)
+		if settings.BlockedQTypes == nil {
+			settings.BlockedQTypes = []string{}
+		}
+		writeJSON(w, http.StatusOK, settings)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (h *Handler) rules(w http.ResponseWriter, r *http.Request, userID, ruleID string) {
+	if ruleID == "" {
+		switch r.Method {
+		case http.MethodGet:
+			page, ok := parsePage(w, r)
+			if !ok {
+				return
+			}
+			rules, err := h.opts.Control.ListDNSPolicyRules(r.Context(), userID, page)
+			if err != nil {
+				h.serviceError(w, err)
+				return
+			}
+			if rules.Items == nil {
+				rules.Items = []control.DNSPolicyRule{}
+			}
+			writeJSON(w, http.StatusOK, rules)
+		case http.MethodPost:
+			var spec control.DNSPolicyRuleSpec
+			if decodeJSON(w, r, &spec) != nil {
+				return
+			}
+			rule, err := h.opts.Control.CreateDNSPolicyRule(r.Context(), userID, userID, spec)
+			if err != nil {
+				h.serviceError(w, err)
+				return
+			}
+			h.invalidatePolicy(userID)
+			writeJSON(w, http.StatusCreated, rule)
+		default:
+			methodNotAllowed(w)
+		}
+		return
+	}
+	if strings.Contains(ruleID, "/") || len(ruleID) > 64 {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	switch r.Method {
+	case http.MethodPatch:
+		var patch control.DNSPolicyRulePatch
+		if decodeJSON(w, r, &patch) != nil {
+			return
+		}
+		rule, err := h.opts.Control.UpdateDNSPolicyRule(r.Context(), userID, userID, ruleID, patch)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		h.invalidatePolicy(userID)
+		writeJSON(w, http.StatusOK, rule)
+	case http.MethodDelete:
+		if err := h.opts.Control.DeleteDNSPolicyRule(r.Context(), userID, userID, ruleID); err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		h.invalidatePolicy(userID)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (h *Handler) invalidatePolicy(userID string) {
+	if h.opts.InvalidatePolicy != nil {
+		h.opts.InvalidatePolicy(userID)
+	}
+}
+
+type lookupRecord struct {
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	TTL   uint32 `json:"ttl"`
+	Value string `json:"value"`
+}
+
+type lookupQuestion struct {
+	Name  string `json:"name"`
+	QType string `json:"qtype"`
+}
+
+type lookupEDNS struct {
+	Present     bool       `json:"present"`
+	Version     uint8      `json:"version"`
+	UDPSize     uint16     `json:"udp_size"`
+	DNSSECOK    bool       `json:"dnssec_ok"`
+	OptionCodes []uint16   `json:"option_codes"`
+	ECS         *lookupECS `json:"ecs,omitempty"`
+}
+
+type lookupECS struct {
+	Address      string `json:"address"`
+	Family       uint16 `json:"family"`
+	SourcePrefix uint8  `json:"source_prefix"`
+	ScopePrefix  uint8  `json:"scope_prefix"`
+}
+
+type lookupResponse struct {
+	Question   lookupQuestion `json:"question"`
+	Rcode      string         `json:"rcode"`
+	DurationMS float64        `json:"duration_ms"`
+	Answers    []lookupRecord `json:"answers"`
+	Authority  []lookupRecord `json:"authority"`
+	Additional []lookupRecord `json:"additional"`
+	EDNS       lookupEDNS     `json:"edns"`
+}
+
+func (h *Handler) lookup(w http.ResponseWriter, r *http.Request, user control.User) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.opts.Lookup == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	if !user.ExpiresAt.IsZero() && !h.opts.Now().Before(user.ExpiresAt) {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	var in struct {
+		Name  string `json:"name"`
+		QType string `json:"qtype"`
+	}
+	if decodeJSON(w, r, &in) != nil {
+		return
+	}
+	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(in.Name)), ".")
+	qtypeName := strings.ToUpper(strings.TrimSpace(in.QType))
+	qtype, supported := map[string]uint16{
+		"A": dns.TypeA, "AAAA": dns.TypeAAAA, "CNAME": dns.TypeCNAME,
+		"NS": dns.TypeNS, "MX": dns.TypeMX, "TXT": dns.TypeTXT,
+	}[qtypeName]
+	if !validLookupName(name) || !supported {
+		writeError(w, http.StatusBadRequest, "invalid_input")
+		return
+	}
+	if _, ok := dns.IsDomainName(dns.Fqdn(name)); !ok {
+		writeError(w, http.StatusBadRequest, "invalid_input")
+		return
+	}
+	if !h.lookupLimiter.allow(h.clientIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
+	select {
+	case h.lookupSlots <- struct{}{}:
+		defer func() { <-h.lookupSlots }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
+	started := time.Now()
+	response, err := h.opts.Lookup(r.Context(), user.ID, dns.Fqdn(name), qtype)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	result := lookupResponse{
+		Question:   lookupQuestion{Name: name, QType: qtypeName},
+		Rcode:      dns.RcodeToString[response.Rcode],
+		DurationMS: float64(time.Since(started).Microseconds()) / 1000,
+		Answers:    lookupRecords(response.Answer),
+		Authority:  lookupRecords(response.Ns),
+		Additional: lookupRecords(response.Extra),
+		EDNS:       lookupEDNSInfo(response),
+	}
+	if result.Rcode == "" {
+		result.Rcode = strconv.Itoa(response.Rcode)
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func lookupEDNSInfo(message *dns.Msg) lookupEDNS {
+	result := lookupEDNS{OptionCodes: []uint16{}}
+	opt := message.IsEdns0()
+	if opt == nil {
+		return result
+	}
+	result.Present = true
+	result.Version = opt.Version()
+	result.UDPSize = opt.UDPSize()
+	result.DNSSECOK = opt.Do()
+	for _, option := range opt.Option {
+		if option == nil {
+			continue
+		}
+		result.OptionCodes = append(result.OptionCodes, option.Option())
+		if ecs, ok := option.(*dns.EDNS0_SUBNET); ok && result.ECS == nil {
+			result.ECS = &lookupECS{Family: ecs.Family, SourcePrefix: ecs.SourceNetmask, ScopePrefix: ecs.SourceScope}
+			address, valid := netip.AddrFromSlice(ecs.Address)
+			bits := 0
+			switch ecs.Family {
+			case 1:
+				address, bits = address.Unmap(), 32
+			case 2:
+				bits = 128
+			}
+			if valid && bits > 0 && int(ecs.SourceNetmask) <= bits {
+				result.ECS.Address = netip.PrefixFrom(address, int(ecs.SourceNetmask)).Masked().Addr().String()
+			}
+		}
+	}
+	return result
+}
+
+func validLookupName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-' || char == '_') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func lookupRecords(records []dns.RR) []lookupRecord {
+	result := make([]lookupRecord, 0, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		header := record.Header()
+		value := record.String()
+		fields := strings.Fields(value)
+		if len(fields) >= 5 {
+			value = strings.Join(fields[4:], " ")
+		}
+		result = append(result, lookupRecord{
+			Name: strings.TrimSuffix(header.Name, "."), Type: dns.TypeToString[header.Rrtype], TTL: header.Ttl, Value: value,
+		})
+	}
+	return result
 }
 
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request, userID string, admin bool) {

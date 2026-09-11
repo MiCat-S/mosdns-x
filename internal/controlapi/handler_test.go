@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
@@ -214,6 +216,77 @@ func TestCredentialOneTimeURLAndIsolation(t *testing.T) {
 	dnsCookie := &http.Cookie{Name: "mosdns_session", Value: issued.Token}
 	if w = req(f.handler, http.MethodGet, "/api/v1/session", "", dnsCookie, ""); w.Code != 401 {
 		t.Fatalf("dns token session=%d", w.Code)
+	}
+}
+
+func TestLookupIsAuthenticatedValidatedAndScoped(t *testing.T) {
+	f := newFixture(t)
+	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
+	var gotUser, gotName string
+	var gotType uint16
+	f.handler.opts.Lookup = func(_ context.Context, userID, name string, qtype uint16) (*dns.Msg, error) {
+		gotUser, gotName, gotType = userID, name, qtype
+		request := new(dns.Msg).SetQuestion(name, qtype)
+		response := new(dns.Msg)
+		response.SetReply(request)
+		response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("192.0.2.10")}}
+		response.SetEdns0(1232, false)
+		return response, nil
+	}
+	if got := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"example.org","qtype":"A"}`, nil, csrf); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous lookup=%d", got.Code)
+	}
+	if got := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"example.org","qtype":"A"}`, alice, ""); got.Code != http.StatusForbidden {
+		t.Fatalf("lookup without csrf=%d", got.Code)
+	}
+	if got := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"bad name","qtype":"A"}`, alice, csrf); got.Code != http.StatusBadRequest {
+		t.Fatalf("invalid lookup=%d", got.Code)
+	}
+	w := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"Example.ORG.","qtype":"a"}`, alice, csrf)
+	if w.Code != http.StatusOK || gotUser != f.user1.ID || gotName != "example.org." || gotType != dns.TypeA {
+		t.Fatalf("lookup=%d user=%q name=%q type=%d body=%s", w.Code, gotUser, gotName, gotType, w.Body.String())
+	}
+	var response lookupResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Question.Name != "example.org" || response.Question.QType != "A" || response.Rcode != "NOERROR" || len(response.Answers) != 1 || response.Answers[0].Value != "192.0.2.10" || !response.EDNS.Present || response.EDNS.UDPSize != 1232 {
+		t.Fatalf("lookup response=%s err=%v", w.Body.String(), err)
+	}
+}
+
+func TestUserPolicySettingsAndRules(t *testing.T) {
+	f := newFixture(t)
+	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
+	invalidations := 0
+	f.handler.opts.InvalidatePolicy = func(userID string) {
+		if userID != f.user1.ID {
+			t.Fatalf("invalidated user=%q", userID)
+		}
+		invalidations++
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/settings", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"blocked_qtypes":[]`) {
+		t.Fatalf("settings=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"strip_ecs":true,"block_private_answers":true,"blocked_qtypes":["AAAA","TXT"]}`, alice, csrf); w.Code != http.StatusOK {
+		t.Fatalf("update settings=%d %s", w.Code, w.Body.String())
+	}
+	w := req(f.handler, http.MethodPost, "/api/v1/me/rules", `{"enabled":true,"action":"rewrite","match":"exact","pattern":"example.org","record_type":"A","value":"192.0.2.1"}`, alice, csrf)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create rule=%d %s", w.Code, w.Body.String())
+	}
+	var rule control.DNSPolicyRule
+	if err := json.Unmarshal(w.Body.Bytes(), &rule); err != nil || rule.UserID != f.user1.ID || rule.ID == "" {
+		t.Fatalf("rule=%+v err=%v", rule, err)
+	}
+	if w = req(f.handler, http.MethodGet, "/api/v1/me/rules", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), rule.ID) {
+		t.Fatalf("list rules=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPatch, "/api/v1/me/rules/"+rule.ID, `{"enabled":false}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"enabled":false`) {
+		t.Fatalf("patch rule=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodDelete, "/api/v1/me/rules/"+rule.ID, "", alice, csrf); w.Code != http.StatusNoContent {
+		t.Fatalf("delete rule=%d %s", w.Code, w.Body.String())
+	}
+	if invalidations != 4 {
+		t.Fatalf("invalidations=%d", invalidations)
 	}
 }
 

@@ -116,6 +116,79 @@ type AuditRecord struct {
 	CreatedAt  time.Time      `json:"created_at"`
 }
 
+type DNSPolicyAction string
+
+const (
+	DNSPolicyAllow   DNSPolicyAction = "allow"
+	DNSPolicyBlock   DNSPolicyAction = "block"
+	DNSPolicyRewrite DNSPolicyAction = "rewrite"
+)
+
+type DNSPolicyMatchType string
+
+const (
+	DNSPolicyMatchExact   DNSPolicyMatchType = "exact"
+	DNSPolicyMatchSuffix  DNSPolicyMatchType = "suffix"
+	DNSPolicyMatchKeyword DNSPolicyMatchType = "keyword"
+	DNSPolicyMatchRegexp  DNSPolicyMatchType = "regexp"
+)
+
+type DNSPolicyRewriteType string
+
+const (
+	DNSPolicyRewriteA     DNSPolicyRewriteType = "A"
+	DNSPolicyRewriteAAAA  DNSPolicyRewriteType = "AAAA"
+	DNSPolicyRewriteCNAME DNSPolicyRewriteType = "CNAME"
+)
+
+type DNSPolicySettings struct {
+	UserID              string    `json:"user_id"`
+	StripECS            bool      `json:"strip_ecs"`
+	BlockPrivateAnswers bool      `json:"block_private_answers"`
+	BlockedQTypes       []string  `json:"blocked_qtypes"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+type DNSPolicySettingsPatch struct {
+	StripECS            *bool     `json:"strip_ecs,omitempty"`
+	BlockPrivateAnswers *bool     `json:"block_private_answers,omitempty"`
+	BlockedQTypes       *[]string `json:"blocked_qtypes,omitempty"`
+}
+
+type DNSPolicyRule struct {
+	ID         string               `json:"id"`
+	UserID     string               `json:"user_id"`
+	Enabled    bool                 `json:"enabled"`
+	Priority   uint32               `json:"priority"`
+	Action     DNSPolicyAction      `json:"action"`
+	Match      DNSPolicyMatchType   `json:"match"`
+	Pattern    string               `json:"pattern"`
+	RecordType DNSPolicyRewriteType `json:"record_type,omitempty"`
+	Value      string               `json:"value,omitempty"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
+}
+
+type DNSPolicyRuleSpec struct {
+	Enabled    bool                 `json:"enabled"`
+	Priority   uint32               `json:"priority"`
+	Action     DNSPolicyAction      `json:"action"`
+	Match      DNSPolicyMatchType   `json:"match"`
+	Pattern    string               `json:"pattern"`
+	RecordType DNSPolicyRewriteType `json:"record_type,omitempty"`
+	Value      string               `json:"value,omitempty"`
+}
+
+type DNSPolicyRulePatch struct {
+	Enabled    *bool                 `json:"enabled,omitempty"`
+	Priority   *uint32               `json:"priority,omitempty"`
+	Action     *DNSPolicyAction      `json:"action,omitempty"`
+	Match      *DNSPolicyMatchType   `json:"match,omitempty"`
+	Pattern    *string               `json:"pattern,omitempty"`
+	RecordType *DNSPolicyRewriteType `json:"record_type,omitempty"`
+	Value      *string               `json:"value,omitempty"`
+}
+
 type Page struct {
 	Limit  int    `json:"limit"`
 	Cursor string `json:"cursor,omitempty"`
@@ -148,6 +221,13 @@ type Service interface {
 	CurrentQuota(ctx context.Context, userID string) (QuotaStatus, error)
 	Usage(ctx context.Context, userID string, from, to time.Time, page Page) (PageResult[UsagePoint], error)
 	CredentialUsage(ctx context.Context, userID, credentialID string, from, to time.Time, page Page) (PageResult[UsagePoint], error)
+	GetDNSPolicySettings(ctx context.Context, userID string) (DNSPolicySettings, error)
+	UpdateDNSPolicySettings(ctx context.Context, actorID, userID string, patch DNSPolicySettingsPatch) (DNSPolicySettings, error)
+	CreateDNSPolicyRule(ctx context.Context, actorID, userID string, spec DNSPolicyRuleSpec) (DNSPolicyRule, error)
+	GetDNSPolicyRule(ctx context.Context, userID, ruleID string) (DNSPolicyRule, error)
+	UpdateDNSPolicyRule(ctx context.Context, actorID, userID, ruleID string, patch DNSPolicyRulePatch) (DNSPolicyRule, error)
+	DeleteDNSPolicyRule(ctx context.Context, actorID, userID, ruleID string) error
+	ListDNSPolicyRules(ctx context.Context, userID string, page Page) (PageResult[DNSPolicyRule], error)
 	ListAudit(ctx context.Context, from, to time.Time, page Page) (PageResult[AuditRecord], error)
 	Close() error
 }

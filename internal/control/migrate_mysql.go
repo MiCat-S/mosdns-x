@@ -15,11 +15,13 @@ import (
 
 // MySQLMigrationReport describes records copied from a bbolt control database.
 type MySQLMigrationReport struct {
-	Users       uint64 `json:"users"`
-	Sessions    uint64 `json:"sessions"`
-	Credentials uint64 `json:"credentials"`
-	Usage       uint64 `json:"usage"`
-	Audit       uint64 `json:"audit"`
+	Users          uint64 `json:"users"`
+	PolicySettings uint64 `json:"policy_settings"`
+	PolicyRules    uint64 `json:"policy_rules"`
+	Sessions       uint64 `json:"sessions"`
+	Credentials    uint64 `json:"credentials"`
+	Usage          uint64 `json:"usage"`
+	Audit          uint64 `json:"audit"`
 }
 
 // InspectBoltForMySQL validates an offline bbolt database and counts the rows
@@ -27,12 +29,18 @@ type MySQLMigrationReport struct {
 func InspectBoltForMySQL(ctx context.Context, source string) (MySQLMigrationReport, error) {
 	var report MySQLMigrationReport
 	err := withBoltMigrationSource(ctx, source, func(tx *bbolt.Tx) error {
+		policyRules := uint64(0)
+		if bucket := tx.Bucket(bDNSPolicyRules); bucket != nil {
+			policyRules = uint64(bucket.Stats().KeyN)
+		}
 		report = MySQLMigrationReport{
-			Users:       uint64(tx.Bucket(bUsers).Stats().KeyN),
-			Sessions:    uint64(tx.Bucket(bSessions).Stats().KeyN),
-			Credentials: uint64(tx.Bucket(bCredentials).Stats().KeyN),
-			Usage:       uint64(tx.Bucket(bUsage).Stats().KeyN),
-			Audit:       uint64(tx.Bucket(bAudit).Stats().KeyN),
+			Users:          uint64(tx.Bucket(bUsers).Stats().KeyN),
+			PolicySettings: uint64(tx.Bucket(bUsers).Stats().KeyN),
+			PolicyRules:    policyRules,
+			Sessions:       uint64(tx.Bucket(bSessions).Stats().KeyN),
+			Credentials:    uint64(tx.Bucket(bCredentials).Stats().KeyN),
+			Usage:          uint64(tx.Bucket(bUsage).Stats().KeyN),
+			Audit:          uint64(tx.Bucket(bAudit).Stats().KeyN),
 		}
 		return nil
 	})
@@ -52,6 +60,9 @@ func MigrateBoltToMySQL(ctx context.Context, source string, destination *MySQLSt
 				return err
 			}
 			if err := migrateUsers(ctx, sourceTx, targetTx, &report); err != nil {
+				return err
+			}
+			if err := migrateDNSPolicies(ctx, sourceTx, targetTx, &report); err != nil {
 				return err
 			}
 			if err := migrateSessions(ctx, sourceTx, targetTx, &report); err != nil {
@@ -95,21 +106,73 @@ func withBoltMigrationSource(ctx context.Context, source string, fn func(*bbolt.
 
 func requireEmptyMySQLControl(ctx context.Context, tx *sql.Tx) error {
 	var initialized bool
-	var users, sessions, credentials, usage, audit uint64
+	var users, policySettings, policyRules, sessions, credentials, usage, audit uint64
 	err := tx.QueryRowContext(ctx, `SELECT initialized,
 		(SELECT COUNT(*) FROM mosdns_users),
+		(SELECT COUNT(*) FROM mosdns_dns_policy_settings),
+		(SELECT COUNT(*) FROM mosdns_dns_policy_rules),
 		(SELECT COUNT(*) FROM mosdns_sessions),
 		(SELECT COUNT(*) FROM mosdns_credentials),
 		(SELECT COUNT(*) FROM mosdns_usage_minutes),
 		(SELECT COUNT(*) FROM mosdns_audit_logs)
-		FROM mosdns_control_meta WHERE id=1 FOR UPDATE`).Scan(&initialized, &users, &sessions, &credentials, &usage, &audit)
+		FROM mosdns_control_meta WHERE id=1 FOR UPDATE`).Scan(&initialized, &users, &policySettings, &policyRules, &sessions, &credentials, &usage, &audit)
 	if err != nil {
 		return err
 	}
-	if initialized || users+sessions+credentials+usage+audit != 0 {
+	if initialized || users+policySettings+policyRules+sessions+credentials+usage+audit != 0 {
 		return fmt.Errorf("%w: mysql control destination is not empty", ErrConflict)
 	}
 	return nil
+}
+
+func migrateDNSPolicies(ctx context.Context, source *bbolt.Tx, target *sql.Tx, report *MySQLMigrationReport) error {
+	settingsBucket := source.Bucket(bDNSPolicySettings)
+	if err := source.Bucket(bUsers).ForEach(func(userID, value []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var user userRecord
+		if err := json.Unmarshal(value, &user); err != nil {
+			return err
+		}
+		settings := defaultDNSPolicySettings(string(userID), user.CreatedAt)
+		if settingsBucket != nil {
+			if encoded := settingsBucket.Get(userID); encoded != nil {
+				if err := json.Unmarshal(encoded, &settings); err != nil {
+					return err
+				}
+				if settings.BlockedQTypes == nil {
+					settings.BlockedQTypes = []string{}
+				}
+			}
+		}
+		settings.UserID = string(userID)
+		if err := insertMySQLDNSPolicySettings(ctx, target, settings); err != nil {
+			return err
+		}
+		report.PolicySettings++
+		return nil
+	}); err != nil {
+		return err
+	}
+	rulesBucket := source.Bucket(bDNSPolicyRules)
+	if rulesBucket == nil {
+		return nil
+	}
+	return rulesBucket.ForEach(func(_, value []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var rule DNSPolicyRule
+		if err := json.Unmarshal(value, &rule); err != nil {
+			return err
+		}
+		if err := insertMySQLDNSPolicyRule(ctx, target, rule); err != nil {
+			return err
+		}
+		report.PolicyRules++
+		return nil
+	})
 }
 
 func migrateUsers(ctx context.Context, source *bbolt.Tx, target *sql.Tx, report *MySQLMigrationReport) error {

@@ -47,6 +47,28 @@ func TestMySQLAuthenticateCredential(t *testing.T) {
 	}
 }
 
+func TestInitializeMySQLControlUpgradesV1Schema(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT GET_LOCK('mosdns_x_control_schema', 10)`)).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlControlMigrations[0])).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT version FROM mosdns_schema_migrations WHERE component = 'control'`)).WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(legacyMySQLControlSchemaVersion))
+	for _, statement := range mysqlControlMigrations[1:] {
+		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := initializeMySQLControl(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMySQLAdmitUpdatesQuotaRateAndUsageAtomically(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

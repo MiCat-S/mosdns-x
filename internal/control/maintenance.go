@@ -275,9 +275,16 @@ func validateSchema(tx *bbolt.Tx) error {
 	switch binary.BigEndian.Uint64(v) {
 	case legacySchemaVersion:
 		return nil
-	case schemaVersion:
+	case credentialSchemaVersion:
 		if tx.Bucket(bCredentialTokens) == nil {
 			return fmt.Errorf("missing bucket %q", bCredentialTokens)
+		}
+		return nil
+	case schemaVersion:
+		for _, name := range [][]byte{bCredentialTokens, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules} {
+			if tx.Bucket(name) == nil {
+				return fmt.Errorf("missing bucket %q", name)
+			}
 		}
 		return nil
 	default:

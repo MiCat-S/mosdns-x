@@ -13,6 +13,9 @@ import {
   credentialCanRevoke,
   fromLocalDateTime,
   QueryDetails,
+  LookupPage,
+  PrivacyPage,
+  RulesPage,
   successRate,
   toLocalDateTime,
   usageSummary,
@@ -49,6 +52,116 @@ function mount(path: string) {
 }
 beforeEach(() => vi.restoreAllMocks());
 describe("前端访问与秘密处理", () => {
+  it("安全与隐私页读取并保存用户设置", async () => {
+    const settings = {
+      user_id: "u1",
+      strip_ecs: false,
+      block_private_answers: false,
+      blocked_qtypes: ["TXT"],
+      updated_at: "2026-09-12T00:00:00Z",
+    };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(response(settings))
+      .mockResolvedValueOnce(
+        response({ ...settings, strip_ecs: true, blocked_qtypes: ["AAAA"] }),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    render(<PrivacyPage />);
+    const stripECS = await screen.findByRole("checkbox", {
+      name: "移除 ECS",
+    });
+    fireEvent.click(stripECS);
+    fireEvent.change(screen.getByLabelText("拒绝的查询类型"), {
+      target: { value: "AAAA" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(String(fetcher.mock.calls[1][0])).toContain("/me/settings");
+    const init = fetcher.mock.calls[1][1] as RequestInit;
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({
+      strip_ecs: true,
+      block_private_answers: false,
+      blocked_qtypes: ["AAAA"],
+    });
+    expect(
+      await screen.findByText("安全与隐私设置已保存。"),
+    ).toBeInTheDocument();
+  });
+  it("DNS Lookup 发送限定记录类型并展示应答", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      response({
+        question: { name: "example.com", qtype: "AAAA" },
+        rcode: "NOERROR",
+        duration_ms: 1.5,
+        answers: [
+          { name: "example.com.", type: "AAAA", ttl: 60, value: "2001:db8::1" },
+        ],
+        authority: [],
+        additional: [],
+        edns: {
+          present: false,
+          version: 0,
+          udp_size: 0,
+          dnssec_ok: false,
+          option_codes: [],
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    render(<LookupPage />);
+    fireEvent.change(screen.getByLabelText("域名"), {
+      target: { value: "example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("记录类型"), {
+      target: { value: "AAAA" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始查询" }));
+    expect(await screen.findByText(/2001:db8::1/)).toBeInTheDocument();
+    expect(String(fetcher.mock.calls[0][0])).toContain("/me/lookup");
+    expect(
+      JSON.parse(String((fetcher.mock.calls[0][1] as RequestInit).body)),
+    ).toEqual({
+      name: "example.com",
+      qtype: "AAAA",
+    });
+  });
+  it("自定义规则页使用用户规则接口", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(response([]))
+      .mockResolvedValueOnce(
+        response({
+          id: "r1",
+          user_id: "u1",
+          action: "block",
+          match: "suffix",
+          pattern: "ads.example",
+          enabled: true,
+          created_at: "2026-09-12T00:00:00Z",
+          updated_at: "2026-09-12T00:00:00Z",
+        }),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    render(<RulesPage />);
+    expect(await screen.findByText("尚未设置自定义规则")).toBeInTheDocument();
+    expect(String(fetcher.mock.calls[0][0])).toContain("/me/rules");
+    fireEvent.change(screen.getAllByRole("textbox")[0], {
+      target: { value: "ads.example" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加规则" }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+    expect(
+      JSON.parse(String((fetcher.mock.calls[1][1] as RequestInit).body)),
+    ).toEqual({
+      action: "block",
+      match: "suffix",
+      pattern: "ads.example",
+      priority: 100,
+      enabled: true,
+    });
+  });
   it("查询明细显示客户端、Answer IP、EDNS 和 ECS，并兼容空字段", async () => {
     vi.stubGlobal(
       "fetch",

@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from "react";
 import {
+  Link,
   Navigate,
   useLocation,
   useNavigate,
@@ -33,10 +34,17 @@ import type {
   DeviceUsagePoint,
   IssuedCredential,
   Me,
+  LookupRecord,
+  LookupResult,
   Page,
   QueryRecord,
   Stats,
   SystemInfo,
+  Rule,
+  RuleAction,
+  RuleMatch,
+  RuleRecordType,
+  UserSettings,
   UsagePoint,
   User,
 } from "./types";
@@ -1632,6 +1640,22 @@ export function ServicePage() {
               />
             </div>
           </Card>
+          <Card title="连接指引" className="connection-guide">
+            <ol>
+              <li>
+                在<Link to="/app/account">账户中心</Link>
+                为每台设备创建独立凭证。
+              </li>
+              <li>创建成功时保存一次性显示的专属 DoH 地址或 Bearer Token。</li>
+              <li>
+                将地址填入支持 DoH / DoH3 的客户端；公共服务地址为
+                <code>{data[0].public_dns_url}</code>。
+              </li>
+            </ol>
+            <p className="caption">
+              凭证令牌仅在签发和轮换时显示一次。遗失后请轮换或撤销该设备凭证。
+            </p>
+          </Card>
           <StatsBlocks stats={data[1]} />
         </>
       ) : null}
@@ -1695,7 +1719,7 @@ export function CredentialsPage() {
   );
 }
 
-export function PasswordPage() {
+function PasswordForm() {
   const { clearLocal } = useSession();
   const nav = useNavigate();
   const [error, setError] = useState(""),
@@ -1728,44 +1752,629 @@ export function PasswordPage() {
     }
   }
   return (
+    <form onSubmit={submit}>
+      <Alert error={error} />
+      <Field label="当前密码">
+        <input
+          type="password"
+          name="current_password"
+          autoComplete="current-password"
+          required
+        />
+      </Field>
+      <Field label="新密码" hint="至少 12 个字符">
+        <input
+          type="password"
+          name="new_password"
+          autoComplete="new-password"
+          required
+          minLength={12}
+          maxLength={1024}
+        />
+      </Field>
+      <Field label="确认新密码">
+        <input
+          type="password"
+          name="confirm"
+          autoComplete="new-password"
+          required
+          minLength={12}
+          maxLength={1024}
+        />
+      </Field>
+      <button className="primary" disabled={busy}>
+        {busy ? "正在修改…" : "修改密码"}
+      </button>
+    </form>
+  );
+}
+
+export function PasswordPage() {
+  return (
     <>
       <PageTitle title="修改密码" description="修改后，当前会话会立即退出" />
       <Card className="narrow">
-        <form onSubmit={submit}>
-          <Alert error={error} />
-          <Field label="当前密码">
+        <PasswordForm />
+      </Card>
+    </>
+  );
+}
+
+const lookupTypes = ["A", "AAAA", "CNAME", "NS", "MX", "TXT"] as const;
+const ruleRecordTypes = ["A", "AAAA", "CNAME"] as const;
+
+function normalizeRuleList(value: Rule[] | Page<Rule>) {
+  return Array.isArray(value) ? value : value.items;
+}
+
+function splitQTypes(value: string) {
+  return [
+    ...new Set(
+      value
+        .split(/[，,\s]+/)
+        .map((item) => item.trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+export function PrivacyPage() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [draft, setDraft] = useState<UserSettings | null>(null);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setDraft(data ?? null), [data]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft) return;
+    setBusy(true);
+    setError("");
+    setSaved("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", {
+          strip_ecs: draft.strip_ecs,
+          block_private_answers: draft.block_private_answers,
+          blocked_qtypes: draft.blocked_qtypes,
+        }),
+      );
+      setData(updated);
+      setSaved("安全与隐私设置已保存。");
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <PageTitle
+        title="安全与隐私"
+        description="设置只对你的 DNS 请求生效，并在保存后立即应用。"
+      />
+      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {draft ? (
+        <Card className="narrow" title="请求处理偏好">
+          <form onSubmit={submit}>
+            <label className="setting-option">
+              <input
+                type="checkbox"
+                aria-label="移除 ECS"
+                checked={draft.strip_ecs}
+                onChange={(event) =>
+                  setDraft({ ...draft, strip_ecs: event.target.checked })
+                }
+              />
+              <span>
+                <strong>移除 ECS</strong>
+                <small>不向上游携带 EDNS Client Subnet 客户端网段信息。</small>
+              </span>
+            </label>
+            <label className="setting-option">
+              <input
+                type="checkbox"
+                aria-label="拦截私有地址应答"
+                checked={draft.block_private_answers}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    block_private_answers: event.target.checked,
+                  })
+                }
+              />
+              <span>
+                <strong>拦截私有地址应答</strong>
+                <small>拒绝返回私有或本地网络地址的解析结果。</small>
+              </span>
+            </label>
+            <Field
+              label="拒绝的查询类型"
+              hint="用逗号分隔，例如 AAAA, TXT。留空表示不按类型拒绝。"
+            >
+              <input
+                aria-label="拒绝的查询类型"
+                value={draft.blocked_qtypes.join(", ")}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    blocked_qtypes: splitQTypes(event.target.value),
+                  })
+                }
+                maxLength={300}
+                placeholder="例如：AAAA, TXT"
+              />
+            </Field>
+            {saved ? <p className="success-note">{saved}</p> : null}
+            <button className="primary" disabled={busy}>
+              {busy ? "正在保存…" : "保存设置"}
+            </button>
+          </form>
+        </Card>
+      ) : null}
+    </>
+  );
+}
+
+function rulePayload(form: HTMLFormElement) {
+  const fields = new FormData(form);
+  const action = String(fields.get("action")) as RuleAction;
+  const recordType = String(fields.get("record_type")) as RuleRecordType;
+  const value = String(fields.get("value")).trim();
+  return {
+    action,
+    match: String(fields.get("match")) as RuleMatch,
+    pattern: String(fields.get("pattern")).trim(),
+    priority: Number(fields.get("priority")),
+    ...(action === "rewrite" && recordType ? { record_type: recordType } : {}),
+    ...(action === "rewrite" && value ? { value } : {}),
+    enabled: fields.get("enabled") === "on",
+  };
+}
+
+function RuleForm({
+  rule,
+  onDone,
+  onCancel,
+}: {
+  rule?: Rule;
+  onDone: () => void;
+  onCancel?: () => void;
+}) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const editing = Boolean(rule);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = rulePayload(form);
+    if (!payload.pattern) {
+      setError("请填写匹配内容。");
+      return;
+    }
+    if (
+      payload.action === "rewrite" &&
+      (!payload.record_type || !payload.value)
+    ) {
+      setError("重写规则需要选择记录类型并填写目标值。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await request<Rule>(
+        rule ? `/me/rules/${rule.id}` : "/me/rules",
+        json(rule ? "PATCH" : "POST", payload),
+      );
+      if (!editing) form.reset();
+      onDone();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="rule-form" onSubmit={submit}>
+      <Alert error={error} />
+      <div className="form-grid">
+        <Field label="动作">
+          <select name="action" defaultValue={rule?.action ?? "block"}>
+            <option value="allow">允许</option>
+            <option value="block">拦截</option>
+            <option value="rewrite">重写</option>
+          </select>
+        </Field>
+        <Field label="匹配方式">
+          <select name="match" defaultValue={rule?.match ?? "suffix"}>
+            <option value="exact">完全匹配</option>
+            <option value="suffix">后缀匹配</option>
+            <option value="keyword">关键词匹配</option>
+            <option value="regexp">正则匹配</option>
+          </select>
+        </Field>
+      </div>
+      <Field label="匹配内容" hint="例如 example.com 或 ads.example.com">
+        <input
+          name="pattern"
+          defaultValue={rule?.pattern}
+          maxLength={1024}
+          required
+        />
+      </Field>
+      <Field label="优先级" hint="数值越小越先匹配；同一优先级按规则 ID 排序。">
+        <input
+          name="priority"
+          type="number"
+          min="0"
+          max="4294967295"
+          defaultValue={rule?.priority ?? 100}
+          required
+        />
+      </Field>
+      <div className="form-grid">
+        <Field label="记录类型" hint="仅重写规则使用，重写时必选。">
+          <select name="record_type" defaultValue={rule?.record_type ?? ""}>
+            <option value="">选择类型</option>
+            {ruleRecordTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="重写目标" hint="仅 rewrite 动作使用。">
+          <input name="value" defaultValue={rule?.value} maxLength={1024} />
+        </Field>
+      </div>
+      <label className="check">
+        <input
+          name="enabled"
+          type="checkbox"
+          defaultChecked={rule?.enabled ?? true}
+        />
+        启用此规则
+      </label>
+      <div className="actions">
+        {onCancel ? (
+          <button type="button" onClick={onCancel}>
+            取消
+          </button>
+        ) : null}
+        <button className="primary" disabled={busy}>
+          {busy ? "正在保存…" : editing ? "保存规则" : "添加规则"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function RulesPage() {
+  const [version, setVersion] = useState(0);
+  const [editing, setEditing] = useState<Rule | null>(null);
+  const [error, setError] = useState("");
+  const load = useCallback(
+    (signal: AbortSignal) => allPages<Rule>("/me/rules", signal),
+    [],
+  );
+  const { data, error: loadError, loading } = useLoad(load, [load, version]);
+  const rules = data ? normalizeRuleList(data) : [];
+  async function remove(rule: Rule) {
+    if (!confirm(`删除规则“${rule.pattern}”？`)) return;
+    setError("");
+    try {
+      await request(`/me/rules/${rule.id}`, { method: "DELETE" });
+      setVersion((current) => current + 1);
+    } catch (reason) {
+      setError(message(reason));
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title="自定义规则"
+        description="按域名匹配允许、拦截或重写你的 DNS 查询。"
+      />
+      <Card title="添加规则">
+        <RuleForm onDone={() => setVersion((current) => current + 1)} />
+      </Card>
+      <Alert error={loadError || error} />
+      {loading ? (
+        <Spinner />
+      ) : rules.length ? (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>动作</th>
+                <th>匹配</th>
+                <th>类型</th>
+                <th>优先级</th>
+                <th>目标</th>
+                <th>状态</th>
+                <th>
+                  <span className="sr-only">操作</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((rule) => (
+                <tr key={rule.id}>
+                  <td>
+                    <span
+                      className={`badge ${rule.action === "block" ? "error" : "ok"}`}
+                    >
+                      {rule.action === "allow"
+                        ? "允许"
+                        : rule.action === "block"
+                          ? "拦截"
+                          : "重写"}
+                    </span>
+                  </td>
+                  <td>
+                    <code>{rule.pattern}</code>
+                    <small>{rule.match}</small>
+                  </td>
+                  <td>{rule.record_type ?? "—"}</td>
+                  <td>{rule.priority}</td>
+                  <td className="query-detail">{rule.value ?? "—"}</td>
+                  <td>
+                    <span className={`badge ${rule.enabled ? "ok" : "off"}`}>
+                      {rule.enabled ? "已启用" : "已停用"}
+                    </span>
+                  </td>
+                  <td className="table-actions">
+                    <button onClick={() => setEditing(rule)}>编辑</button>
+                    <button className="danger" onClick={() => remove(rule)}>
+                      删除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <Empty>尚未设置自定义规则</Empty>
+      )}
+      {editing ? (
+        <Modal title="编辑规则" onClose={() => setEditing(null)}>
+          <RuleForm
+            rule={editing}
+            onDone={() => {
+              setEditing(null);
+              setVersion((current) => current + 1);
+            }}
+            onCancel={() => setEditing(null)}
+          />
+        </Modal>
+      ) : null}
+    </>
+  );
+}
+
+function lookupRecordText(record: LookupRecord) {
+  const value = record.value ?? record.data ?? "";
+  return (
+    [
+      record.name,
+      record.ttl === undefined ? "" : String(record.ttl),
+      record.type,
+      value,
+    ]
+      .filter(Boolean)
+      .join(" ") || "空记录"
+  );
+}
+
+function LookupRecords({
+  title,
+  records,
+}: {
+  title: string;
+  records: LookupRecord[];
+}) {
+  return (
+    <Card title={title}>
+      {records.length ? (
+        <ul className="dns-records">
+          {records.map((record, index) => (
+            <li key={`${record.name ?? "record"}-${index}`}>
+              <code>{lookupRecordText(record)}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <Empty>无记录</Empty>
+      )}
+    </Card>
+  );
+}
+
+export function LookupPage() {
+  const [name, setName] = useState("");
+  const [qtype, setQType] = useState<(typeof lookupTypes)[number]>("A");
+  const [data, setData] = useState<LookupResult | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const question = name.trim();
+    if (!question) return;
+    setBusy(true);
+    setError("");
+    try {
+      setData(
+        await request<LookupResult>(
+          "/me/lookup",
+          json("POST", { name: question, qtype }),
+        ),
+      );
+    } catch (reason) {
+      setError(message(reason));
+      setData(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title="DNS Lookup"
+        description="使用当前账户策略执行一次 DNS 查询。"
+      />
+      <Card title="查询">
+        <form className="lookup-form" onSubmit={submit}>
+          <Field label="域名">
             <input
-              type="password"
-              name="current_password"
-              autoComplete="current-password"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="example.com"
+              maxLength={255}
               required
             />
           </Field>
-          <Field label="新密码">
-            <input
-              type="password"
-              name="new_password"
-              autoComplete="new-password"
-              required
-              minLength={12}
-              maxLength={1024}
-            />
-          </Field>
-          <Field label="确认新密码">
-            <input
-              type="password"
-              name="confirm"
-              autoComplete="new-password"
-              required
-              minLength={12}
-              maxLength={1024}
-            />
+          <Field label="记录类型">
+            <select
+              value={qtype}
+              onChange={(event) =>
+                setQType(event.target.value as (typeof lookupTypes)[number])
+              }
+            >
+              {lookupTypes.map((type) => (
+                <option key={type}>{type}</option>
+              ))}
+            </select>
           </Field>
           <button className="primary" disabled={busy}>
-            {busy ? "正在修改…" : "修改密码"}
+            {busy ? "正在查询…" : "开始查询"}
           </button>
         </form>
+        <Alert error={error} />
       </Card>
+      {data ? (
+        <>
+          <div className="metrics">
+            <Metric label="响应码" value={data.rcode || "UNKNOWN"} />
+            <Metric
+              label="查询耗时"
+              value={`${data.duration_ms.toFixed(2)} ms`}
+            />
+            <Metric
+              label="问题"
+              value={`${data.question.name} · ${data.question.qtype}`}
+            />
+          </div>
+          <LookupRecords title="Answer" records={data.answers ?? []} />
+          <div className="grid2">
+            <LookupRecords title="Authority" records={data.authority ?? []} />
+            <LookupRecords title="Additional" records={data.additional ?? []} />
+          </div>
+          <Card title="EDNS">
+            <div className="rows">
+              <div>
+                <span>携带 EDNS</span>
+                <strong>
+                  {data.edns?.present
+                    ? `v${data.edns.version} · UDP ${data.edns.udp_size} bytes`
+                    : "否"}
+                </strong>
+              </div>
+              <div>
+                <span>DNSSEC OK</span>
+                <strong>{data.edns?.dnssec_ok ? "是" : "否"}</strong>
+              </div>
+              <div>
+                <span>ECS</span>
+                <strong>
+                  {data.edns?.ecs
+                    ? `${data.edns.ecs.address}/${data.edns.ecs.source_prefix}`
+                    : "无"}
+                </strong>
+              </div>
+            </div>
+          </Card>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+export function AccountPage() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<Me>("/me", { signal }),
+    [],
+  );
+  const { data, error, loading } = useLoad(load, [load]);
+  return (
+    <>
+      <PageTitle
+        title="账户中心"
+        description="管理账户状态、设备凭证与登录密码。"
+      />
+      {loading ? <Spinner /> : <Alert error={error} />}
+      {data ? (
+        <>
+          <div className="metrics">
+            <Metric label="账户" value={data.user.username} />
+            <Metric label="服务到期" value={fmt.date(data.user.expires_at)} />
+            <Metric label="凭证名额" value={data.user.max_credentials} />
+          </div>
+          <Card title="公共 DNS 地址">
+            <code className="block">{data.public_dns_url}</code>
+            <p className="caption">
+              请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。
+            </p>
+          </Card>
+          <CredentialManager base="/me" max={data.user.max_credentials} />
+          <Card className="narrow" title="修改密码">
+            <p className="caption">修改成功后，当前会话会立即退出。</p>
+            <PasswordForm />
+          </Card>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+export function HelpPage() {
+  return (
+    <>
+      <PageTitle title="帮助" description="面板内的常用功能说明。" />
+      <div className="grid2 help-grid">
+        <Card title="设备接入">
+          <p>
+            先在账户中心创建一个设备凭证。专属 DoH 地址和 Bearer Token
+            仅会显示一次，请在设备端安全保存。
+          </p>
+          <p>凭证遗失或设备不再使用时，可在账户中心轮换或撤销它。</p>
+        </Card>
+        <Card title="安全与隐私">
+          <p>
+            移除 ECS
+            可减少向上游暴露的网络信息；拦截私有地址应答可降低被引导到本地网络地址的风险。
+          </p>
+        </Card>
+        <Card title="自定义规则">
+          <p>
+            规则按匹配方式处理你的查询。使用正则匹配前请先在 DNS Lookup
+            验证域名和记录类型，避免意外影响常用服务。
+          </p>
+        </Card>
+        <Card title="用量与日志">
+          <p>
+            统计与日志展示账户已处理的 DNS
+            请求。查询明细是否可见取决于服务端是否已开启日志记录。
+          </p>
+        </Card>
+      </div>
     </>
   );
 }

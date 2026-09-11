@@ -34,6 +34,18 @@ func TestMySQLIntegrationControlLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	settings, err := store.GetDNSPolicySettings(ctx, user.ID)
+	if err != nil || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 {
+		t.Fatalf("default policy settings=%+v err=%v", settings, err)
+	}
+	rule, err := store.CreateDNSPolicyRule(ctx, user.ID, user.ID, DNSPolicyRuleSpec{Enabled: true, Priority: 10, Action: DNSPolicyRewrite, Match: DNSPolicyMatchExact, Pattern: "internal.example", RecordType: DNSPolicyRewriteA, Value: "192.0.2.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := store.ListDNSPolicyRules(ctx, user.ID, Page{})
+	if err != nil || len(rules.Items) != 1 || rules.Items[0].ID != rule.ID {
+		t.Fatalf("policy rules=%+v err=%v", rules, err)
+	}
 	issued, err := store.CreateCredential(ctx, user.ID, user.ID, "phone", time.Time{})
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +103,8 @@ func cleanupMySQLControlTables(t *testing.T, dsn string) {
 	for _, statement := range []string{
 		`DROP TABLE IF EXISTS mosdns_sessions`,
 		`DROP TABLE IF EXISTS mosdns_credentials`,
+		`DROP TABLE IF EXISTS mosdns_dns_policy_rules`,
+		`DROP TABLE IF EXISTS mosdns_dns_policy_settings`,
 		`DROP TABLE IF EXISTS mosdns_users`,
 		`DROP TABLE IF EXISTS mosdns_usage_minutes`,
 		`DROP TABLE IF EXISTS mosdns_audit_logs`,

@@ -18,7 +18,10 @@ import (
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
-const mysqlControlSchemaVersion = 1
+const (
+	legacyMySQLControlSchemaVersion = 1
+	mysqlControlSchemaVersion       = 2
+)
 
 type MySQLOptions struct {
 	DSN              string
@@ -124,6 +127,33 @@ var mysqlControlMigrations = []string{
 		created_at_ns BIGINT NOT NULL,
 		KEY ix_mosdns_audit_time (created_at_ns, id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
+	`CREATE TABLE IF NOT EXISTS mosdns_dns_policy_settings (
+		user_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+		strip_ecs BOOLEAN NOT NULL DEFAULT FALSE,
+		block_private_answers BOOLEAN NOT NULL DEFAULT FALSE,
+		blocked_qtypes_json LONGTEXT NOT NULL,
+		updated_at_ns BIGINT NOT NULL,
+		CONSTRAINT fk_mosdns_dns_policy_settings_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
+	`CREATE TABLE IF NOT EXISTS mosdns_dns_policy_rules (
+		id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+		user_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		enabled BOOLEAN NOT NULL,
+		priority BIGINT UNSIGNED NOT NULL,
+		action VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		match_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		pattern VARCHAR(1024) NOT NULL,
+		record_type VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+		rewrite_value VARCHAR(1024) NULL,
+		created_at_ns BIGINT NOT NULL,
+		updated_at_ns BIGINT NOT NULL,
+		KEY ix_mosdns_dns_policy_rules_user (user_id, priority, id),
+		CONSTRAINT fk_mosdns_dns_policy_rules_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
+	`INSERT INTO mosdns_dns_policy_settings
+		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, updated_at_ns)
+		SELECT id, FALSE, FALSE, '[]', created_at_ns FROM mosdns_users
+		ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
 }
 
 func OpenMySQL(opts MySQLOptions) (*MySQLStore, error) {
@@ -197,21 +227,29 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 		defer cancel()
 		_, _ = conn.ExecContext(releaseCtx, `SELECT RELEASE_LOCK('mosdns_x_control_schema')`)
 	}()
-	for _, statement := range mysqlControlMigrations {
+	if _, err := conn.ExecContext(ctx, mysqlControlMigrations[0]); err != nil {
+		return mysqlStoreError(err)
+	}
+	var version int
+	err = conn.QueryRowContext(ctx, `SELECT version FROM mosdns_schema_migrations WHERE component = 'control'`).Scan(&version)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return mysqlStoreError(err)
+	}
+	if err == nil && (version > mysqlControlSchemaVersion || version < legacyMySQLControlSchemaVersion) {
+		return fmt.Errorf("%w: unsupported mysql control schema version %d", ErrUnavailable, version)
+	}
+	for _, statement := range mysqlControlMigrations[1:] {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return mysqlStoreError(err)
 		}
 	}
-	var version int
-	err = conn.QueryRowContext(ctx, `SELECT version FROM mosdns_schema_migrations WHERE component = 'control'`).Scan(&version)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = conn.ExecContext(ctx, `INSERT INTO mosdns_schema_migrations (component, version) VALUES ('control', ?)`, mysqlControlSchemaVersion)
 		return mysqlStoreError(err)
-	case err != nil:
+	case version < mysqlControlSchemaVersion:
+		_, err = conn.ExecContext(ctx, `UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`, mysqlControlSchemaVersion)
 		return mysqlStoreError(err)
-	case version != mysqlControlSchemaVersion:
-		return fmt.Errorf("%w: unsupported mysql control schema version %d", ErrUnavailable, version)
 	default:
 		return nil
 	}
@@ -440,6 +478,9 @@ func (s *MySQLStore) InitializeAdmin(ctx context.Context, spec UserSpec) (User, 
 		if err := insertMySQLUser(ctx, tx, r); err != nil {
 			return err
 		}
+		if err := insertMySQLDNSPolicySettings(ctx, tx, defaultDNSPolicySettings(id, now)); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_control_meta SET initialized=TRUE WHERE id=1`); err != nil {
 			return err
 		}
@@ -468,6 +509,9 @@ func (s *MySQLStore) CreateUser(ctx context.Context, actor string, spec UserSpec
 			return err
 		}
 		if err := insertMySQLUser(ctx, tx, r); err != nil {
+			return err
+		}
+		if err := insertMySQLDNSPolicySettings(ctx, tx, defaultDNSPolicySettings(id, now)); err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "create_user", "user", id, nil, now)

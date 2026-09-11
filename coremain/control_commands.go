@@ -161,7 +161,7 @@ func newControlMigrateMySQLCommand() *cobra.Command {
 		}
 		if dryRun {
 			if migrateControl {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "控制数据：用户 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", controlReport.Users, controlReport.Sessions, controlReport.Credentials, controlReport.Usage, controlReport.Audit); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "控制数据：用户 %d，策略设置 %d，策略规则 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", controlReport.Users, controlReport.PolicySettings, controlReport.PolicyRules, controlReport.Sessions, controlReport.Credentials, controlReport.Usage, controlReport.Audit); err != nil {
 					return err
 				}
 			}

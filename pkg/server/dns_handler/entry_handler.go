@@ -72,6 +72,15 @@ type EntryHandlerOpts struct {
 	// Admit authorizes an authenticated principal after DNS question validation.
 	Admit func(context.Context, query_context.Principal) error
 
+	// BeforeExec applies an authenticated user's request policy. The request is
+	// an isolated copy and may be changed before it enters the executable chain.
+	// A non-nil response skips the executable chain.
+	BeforeExec func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, error)
+
+	// AfterExec applies an authenticated user's response policy. It may replace
+	// the response returned by the executable chain.
+	AfterExec func(context.Context, query_context.Principal, *dns.Msg, *dns.Msg) (*dns.Msg, error)
+
 	// Observe receives one self-contained result for every request.
 	Observe func(Result)
 
@@ -191,19 +200,48 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	result.Admitted = true
 	// cache original id
 	id := req.Id
+	workingReq := req
+	var qCtx *query_context.Context
+	if h.opts.BeforeExec != nil {
+		qCtx = query_context.NewContext(req.Copy(), meta)
+		workingReq = qCtx.Q()
+	}
 
-	// exec entry
-	qCtx := query_context.NewContext(req, meta)
-	err := h.opts.Entry.Exec(ctx, qCtx, nil)
-	respMsg := qCtx.R()
-	if err != nil {
-		result.ExecError = true
-		h.opts.Logger.Warn("entry returned an err", qCtx.InfoField(), zap.Error(err))
-	} else {
-		h.opts.Logger.Debug("entry returned", qCtx.InfoField())
+	var (
+		respMsg *dns.Msg
+		err     error
+	)
+	if h.opts.BeforeExec != nil {
+		respMsg, err = h.opts.BeforeExec(ctx, result.Principal, workingReq)
 	}
 	if err == nil && respMsg == nil {
-		h.opts.Logger.Error("entry returned an nil response", qCtx.InfoField())
+		if qCtx == nil {
+			qCtx = query_context.NewContext(workingReq, meta)
+		}
+		err = h.opts.Entry.Exec(ctx, qCtx, nil)
+		respMsg = qCtx.R()
+	}
+	if err == nil && respMsg != nil && h.opts.AfterExec != nil {
+		respMsg, err = h.opts.AfterExec(ctx, result.Principal, workingReq, respMsg)
+	}
+	if err != nil {
+		result.ExecError = true
+		fields := []zap.Field{zap.Error(err)}
+		if qCtx != nil {
+			fields = append(fields, qCtx.InfoField())
+		}
+		h.opts.Logger.Warn("query execution returned an err", fields...)
+	} else {
+		if qCtx != nil {
+			h.opts.Logger.Debug("entry returned", qCtx.InfoField())
+		}
+	}
+	if err == nil && respMsg == nil {
+		fields := []zap.Field{}
+		if qCtx != nil {
+			fields = append(fields, qCtx.InfoField())
+		}
+		h.opts.Logger.Error("query execution returned a nil response", fields...)
 	}
 
 	if respMsg == nil || err != nil {
@@ -220,7 +258,7 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	if h.opts.CaptureQueryDetails {
 		result.AnswerIPs = answerIPs(respMsg)
 	}
-	if err == nil {
+	if err == nil && qCtx != nil {
 		result.CacheHit = qCtx.CacheHit()
 	}
 	return respMsg, nil

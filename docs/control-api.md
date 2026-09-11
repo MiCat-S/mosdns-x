@@ -19,7 +19,7 @@
 | POST | `/session` | `{username,password}` → 会话对象 |
 | GET | `/session` | 会话对象 |
 | DELETE | `/session` | 注销当前会话 |
-| GET | `/me` | `{user: User, quota: QuotaStatus}` |
+| GET | `/me` | `{user: User, quota: QuotaStatus, public_dns_url: string}` |
 | POST | `/me/password` | `{current_password,new_password}`；成功撤销会话，重新登录 |
 | GET | `/me/credentials` | `PageResult<Credential>` |
 | POST | `/me/credentials` | `{name,expires_at?}` → `IssuedCredential` 加 `doh_url` |
@@ -34,6 +34,24 @@
 | POST/DELETE | `/admin/users/{id}/credentials/{credential_id}[/rotate]` | 与用户端对应操作相同 |
 
 `IssuedCredential` 的 token 是规范小写 RFC 4122 UUIDv4，只展示一次，并与 `Credential.id` 分离。数据库只保存完整 token 的 SHA-256；升级前签发的 `id.secret` token 继续有效，轮换后改为 UUIDv4。`doh_url` 是服务器配置的公共 DNS 基础 URL 加凭证路径；固定基础 URL 可搭配 `Authorization: Bearer <token>` 使用。创建完成后，列表只显示 Credential 元数据。零值到期时间表示未单独设置，由账户服务到期约束；前端对 `0001-01-01T00:00:00Z` 显示为未单独设置。
+
+## 用户 DNS 策略与诊断
+
+| 方法 | 路径 | 请求 / 响应 |
+|---|---|---|
+| GET | `/me/settings` | 当前用户的 `DNSPolicySettings` |
+| PATCH | `/me/settings` | `DNSPolicySettingsPatch` → 更新后的设置 |
+| GET | `/me/rules` | `PageResult<DNSPolicyRule>`，按优先级升序 |
+| POST | `/me/rules` | `DNSPolicyRuleSpec` → 新规则 |
+| PATCH | `/me/rules/{id}` | `DNSPolicyRulePatch` → 更新后的规则 |
+| DELETE | `/me/rules/{id}` | 删除规则 |
+| POST | `/me/lookup` | `{name,qtype}` → 当前执行链的结构化 DNS 结果 |
+
+`DNSPolicySettings` 支持移除 ECS、拦截私有地址应答和拒绝指定 QTYPE。规则动作是 `allow`、`block`、`rewrite`，匹配方式是 `exact`、`suffix`、`keyword`、`regexp`；重写支持 A、AAAA、CNAME。每个用户最多 1000 条规则，按 `priority ASC, id ASC` 判断，第一条匹配规则生效。相同优先级的规则不保证创建顺序，存在覆盖关系时应使用不同优先级。拦截返回 NXDOMAIN；A/AAAA/CNAME 重写 TTL 为 60 秒。
+
+DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因此被用户规则拦截的有效请求仍计入额度。QTYPE 拦截和请求规则在 sequence 前执行；ECS 从请求副本中移除，原始请求快照仍可用于查询明细；私有地址检查在 sequence 和缓存返回后执行。默认设置全部关闭，升级不会改变已有解析行为。
+
+Lookup 只接受 A、AAAA、CNAME、NS、MX、TXT，使用当前实例的同一入口 sequence 和用户策略，返回 `question`、`rcode`、`duration_ms`、`answers`、`authority`、`additional`、`edns`。它只供面板诊断，不扣周期额度，也不写查询统计；已到期用户不能调用。服务默认限制每个客户端地址每分钟 60 次、全局同时 8 次，避免把面板接口当作免费解析入口。
 
 ## 用量、结果统计与运维
 
@@ -63,7 +81,7 @@
 
 ## 受理与兼容边界
 
-先鉴权，再校验报文、账户到期和用户 QPS，事务提交额度扣减后进入现有执行链。缓存命中扣一次，fallback、上游并发与缓存后台刷新不重复扣额。受理后上游失败仍计次数，客户端重试作为新请求。
+HTTP 层先验证 DNS 凭证，再解析和校验报文；有效问题随后检查账户到期、用户 QPS 和额度。事务提交额度扣减后应用用户策略并进入现有执行链。缓存命中扣一次，fallback、上游并发与缓存后台刷新不重复扣额。受理后被用户规则拦截或上游失败仍计次数，客户端重试作为新请求。
 
 启用多用户服务后，旧 `/metrics`、插件 API 也需管理权限；pprof 默认关闭。未启用时保留原有 DNS 配置行为。各协议类型与 HTTP/TLS 扩展库保持现有实现。
 

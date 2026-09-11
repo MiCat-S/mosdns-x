@@ -32,6 +32,50 @@ export interface Quota {
 export interface Me {
   user: User;
   quota: Quota;
+  public_dns_url: string;
+}
+export interface UserSettings {
+  user_id: string;
+  strip_ecs: boolean;
+  block_private_answers: boolean;
+  blocked_qtypes: string[];
+  updated_at: string;
+}
+export type RuleAction = "allow" | "block" | "rewrite";
+export type RuleMatch = "exact" | "suffix" | "keyword" | "regexp";
+export type RuleRecordType = "A" | "AAAA" | "CNAME";
+export interface Rule {
+  id: string;
+  user_id: string;
+  priority: number;
+  action: RuleAction;
+  match: RuleMatch;
+  pattern: string;
+  record_type?: RuleRecordType;
+  value?: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+export interface LookupQuestion {
+  name: string;
+  qtype: string;
+}
+export interface LookupRecord {
+  name?: string;
+  type?: string;
+  ttl?: number;
+  value?: string;
+  data?: string;
+}
+export interface LookupResult {
+  question: LookupQuestion;
+  rcode: string;
+  duration_ms: number;
+  answers: LookupRecord[];
+  authority: LookupRecord[];
+  additional: LookupRecord[];
+  edns?: EDNSInfo;
 }
 export interface Credential {
   id: string;

@@ -43,6 +43,7 @@ import (
 	"github.com/pmkol/mosdns-x/constant"
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/controlapi"
+	"github.com/pmkol/mosdns-x/internal/dnspolicy"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/mlog"
 	"github.com/pmkol/mosdns-x/pkg/data_provider"
@@ -72,6 +73,7 @@ type Mosdns struct {
 	servers           []*server.Server
 	ownedClosers      []io.Closer
 	control           control.Service
+	policy            *dnspolicy.Engine
 	telemetry         telemetry.Service
 	controlCfg        *ControlConfig
 	trustedProxies    []netip.Prefix
@@ -115,6 +117,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("failed to open control database: %w", err)
 		}
+		m.policy = dnspolicy.New(m.control)
 		users, listErr := m.control.ListUsers(ctx, control.Page{Limit: 1})
 		if listErr != nil {
 			return fmt.Errorf("failed to inspect control database: %w", listErr)
@@ -215,7 +218,11 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		var apiHandler http.Handler = m.httpAPIMux
 		if cfg.Control != nil {
 			startedAt := time.Now()
-			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(context.Context) (controlapi.SystemInfo, error) {
+			lookup, lookupErr := m.newPanelLookup(cfg)
+			if lookupErr != nil {
+				return fmt.Errorf("failed to init panel lookup: %w", lookupErr)
+			}
+			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, Lookup: lookup, InvalidatePolicy: m.policy.Invalidate, SystemInfo: func(context.Context) (controlapi.SystemInfo, error) {
 				return controlapi.SystemInfo{Version: constant.Version, StartedAt: startedAt, PublicDNSURL: cfg.Control.PublicDNSURL, QueryLogEnabled: cfg.Control.QueryLog, Config: controlapi.SystemConfig{DNSProtocols: configuredDNSProtocols(cfg), ManagementEnabled: true, PprofEnabled: cfg.Control.EnablePprof, ControlStorage: effectiveControlDriver(cfg.Control), TelemetryStorage: effectiveTelemetryDriver(cfg.Control)}}, nil
 			}})
 			if err != nil {

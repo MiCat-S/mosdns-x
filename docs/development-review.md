@@ -28,6 +28,7 @@
 | DoH / DoH3 联调 | 通过测试代码复审与真实协议测试 | 临时证书与本地上游、HTTP/2 和 HTTP/3 的 GET/POST、两设备共享额度、缓存命中、按协议统计、重启后额度保持 |
 | 图表时间窗口 | 通过代码复审与实际浏览器验证 | 单点可见、保留真实时间间隔、时间轴限制在查询窗口内、日期标签避免重叠 |
 | UUID 设备凭证与查询明细 | 通过 Sol Agent 实现和主 Agent 复审 | UUIDv4 签发／轮换、旧凭证迁移、哈希索引、撤销与过期语义、客户端 IP、Answer IP、EDNS／ECS、旧明细兼容及关闭明细时跳过采集 |
+| 用户策略与扩展页面 | 通过 Sol Agent、Terry-Pi 实现和主 Agent 复审 | ECS 移除、QTYPE 与私有地址拦截、规则优先级和即时失效、Lookup 限流、bbolt／MySQL 迁移、用户资源隔离、账户及帮助页面 |
 
 ## 最终集成验收
 
@@ -43,3 +44,5 @@
 性能测量条件与结果见 [性能验证](performance.md)。所有集成上游使用本地服务，未依赖公共 DNS；未执行发布、部署或生产数据操作。跨平台构建验证不等于目标系统运行验证，Linux 内核 TLS、nftables、ipset 和系统服务管理仍需在对应部署环境验证。
 
 UUID 设备凭证与查询明细增量在同日完成 `go test -mod=readonly ./...`、`go vet -mod=readonly ./...`，并对 `internal/control`、`internal/telemetry`、`dns_handler`、`http_handler`、`controlapi` 和 `coremain` 运行竞态测试。前端格式、类型检查、16 项测试、生产构建、`-tags ui` 测试及嵌入式 UI 主程序构建均通过。
+
+2026-09-12 以 `b85627e` 为增量基线完成用户策略与扩展页面复审。Go 全量测试、UI 标签测试、`go vet` 通过；`internal/control`、`internal/dnspolicy`、`internal/controlapi`、`pkg/server/dns_handler` 与 `coremain` 的竞态测试通过。前端格式、类型检查、20 项测试和生产构建通过。临时本地实例验证了面板登录、页面渲染、规则写入后即时生效、Lookup 与真实 Bearer DoH 使用同一用户策略，以及 DoH 请求准确计入额度；所有上游响应由本地 `blackhole` 插件生成，未依赖公共 DNS。
