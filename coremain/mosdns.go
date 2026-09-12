@@ -44,6 +44,7 @@ import (
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/controlapi"
 	"github.com/pmkol/mosdns-x/internal/dnspolicy"
+	"github.com/pmkol/mosdns-x/internal/publiclist"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/mlog"
 	"github.com/pmkol/mosdns-x/pkg/data_provider"
@@ -54,7 +55,10 @@ import (
 )
 
 type Mosdns struct {
-	logger *zap.Logger
+	logger         *zap.Logger
+	generation     *RuntimeGeneration
+	runtimeManager *RuntimeManager
+	managedRuntime *ManagedRuntimeService
 
 	// Data
 	dataManager *data_provider.DataManager
@@ -74,6 +78,7 @@ type Mosdns struct {
 	ownedClosers      []io.Closer
 	control           control.Service
 	policy            *dnspolicy.Engine
+	publicLists       *publiclist.Service
 	telemetry         telemetry.Service
 	controlCfg        *ControlConfig
 	trustedProxies    []netip.Prefix
@@ -91,20 +96,24 @@ func RunMosdns(cfg *Config) error {
 }
 
 func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
+	effectiveCfg, baseCfg, managedStore, managedView, managedRevision, err := prepareManagedRuntimeConfig(cfg)
+	if err != nil {
+		return err
+	}
+	cfg = effectiveCfg
 	lg, err := mlog.NewLogger(&cfg.Log)
 	if err != nil {
 		return fmt.Errorf("failed to init logger: %w", err)
 	}
 
 	m := &Mosdns{
-		logger:      lg,
-		dataManager: data_provider.NewDataManager(),
-		execs:       make(map[string]executable_seq.Executable),
-		matchers:    make(map[string]executable_seq.Matcher),
-		httpAPIMux:  http.NewServeMux(),
-		metricsReg:  newMetricsReg(),
-		sc:          safe_close.NewSafeClose(),
+		logger:         lg,
+		httpAPIMux:     http.NewServeMux(),
+		metricsReg:     newMetricsReg(),
+		runtimeManager: NewRuntimeManager(),
+		sc:             safe_close.NewSafeClose(),
 	}
+	m.managedRuntime = newManagedRuntimeService(m, managedStore, baseCfg, cfg, managedView, managedRevision)
 	defer func() { retErr = errors.Join(retErr, m.shutdown()) }()
 	_, trustedProxies, err := validateControlConfig(cfg)
 	if err != nil {
@@ -117,14 +126,18 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("failed to open control database: %w", err)
 		}
-		m.policy = dnspolicy.New(m.control)
-		users, listErr := m.control.ListUsers(ctx, control.Page{Limit: 1})
+		ready, listErr := hasEnabledAdministrator(ctx, m.control)
 		if listErr != nil {
 			return fmt.Errorf("failed to inspect control database: %w", listErr)
 		}
-		if len(users.Items) == 0 {
-			return errors.New("control database has no administrator; run control init-admin first")
+		if !ready {
+			return errors.New("control database has no enabled administrator; run control init-admin first")
 		}
+		m.publicLists, err = publiclist.New(m.control, publiclist.Options{Directory: publicListDirectory(cfg)})
+		if err != nil {
+			return fmt.Errorf("failed to initialize public lists: %w", err)
+		}
+		m.policy = dnspolicy.NewWithPublicLists(m.control, m.publicLists)
 		m.telemetry, err = openTelemetryStore(cfg.Control)
 		if err != nil {
 			return fmt.Errorf("failed to open telemetry database: %w", err)
@@ -143,72 +156,36 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 				m.sc.SendCloseSignal(fmt.Errorf("control maintenance stopped: %w", err))
 			}
 		}()
+		m.maintenanceWG.Add(1)
+		go func() {
+			defer m.maintenanceWG.Done()
+			if err := m.publicLists.Run(maintCtx); err != nil && !errors.Is(err, context.Canceled) {
+				m.logger.Error("public list refresher stopped", zap.Error(err))
+				m.sc.SendCloseSignal(fmt.Errorf("public list refresher stopped: %w", err))
+			}
+		}()
 	}
 
-	m.httpAPIMux.Handle("/metrics", promhttp.HandlerFor(m.metricsReg, promhttp.HandlerOpts{}))
+	m.httpAPIMux.Handle("/metrics", promhttp.HandlerFor(prometheus.Gatherers{m.metricsReg, m.runtimeManager}, promhttp.HandlerOpts{}))
 	m.httpAPIMux.HandleFunc("/debug/pprof/", pprof.Index)
 	m.httpAPIMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	m.httpAPIMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	m.httpAPIMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	m.httpAPIMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
-	// Init data manager
-	dupTag := make(map[string]struct{})
-	for _, dpc := range cfg.DataProviders {
-		if len(dpc.Tag) == 0 {
-			continue
-		}
-		if _, ok := dupTag[dpc.Tag]; ok {
-			return fmt.Errorf("duplicated provider tag %s", dpc.Tag)
-		}
-		dupTag[dpc.Tag] = struct{}{}
-
-		dp, err := data_provider.NewDataProvider(lg, dpc)
-		if err != nil {
-			return fmt.Errorf("failed to init data provider %s, %w", dpc.Tag, err)
-		}
-		m.dataManager.AddDataProvider(dpc.Tag, dp)
-		m.providers = append(m.providers, dp)
+	m.httpAPIMux.Handle("/plugins/", m.runtimeManager.PluginHandler())
+	stage, err := m.runtimeManager.Stage(ctx, func(buildCtx context.Context) (*RuntimeGeneration, error) {
+		return m.buildRuntimeGeneration(buildCtx, cfg)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to stage initial runtime: %w", err)
+	}
+	if err := m.runtimeManager.Swap(stage); err != nil {
+		return fmt.Errorf("failed to activate initial runtime: %w", err)
 	}
 
-	// Init preset plugins
-	for tag, f := range LoadNewPersetPluginFuncs() {
-		p, err := f(NewBP(tag, "preset", m.logger, m))
-		if err != nil {
-			return fmt.Errorf("failed to init preset plugin %s, %w", tag, err)
-		}
-		m.addPlugin(p)
-	}
-
-	// Init plugins
-	dupTag = make(map[string]struct{})
-	for i, pc := range cfg.Plugins {
-		if len(pc.Type) == 0 || len(pc.Tag) == 0 {
-			continue
-		}
-		if _, dup := dupTag[pc.Tag]; dup {
-			return fmt.Errorf("duplicated plugin tag %s", pc.Tag)
-		}
-		dupTag[pc.Tag] = struct{}{}
-
-		m.logger.Info("loading plugin", zap.String("tag", pc.Tag), zap.String("type", pc.Type))
-		p, err := NewPlugin(&pc, m.logger, m)
-		if err != nil {
-			return fmt.Errorf("failed to init plugin #%d, %w", i, err)
-		}
-
-		m.addPlugin(p)
-		// Also add it to api mux if plugin implements http.Handler.
-		if h, ok := p.(http.Handler); ok {
-			m.httpAPIMux.Handle(fmt.Sprintf("/plugins/%s/", p.Tag()), h)
-		}
-	}
-
-	if len(cfg.Servers) == 0 {
-		return errors.New("no server is configured")
-	}
-	for i, sc := range cfg.Servers {
-		if err := m.startServers(&sc); err != nil {
+	for i := range cfg.Servers {
+		if err := m.startServers(i, &cfg.Servers[i]); err != nil {
 			return fmt.Errorf("failed to start server #%d, %w", i, err)
 		}
 	}
@@ -222,8 +199,14 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 			if lookupErr != nil {
 				return fmt.Errorf("failed to init panel lookup: %w", lookupErr)
 			}
-			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, Lookup: lookup, InvalidatePolicy: m.policy.Invalidate, SystemInfo: func(context.Context) (controlapi.SystemInfo, error) {
-				return controlapi.SystemInfo{Version: constant.Version, StartedAt: startedAt, PublicDNSURL: cfg.Control.PublicDNSURL, QueryLogEnabled: cfg.Control.QueryLog, Config: controlapi.SystemConfig{DNSProtocols: configuredDNSProtocols(cfg), ManagementEnabled: true, PprofEnabled: cfg.Control.EnablePprof, ControlStorage: effectiveControlDriver(cfg.Control), TelemetryStorage: effectiveTelemetryDriver(cfg.Control)}}, nil
+			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicLists: m.publicLists, RuntimeConfig: m.managedRuntime, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, Lookup: lookup, InvalidatePolicy: m.policy.Invalidate, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
+				queryLogEnabled := cfg.Control.QueryLog
+				if m.managedRuntime != nil {
+					if state, stateErr := m.managedRuntime.Get(ctx); stateErr == nil {
+						queryLogEnabled = state.Config.QueryLog
+					}
+				}
+				return controlapi.SystemInfo{Version: constant.Version, StartedAt: startedAt, PublicDNSURL: cfg.Control.PublicDNSURL, QueryLogEnabled: queryLogEnabled, Config: controlapi.SystemConfig{DNSProtocols: configuredDNSProtocols(cfg), ManagementEnabled: true, PprofEnabled: cfg.Control.EnablePprof, ControlStorage: effectiveControlDriver(cfg.Control), TelemetryStorage: effectiveTelemetryDriver(cfg.Control)}}, nil
 			}})
 			if err != nil {
 				return fmt.Errorf("failed to init control api: %w", err)
@@ -360,18 +343,11 @@ func (m *Mosdns) shutdown() error {
 		errs = append(errs, m.servers[i].Shutdown(context.Background()))
 	}
 	m.servers = nil
-	for i := len(m.plugins) - 1; i >= 0; i-- {
-		if p, ok := m.plugins[i].(shutdownPlugin); ok {
-			errs = append(errs, p.Shutdown())
-		} else {
-			errs = append(errs, m.plugins[i].Close())
-		}
+	if m.runtimeManager != nil {
+		errs = append(errs, m.runtimeManager.Drain(context.Background()))
+		m.runtimeManager = nil
 	}
-	m.plugins = nil
-	for i := len(m.providers) - 1; i >= 0; i-- {
-		m.providers[i].Close()
-	}
-	m.providers = nil
+	errs = append(errs, m.shutdownRuntimeResources())
 	if m.telemetry != nil {
 		errs = append(errs, m.telemetry.Close())
 		m.telemetry = nil
@@ -387,11 +363,41 @@ func (m *Mosdns) addPlugin(p Plugin) {
 	m.plugins = append(m.plugins, p)
 	t := p.Tag()
 	if p, ok := p.(ExecutablePlugin); ok {
-		m.execs[t] = p
+		if m.generation != nil {
+			m.execs[t] = m.generation.wrapExecutable(p)
+		} else {
+			m.execs[t] = p
+		}
 	}
 	if p, ok := p.(MatcherPlugin); ok {
-		m.matchers[p.Tag()] = p
+		if m.generation != nil {
+			m.matchers[p.Tag()] = m.generation.wrapMatcher(p)
+		} else {
+			m.matchers[p.Tag()] = p
+		}
 	}
+}
+
+func (m *Mosdns) shutdownRuntimeResources() error {
+	if m.sc != nil {
+		m.sc.SendCloseSignal(nil)
+		m.sc.Done()
+		m.sc.CloseWait()
+	}
+	var errs []error
+	for i := len(m.plugins) - 1; i >= 0; i-- {
+		if p, ok := m.plugins[i].(shutdownPlugin); ok {
+			errs = append(errs, p.Shutdown())
+		} else {
+			errs = append(errs, m.plugins[i].Close())
+		}
+	}
+	m.plugins = nil
+	for i := len(m.providers) - 1; i >= 0; i-- {
+		m.providers[i].Close()
+	}
+	m.providers = nil
+	return errors.Join(errs...)
 }
 
 func (m *Mosdns) GetDataManager() *data_provider.DataManager {
@@ -422,6 +428,10 @@ func (m *Mosdns) GetMetricsReg() prometheus.Registerer {
 // prefix only.
 func (m *Mosdns) GetHTTPAPIMux() *http.ServeMux {
 	return m.httpAPIMux
+}
+
+func (m *Mosdns) ManagedRuntime() *ManagedRuntimeService {
+	return m.managedRuntime
 }
 
 func newMetricsReg() *prometheus.Registry {

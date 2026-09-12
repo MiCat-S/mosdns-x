@@ -77,9 +77,17 @@ type EntryHandlerOpts struct {
 	// A non-nil response skips the executable chain.
 	BeforeExec func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, error)
 
+	// BeforeExecWithTrace is the attributed form of BeforeExec. When set, it
+	// takes precedence and records the policy rule or list that produced a
+	// response.
+	BeforeExecWithTrace func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error)
+
 	// AfterExec applies an authenticated user's response policy. It may replace
 	// the response returned by the executable chain.
 	AfterExec func(context.Context, query_context.Principal, *dns.Msg, *dns.Msg) (*dns.Msg, error)
+
+	// AfterExecWithTrace is the attributed form of AfterExec.
+	AfterExecWithTrace func(context.Context, query_context.Principal, *dns.Msg, *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error)
 
 	// Observe receives one self-contained result for every request.
 	Observe func(Result)
@@ -91,20 +99,25 @@ type EntryHandlerOpts struct {
 
 // Result is an immutable snapshot of a completed entry request.
 type Result struct {
-	Principal    query_context.Principal
-	Protocol     string
-	ClientAddr   netip.Addr
-	AnswerIPs    []string
-	EDNS         EDNSInfo
-	QuestionName string
-	QuestionType uint16
-	Duration     time.Duration
-	Rcode        int
-	ExecError    bool
-	Admitted     bool
-	Rejected     bool
-	AccessKind   query_access.Kind
-	CacheHit     bool
+	Principal           query_context.Principal
+	Protocol            string
+	ClientAddr          netip.Addr
+	AnswerIPs           []string
+	EDNS                EDNSInfo
+	QuestionName        string
+	QuestionType        uint16
+	Duration            time.Duration
+	Rcode               int
+	ExecError           bool
+	Admitted            bool
+	Rejected            bool
+	AccessKind          query_access.Kind
+	CacheHit            bool
+	ResponseSource      string
+	ResponseSourceID    string
+	UpstreamID          string
+	MatchedRuleID       string
+	MatchedPublicListID string
 }
 
 type EDNSInfo struct {
@@ -202,16 +215,22 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	id := req.Id
 	workingReq := req
 	var qCtx *query_context.Context
-	if h.opts.BeforeExec != nil {
+	if h.opts.BeforeExec != nil || h.opts.BeforeExecWithTrace != nil {
 		qCtx = query_context.NewContext(req.Copy(), meta)
 		workingReq = qCtx.Q()
 	}
 
 	var (
-		respMsg *dns.Msg
-		err     error
+		respMsg     *dns.Msg
+		beforeTrace query_context.ResponseTrace
+		err         error
 	)
-	if h.opts.BeforeExec != nil {
+	if h.opts.BeforeExecWithTrace != nil {
+		respMsg, beforeTrace, err = h.opts.BeforeExecWithTrace(ctx, result.Principal, workingReq)
+		if err == nil && respMsg != nil {
+			qCtx.SetResponseWithTrace(respMsg, beforeTrace)
+		}
+	} else if h.opts.BeforeExec != nil {
 		respMsg, err = h.opts.BeforeExec(ctx, result.Principal, workingReq)
 	}
 	if err == nil && respMsg == nil {
@@ -221,7 +240,14 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		err = h.opts.Entry.Exec(ctx, qCtx, nil)
 		respMsg = qCtx.R()
 	}
-	if err == nil && respMsg != nil && h.opts.AfterExec != nil {
+	if err == nil && respMsg != nil && h.opts.AfterExecWithTrace != nil {
+		var trace query_context.ResponseTrace
+		respMsg, trace, err = h.opts.AfterExecWithTrace(ctx, result.Principal, workingReq, respMsg)
+		if err == nil && respMsg != nil && trace != (query_context.ResponseTrace{}) {
+			trace = inheritResponseTrace(trace, qCtx.ResponseTrace())
+			qCtx.SetResponseWithTrace(respMsg, trace)
+		}
+	} else if err == nil && respMsg != nil && h.opts.AfterExec != nil {
 		respMsg, err = h.opts.AfterExec(ctx, result.Principal, workingReq, respMsg)
 	}
 	if err != nil {
@@ -248,6 +274,7 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		respMsg = new(dns.Msg)
 		respMsg.SetReply(req)
 		respMsg.Rcode = dns.RcodeServerFailure
+		result.ResponseSource = query_context.ResponseSourceServfail
 	}
 
 	if h.opts.RecursionAvailable {
@@ -258,10 +285,32 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	if h.opts.CaptureQueryDetails {
 		result.AnswerIPs = answerIPs(respMsg)
 	}
-	if err == nil && qCtx != nil {
+	if err == nil && qCtx != nil && result.ResponseSource != query_context.ResponseSourceServfail {
 		result.CacheHit = qCtx.CacheHit()
+		trace := inheritResponseTrace(qCtx.ResponseTrace(), beforeTrace)
+		result.ResponseSource = trace.Source
+		result.ResponseSourceID = trace.SourceID
+		result.UpstreamID = trace.UpstreamID
+		result.MatchedRuleID = trace.MatchedRuleID
+		result.MatchedPublicListID = trace.MatchedPublicListID
+		if result.ResponseSource == "" {
+			result.ResponseSource = query_context.ResponseSourceSequence
+		}
 	}
 	return respMsg, nil
+}
+
+func inheritResponseTrace(trace, earlier query_context.ResponseTrace) query_context.ResponseTrace {
+	if trace.UpstreamID == "" {
+		trace.UpstreamID = earlier.UpstreamID
+	}
+	if trace.MatchedRuleID == "" {
+		trace.MatchedRuleID = earlier.MatchedRuleID
+	}
+	if trace.MatchedPublicListID == "" {
+		trace.MatchedPublicListID = earlier.MatchedPublicListID
+	}
+	return trace
 }
 
 func answerIPs(msg *dns.Msg) []string {

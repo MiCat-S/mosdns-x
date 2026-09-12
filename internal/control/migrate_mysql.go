@@ -22,6 +22,8 @@ type MySQLMigrationReport struct {
 	Credentials    uint64 `json:"credentials"`
 	Usage          uint64 `json:"usage"`
 	Audit          uint64 `json:"audit"`
+	PublicLists    uint64 `json:"public_lists"`
+	ListOverrides  uint64 `json:"list_overrides"`
 }
 
 // InspectBoltForMySQL validates an offline bbolt database and counts the rows
@@ -30,8 +32,15 @@ func InspectBoltForMySQL(ctx context.Context, source string) (MySQLMigrationRepo
 	var report MySQLMigrationReport
 	err := withBoltMigrationSource(ctx, source, func(tx *bbolt.Tx) error {
 		policyRules := uint64(0)
+		publicLists, listOverrides := uint64(0), uint64(0)
 		if bucket := tx.Bucket(bDNSPolicyRules); bucket != nil {
 			policyRules = uint64(bucket.Stats().KeyN)
+		}
+		if bucket := tx.Bucket(bPublicLists); bucket != nil {
+			publicLists = uint64(bucket.Stats().KeyN)
+		}
+		if bucket := tx.Bucket(bUserPublicLists); bucket != nil {
+			listOverrides = uint64(bucket.Stats().KeyN)
 		}
 		report = MySQLMigrationReport{
 			Users:          uint64(tx.Bucket(bUsers).Stats().KeyN),
@@ -41,6 +50,7 @@ func InspectBoltForMySQL(ctx context.Context, source string) (MySQLMigrationRepo
 			Credentials:    uint64(tx.Bucket(bCredentials).Stats().KeyN),
 			Usage:          uint64(tx.Bucket(bUsage).Stats().KeyN),
 			Audit:          uint64(tx.Bucket(bAudit).Stats().KeyN),
+			PublicLists:    publicLists, ListOverrides: listOverrides,
 		}
 		return nil
 	})
@@ -63,6 +73,9 @@ func MigrateBoltToMySQL(ctx context.Context, source string, destination *MySQLSt
 				return err
 			}
 			if err := migrateDNSPolicies(ctx, sourceTx, targetTx, &report); err != nil {
+				return err
+			}
+			if err := migratePublicLists(ctx, sourceTx, targetTx, &report); err != nil {
 				return err
 			}
 			if err := migrateSessions(ctx, sourceTx, targetTx, &report); err != nil {
@@ -106,23 +119,60 @@ func withBoltMigrationSource(ctx context.Context, source string, fn func(*bbolt.
 
 func requireEmptyMySQLControl(ctx context.Context, tx *sql.Tx) error {
 	var initialized bool
-	var users, policySettings, policyRules, sessions, credentials, usage, audit uint64
+	var users, policySettings, policyRules, publicLists, listOverrides, sessions, credentials, usage, audit uint64
 	err := tx.QueryRowContext(ctx, `SELECT initialized,
 		(SELECT COUNT(*) FROM mosdns_users),
 		(SELECT COUNT(*) FROM mosdns_dns_policy_settings),
 		(SELECT COUNT(*) FROM mosdns_dns_policy_rules),
+		(SELECT COUNT(*) FROM mosdns_public_lists),
+		(SELECT COUNT(*) FROM mosdns_user_public_lists),
 		(SELECT COUNT(*) FROM mosdns_sessions),
 		(SELECT COUNT(*) FROM mosdns_credentials),
 		(SELECT COUNT(*) FROM mosdns_usage_minutes),
 		(SELECT COUNT(*) FROM mosdns_audit_logs)
-		FROM mosdns_control_meta WHERE id=1 FOR UPDATE`).Scan(&initialized, &users, &policySettings, &policyRules, &sessions, &credentials, &usage, &audit)
+		FROM mosdns_control_meta WHERE id=1 FOR UPDATE`).Scan(&initialized, &users, &policySettings, &policyRules, &publicLists, &listOverrides, &sessions, &credentials, &usage, &audit)
 	if err != nil {
 		return err
 	}
-	if initialized || users+policySettings+policyRules+sessions+credentials+usage+audit != 0 {
+	if initialized || users+policySettings+policyRules+publicLists+listOverrides+sessions+credentials+usage+audit != 0 {
 		return fmt.Errorf("%w: mysql control destination is not empty", ErrConflict)
 	}
 	return nil
+}
+
+func migratePublicLists(ctx context.Context, source *bbolt.Tx, target *sql.Tx, report *MySQLMigrationReport) error {
+	lists := source.Bucket(bPublicLists)
+	if lists == nil {
+		return nil
+	}
+	if err := lists.ForEach(func(_, value []byte) error {
+		var list PublicList
+		if err := json.Unmarshal(value, &list); err != nil {
+			return err
+		}
+		if err := insertMySQLPublicList(ctx, target, list); err != nil {
+			return err
+		}
+		report.PublicLists++
+		return nil
+	}); err != nil {
+		return err
+	}
+	overrides := source.Bucket(bUserPublicLists)
+	if overrides == nil {
+		return nil
+	}
+	return overrides.ForEach(func(key, value []byte) error {
+		parts := strings.Split(string(key), "\x00")
+		if len(parts) != 2 || len(value) != 1 {
+			return fmt.Errorf("invalid public list override")
+		}
+		_, err := target.ExecContext(ctx, `INSERT INTO mosdns_user_public_lists (user_id,list_id,enabled) VALUES (?,?,?)`, parts[0], parts[1], value[0] == 1)
+		if err == nil {
+			report.ListOverrides++
+		}
+		return err
+	})
 }
 
 func migrateDNSPolicies(ctx context.Context, source *bbolt.Tx, target *sql.Tx, report *MySQLMigrationReport) error {
@@ -148,7 +198,7 @@ func migrateDNSPolicies(ctx context.Context, source *bbolt.Tx, target *sql.Tx, r
 			}
 		}
 		settings.UserID = string(userID)
-		if sourceVersion < schemaVersion {
+		if sourceVersion < policySwitchSchemaVersion {
 			settings.CustomBlockEnabled = true
 			settings.CustomAllowEnabled = true
 			settings.CustomRewriteEnabled = true

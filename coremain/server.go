@@ -42,37 +42,19 @@ import (
 
 const defaultQueryTimeout = time.Second * 5
 
-func (m *Mosdns) startServers(cfg *ServerConfig) error {
+func (m *Mosdns) startServers(serverIndex int, cfg *ServerConfig) error {
 	if len(cfg.Listeners) == 0 {
 		return errors.New("no server listener is configured")
 	}
 	if len(cfg.Exec) == 0 {
 		return errors.New("empty entry")
 	}
-
-	entry := m.execs[cfg.Exec]
-	if entry == nil {
-		return fmt.Errorf("cannot find entry %s", cfg.Exec)
+	if m.runtimeManager == nil {
+		return errors.New("runtime manager is not initialized")
 	}
 
-	queryTimeout := defaultQueryTimeout
-	if cfg.Timeout > 0 {
-		queryTimeout = time.Duration(cfg.Timeout) * time.Second
-	}
-
-	for _, lc := range cfg.Listeners {
-		opts := D.EntryHandlerOpts{Logger: m.logger, Entry: entry, QueryTimeout: queryTimeout, RecursionAvailable: true}
-		if m.control != nil && isHTTPDNSProtocol(lc.Protocol) {
-			opts.Admit = admit(m.control)
-			opts.Observe = m.telemetry.Observe
-			opts.CaptureQueryDetails = m.controlCfg.QueryLog
-			opts.BeforeExec = m.policy.Before
-			opts.AfterExec = m.policy.After
-		}
-		dnsHandler, err := D.NewEntryHandler(opts)
-		if err != nil {
-			return fmt.Errorf("failed to init entry handler, %w", err)
-		}
+	for listenerIndex, lc := range cfg.Listeners {
+		dnsHandler := m.runtimeManager.DNSHandler(serverIndex, listenerIndex)
 		if err := m.startServerListener(lc, dnsHandler); err != nil {
 			return err
 		}
@@ -81,33 +63,25 @@ func (m *Mosdns) startServers(cfg *ServerConfig) error {
 }
 
 func (m *Mosdns) newPanelLookup(cfg *Config) (func(context.Context, string, string, uint16) (*dns.Msg, error), error) {
-	for _, serverConfig := range cfg.Servers {
-		entry := m.execs[serverConfig.Exec]
-		if entry == nil {
-			continue
-		}
-		queryTimeout := defaultQueryTimeout
-		if serverConfig.Timeout > 0 {
-			queryTimeout = time.Duration(serverConfig.Timeout) * time.Second
-		}
-		opts := D.EntryHandlerOpts{
-			Logger: m.logger, Entry: entry, QueryTimeout: queryTimeout, RecursionAvailable: true,
-			BeforeExec: m.policy.Before, AfterExec: m.policy.After,
-		}
-		handler, err := D.NewEntryHandler(opts)
-		if err != nil {
-			return nil, err
-		}
-		return func(ctx context.Context, userID, name string, qtype uint16) (*dns.Msg, error) {
-			request := new(dns.Msg).SetQuestion(name, qtype)
-			request.SetEdns0(1232, false)
-			meta := query_context.NewRequestMeta(netip.Addr{})
-			meta.SetProtocol("panel")
-			meta.SetPrincipal(query_context.Principal{UserID: userID})
-			return handler.ServeDNS(ctx, request, meta)
-		}, nil
+	if m.runtimeManager == nil || len(cfg.Servers) == 0 {
+		return nil, errors.New("no executable is available for panel lookup")
 	}
-	return nil, errors.New("no executable is available for panel lookup")
+	handler := m.runtimeManager.LookupHandler()
+	return func(ctx context.Context, userID, name string, qtype uint16) (*dns.Msg, error) {
+		request := new(dns.Msg).SetQuestion(name, qtype)
+		request.SetEdns0(1232, false)
+		meta := query_context.NewRequestMeta(netip.Addr{})
+		meta.SetProtocol("panel")
+		meta.SetPrincipal(query_context.Principal{UserID: userID})
+		return handler.ServeDNS(ctx, request, meta)
+	}, nil
+}
+
+func configuredQueryTimeout(cfg *ServerConfig) time.Duration {
+	if cfg.Timeout > 0 {
+		return time.Duration(cfg.Timeout) * time.Second
+	}
+	return defaultQueryTimeout
 }
 
 func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Handler) error {

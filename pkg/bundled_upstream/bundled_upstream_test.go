@@ -59,9 +59,12 @@ func TestExchangeParallelCopiesQueriesAndObservesAttempts(t *testing.T) {
 		&fakeUpstream{id: "ff/0", rcode: dns.RcodeNameError, trusted: true, onQuery: check},
 		&fakeUpstream{id: "ff/1", err: errors.New("failed"), onQuery: check},
 	}
-	r, err := ExchangeParallel(context.Background(), query_context.NewContext(q, meta), upstreams, nil)
+	r, selectedID, err := ExchangeParallel(context.Background(), query_context.NewContext(q, meta), upstreams, nil)
 	if err != nil || r.Rcode != dns.RcodeNameError {
 		t.Fatalf("response=%v err=%v", r, err)
+	}
+	if selectedID != "ff/0" {
+		t.Fatalf("selected upstream=%q", selectedID)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {

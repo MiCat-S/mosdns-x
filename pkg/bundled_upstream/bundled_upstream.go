@@ -57,17 +57,20 @@ type observerUpstream interface {
 	ObserverID() string
 }
 
+func observerID(u Upstream) string {
+	if identified, ok := u.(observerUpstream); ok {
+		return identified.ObserverID()
+	}
+	return "upstream"
+}
+
 func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal) (*dns.Msg, error) {
 	started := time.Now()
 	r, err := u.Exchange(ctx, q)
 	if observer != nil {
-		id := "upstream"
-		if identified, ok := u.(observerUpstream); ok {
-			id = identified.ObserverID()
-		}
 		attempt := query_context.UpstreamAttempt{
 			Principal:  principal,
-			UpstreamID: id,
+			UpstreamID: observerID(u),
 			Duration:   time.Since(started),
 			Rcode:      -1,
 			Failed:     err != nil || r == nil,
@@ -81,7 +84,7 @@ func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_contex
 	return r, err
 }
 
-func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstreams []Upstream, logger *zap.Logger) (*dns.Msg, error) {
+func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstreams []Upstream, logger *zap.Logger) (*dns.Msg, string, error) {
 	if logger == nil {
 		logger = nopLogger
 	}
@@ -92,14 +95,20 @@ func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstream
 	principal := meta.GetPrincipal()
 	t := len(upstreams)
 	if t == 1 {
-		return exchange(ctx, q.Copy(), upstreams[0], observer, principal)
+		r, err := exchange(ctx, q.Copy(), upstreams[0], observer, principal)
+		return r, observerID(upstreams[0]), err
 	}
 
 	c := make(chan *parallelResult, t) // use buf chan to avoid blocking.
 	for _, u := range upstreams {
 		u := u
 		qCopy := q.Copy() // Every upstream may mutate its query.
+		release, ok := meta.AcquireBackgroundWork()
+		if !ok {
+			return nil, "", context.Canceled
+		}
 		go func() {
+			defer release()
 			r, err := exchange(ctx, qCopy, u, observer, principal)
 			c <- &parallelResult{
 				r:    r,
@@ -122,13 +131,13 @@ func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstream
 			}
 
 			if res.from.Trusted() || res.r.Rcode == dns.RcodeSuccess {
-				return res.r, nil
+				return res.r, observerID(res.from), nil
 			}
 			continue
 
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		}
 	}
-	return nil, ErrAllFailed
+	return nil, "", ErrAllFailed
 }

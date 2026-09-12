@@ -156,6 +156,8 @@ const adminNav: NavItem[] = [
   { to: "/admin", label: "总览", icon: "overview" },
   { to: "/admin/logs", label: "查询日志", icon: "logs" },
   { to: "/admin/users", label: "用户", icon: "users" },
+  { to: "/admin/lists", label: "公共列表", icon: "list" },
+  { to: "/admin/runtime", label: "运行配置", icon: "system" },
   { to: "/admin/audit", label: "审计", icon: "audit" },
   { to: "/admin/system", label: "系统", icon: "system" },
 ];

@@ -36,6 +36,8 @@ type Config struct {
 
 	// Experimental
 	Security SecurityConfig `yaml:"security"`
+
+	sourcePath string
 }
 
 type ControlConfig struct {
@@ -47,6 +49,7 @@ type ControlConfig struct {
 	QueryLog       bool            `yaml:"query_log"`
 	EnablePprof    bool            `yaml:"enable_pprof"`
 	TrustedProxies []string        `yaml:"trusted_proxies"`
+	ManagedConfig  string          `yaml:"managed_config"`
 	Storage        StorageConfig   `yaml:"storage"`
 	Telemetry      TelemetryConfig `yaml:"telemetry"`
 }
@@ -57,11 +60,14 @@ type StorageConfig struct {
 }
 
 type TelemetryConfig struct {
-	Driver          string      `yaml:"driver"`
-	MySQL           MySQLConfig `yaml:"mysql"`
-	QueueSize       int         `yaml:"queue_size"`
-	BatchSize       int         `yaml:"batch_size"`
-	FlushIntervalMS int         `yaml:"flush_interval_ms"`
+	Driver                 string      `yaml:"driver"`
+	MySQL                  MySQLConfig `yaml:"mysql"`
+	QueueSize              int         `yaml:"queue_size"`
+	BatchSize              int         `yaml:"batch_size"`
+	FlushIntervalMS        int         `yaml:"flush_interval_ms"`
+	AggregateRetentionDays int         `yaml:"aggregate_retention_days"`
+	QueryRetentionHours    int         `yaml:"query_retention_hours"`
+	MaxQueryRecords        int         `yaml:"max_query_records"`
 }
 
 type MySQLConfig struct {

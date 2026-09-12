@@ -13,7 +13,7 @@ import (
 type cacheHitExecutable struct{}
 
 func (cacheHitExecutable) Exec(_ context.Context, qCtx *query_context.Context, _ ExecutableChainNode) error {
-	qCtx.SetResponse(new(dns.Msg))
+	qCtx.SetResponseWithTrace(new(dns.Msg), query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: "cache"})
 	qCtx.SetCacheHit(true)
 	return nil
 }
@@ -23,6 +23,7 @@ func TestAsyncWaitTransfersCacheHit(t *testing.T) {
 	selected := base.Copy()
 	selected.SetResponse(new(dns.Msg))
 	selected.SetCacheHit(true)
+	selected.SetResponseTrace(query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: "cache"})
 	c := make(chan *parallelECSResult, 1)
 	c <- &parallelECSResult{qCtx: selected}
 	if err := asyncWait(context.Background(), base, zap.NewNop(), c, 1); err != nil {
@@ -30,6 +31,9 @@ func TestAsyncWaitTransfersCacheHit(t *testing.T) {
 	}
 	if !base.CacheHit() {
 		t.Fatal("selected parallel marker was lost")
+	}
+	if got := base.ResponseTrace(); got.Source != query_context.ResponseSourceCache || got.SourceID != "cache" {
+		t.Fatalf("selected parallel trace was lost: %+v", got)
 	}
 }
 
@@ -41,5 +45,8 @@ func TestIsolatePrimaryTransfersCacheHit(t *testing.T) {
 	}
 	if !base.CacheHit() {
 		t.Fatal("isolated fallback marker was lost")
+	}
+	if got := base.ResponseTrace(); got.Source != query_context.ResponseSourceCache || got.SourceID != "cache" {
+		t.Fatalf("isolated fallback trace was lost: %+v", got)
 	}
 }

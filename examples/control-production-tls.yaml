@@ -11,6 +11,11 @@ control:
   enable_pprof: false
   trusted_proxies:
     - 127.0.0.1/32
+  telemetry:
+    # 省略或设为 0 时分别使用 7 天、24 小时和 100000 条默认值。
+    aggregate_retention_days: 7
+    query_retention_hours: 24
+    max_query_records: 100000
 
 api:
   http: 127.0.0.1:18081

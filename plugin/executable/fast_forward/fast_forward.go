@@ -194,11 +194,15 @@ func (f *fastForward) Exec(ctx context.Context, qCtx *query_context.Context, nex
 }
 
 func (f *fastForward) exec(ctx context.Context, qCtx *query_context.Context) (err error) {
-	r, err := bundled_upstream.ExchangeParallel(ctx, qCtx, f.upstreamWrappers, f.L())
+	r, upstreamID, err := bundled_upstream.ExchangeParallel(ctx, qCtx, f.upstreamWrappers, f.L())
 	if err != nil {
 		return err
 	}
-	qCtx.SetResponse(r)
+	qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{
+		Source:     query_context.ResponseSourceUpstream,
+		SourceID:   f.Tag(),
+		UpstreamID: upstreamID,
+	})
 	return nil
 }
 

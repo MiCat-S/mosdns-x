@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"net/netip"
 	"regexp"
 	"testing"
@@ -25,7 +26,7 @@ func TestWriteMySQLBatchPersistsAggregatesAndQueryDetail(t *testing.T) {
 	store.mysqlPrunedAt.Store(now.Truncate(time.Minute).Unix())
 	principal := query_context.Principal{UserID: "user-1", CredentialID: "credential-1", CredentialVersion: 1}
 	events := []event{
-		{time: now, result: &dns_handler.Result{Admitted: true, Principal: principal, ClientAddr: netip.MustParseAddr("192.0.2.10"), QuestionName: "example.test.", QuestionType: dns.TypeAAAA, Rcode: dns.RcodeSuccess, Duration: 12 * time.Millisecond, Protocol: "doh3", AnswerIPs: []string{"2001:db8::1"}, EDNS: dns_handler.EDNSInfo{Present: true, UDPSize: 1232}}},
+		{time: now, result: &dns_handler.Result{Admitted: true, Principal: principal, ClientAddr: netip.MustParseAddr("192.0.2.10"), QuestionName: "example.test.", QuestionType: dns.TypeAAAA, Rcode: dns.RcodeSuccess, Duration: 12 * time.Millisecond, Protocol: "doh3", AnswerIPs: []string{"2001:db8::1"}, EDNS: dns_handler.EDNSInfo{Present: true, UDPSize: 1232}, ResponseSource: query_context.ResponseSourceUpstream, ResponseSourceID: "remote", UpstreamID: "remote/0"}},
 		{time: now, attempt: &query_context.UpstreamAttempt{Principal: principal, UpstreamID: "remote", Duration: 6 * time.Millisecond}},
 	}
 	mock.ExpectBegin()
@@ -42,6 +43,42 @@ func TestWriteMySQLBatchPersistsAggregatesAndQueryDetail(t *testing.T) {
 	}
 	if got := store.updatedUnixNano.Load(); got != now.UnixNano() {
 		t.Fatalf("updated=%d", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMySQLTelemetryV1MigrationIsRepeatable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	for i, column := range []string{"response_source", "response_source_id", "upstream_id", "matched_rule_id", "matched_public_list_id"} {
+		count := 0
+		if i == 0 {
+			count = 1
+		}
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.columns`)).WithArgs(column).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(count))
+		if count == 0 {
+			mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE mosdns_query_logs ADD COLUMN ` + column)).WillReturnResult(sqlmock.NewResult(0, 0))
+		}
+	}
+	for _, index := range []string{"ix_mosdns_query_logs_source", "ix_mosdns_query_logs_upstream"} {
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.statistics`)).WithArgs(index).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE mosdns_query_logs ADD KEY ` + index)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='telemetry' AND version=1`)).WithArgs(mysqlTelemetrySchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := migrateMySQLTelemetryV1ToV2(ctx, conn); err != nil {
+		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

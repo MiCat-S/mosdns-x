@@ -214,10 +214,11 @@ func migrateTelemetryQueries(ctx context.Context, source *bolt.Tx, target *sql.T
 			return err
 		}
 		_, err = target.ExecContext(ctx, `INSERT INTO mosdns_query_logs
-			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, string(id), record.Time.UnixNano(), record.UserID,
+			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json, response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, string(id), record.Time.UnixNano(), record.UserID,
 			record.CredentialID, record.ClientIP, record.Name, record.QType, record.Rcode, record.DurationMS,
-			record.CacheHit, record.Protocol, answerJSON, ednsJSON)
+			record.CacheHit, record.Protocol, answerJSON, ednsJSON, record.ResponseSource, record.ResponseSourceID,
+			record.UpstreamID, record.MatchedRuleID, record.MatchedPublicListID)
 		if err == nil {
 			report.Queries++
 		}

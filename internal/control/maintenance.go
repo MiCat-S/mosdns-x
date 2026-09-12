@@ -280,8 +280,15 @@ func validateSchema(tx *bbolt.Tx) error {
 			return fmt.Errorf("missing bucket %q", bCredentialTokens)
 		}
 		return nil
-	case policySchemaVersion, schemaVersion:
+	case policySchemaVersion, policySwitchSchemaVersion:
 		for _, name := range [][]byte{bCredentialTokens, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules} {
+			if tx.Bucket(name) == nil {
+				return fmt.Errorf("missing bucket %q", name)
+			}
+		}
+		return nil
+	case schemaVersion:
+		for _, name := range [][]byte{bCredentialTokens, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules, bPublicLists, bPublicListNames, bUserPublicLists} {
 			if tx.Bucket(name) == nil {
 				return fmt.Errorf("missing bucket %q", name)
 			}

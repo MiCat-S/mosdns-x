@@ -15,7 +15,7 @@ Mosdns-x 是一个用 Go 编写的高性能 DNS 转发器，支持运行插件�
 
 下载预编译文件、更新日志，详见：[release](https://github.com/pmkol/mosdns-x/releases)
 
-本 Fork 的多用户控制面板支持 bbolt 与 MySQL 存储、UUID 设备凭证、周期额度、QPS 限制、按用户查询统计、用户 DNS 安全设置、自定义规则和 DNS Lookup。配置与迁移见 [多用户配置](docs/service-config.md)和[存储说明](docs/storage.md)。
+本 Fork 的多用户控制面板支持 bbolt 与 MySQL 存储、UUID 设备凭证、周期额度、QPS 限制、按用户查询统计、可解释查询来源、用户 DNS 安全设置、自定义规则、公共订阅列表和 DNS Lookup。配置与迁移见 [多用户配置](docs/service-config.md)和[存储说明](docs/storage.md)。
 
 ### 本 Fork 的多用户服务扩展
 
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | 
 - [服务架构](docs/service-architecture.md)与 [API 契约](docs/control-api.md)
 - [开发审核与验收](docs/development-review.md)、[性能验证](docs/performance.md)
 
-首版适用于单机单实例。管理面板和用户面板通过 `/admin`、`/app` 访问；DNS 配置通过文件维护，面板提供安全的配置概览。
+当前版本适用于单机单实例。管理面板和用户面板通过 `/admin`、`/app` 访问；主配置仍通过文件维护，设置 `control.managed_config` 后，面板可以校验、热更新和回滚不含敏感参数的上游、内存缓存及统计保留策略。
 
 #### 电报社区：
 

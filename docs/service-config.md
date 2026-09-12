@@ -14,6 +14,8 @@ control:
   panel_origin: https://panel.example.com
   development: false
   query_log: false
+  # 可选：启用管理端安全结构化配置和运行代热重载。
+  managed_config: /var/lib/mosdns/managed.yaml
   enable_pprof: false
   trusted_proxies:
     - 127.0.0.1/32
@@ -46,9 +48,14 @@ control:
     queue_size: 8192
     batch_size: 256
     flush_interval_ms: 1000
+    aggregate_retention_days: 7
+    query_retention_hours: 24
+    max_query_records: 100000
 ```
 
-`telemetry.mysql` 支持与 `storage.mysql` 相同的连接参数。省略 `telemetry.mysql.dsn` 时复用控制 DSN；配置独立 DSN 时可把高写入量的查询明细放到另一个数据库。`queue_size`、`batch_size` 和 `flush_interval_ms` 为零时使用内置默认值，不能为负数。管理面板的系统页会显示实际生效的控制与统计驱动，不返回 DSN。
+`telemetry.mysql` 支持与 `storage.mysql` 相同的连接参数。省略 `telemetry.mysql.dsn` 时复用控制 DSN；配置独立 DSN 时可把高写入量的查询明细放到另一个数据库。`queue_size`、`batch_size` 和 `flush_interval_ms` 为零时使用内置默认值，不能为负数。聚合保留期允许 1～31 天，查询明细保留期允许 1～720 小时，查询明细条数上限允许 1,000～5,000,000；省略或设为零时分别使用 7 天、24 小时和 100,000 条。管理面板的系统页会显示实际生效的控制与统计驱动，不返回 DSN。
+
+`managed_config` 应使用运行账户可写的绝对路径。面板只会保存不含敏感参数的 `fast_forward` 上游、非 Redis 内存缓存、查询日志开关和上述保留策略；完整 YAML、监听地址、证书和数据库连接仍由主配置维护。详细热重载与回滚流程见[运维文档](operations.md#托管运行配置与热重载)。
 
 也可以混合使用后端。例如账户和严格额度放 MySQL，统计暂留 bbolt：
 

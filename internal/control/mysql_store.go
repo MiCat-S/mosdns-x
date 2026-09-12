@@ -21,7 +21,8 @@ import (
 const (
 	legacyMySQLControlSchemaVersion = 1
 	policyMySQLControlSchemaVersion = 2
-	mysqlControlSchemaVersion       = 3
+	policySwitchMySQLSchemaVersion  = 3
+	mysqlControlSchemaVersion       = 4
 )
 
 type MySQLOptions struct {
@@ -160,6 +161,33 @@ var mysqlControlMigrations = []string{
 		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns)
 		SELECT id, FALSE, FALSE, '[]', TRUE, TRUE, TRUE, NULL, created_at_ns FROM mosdns_users
 		ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+	`CREATE TABLE IF NOT EXISTS mosdns_public_lists (
+		id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+		name VARCHAR(128) NOT NULL,
+		name_normalized VARCHAR(128) NOT NULL,
+		category VARCHAR(64) NOT NULL,
+		url VARCHAR(2048) NOT NULL,
+		format VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		enabled BOOLEAN NOT NULL,
+		sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		refresh_seconds BIGINT UNSIGNED NOT NULL,
+		entry_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+		last_refresh_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'never',
+		last_refreshed_at_ns BIGINT NULL,
+		last_refresh_error VARCHAR(512) NOT NULL DEFAULT '',
+		created_at_ns BIGINT NOT NULL,
+		updated_at_ns BIGINT NOT NULL,
+		UNIQUE KEY uq_mosdns_public_lists_name (name_normalized)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
+	`CREATE TABLE IF NOT EXISTS mosdns_user_public_lists (
+		user_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		list_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+		enabled BOOLEAN NOT NULL,
+		PRIMARY KEY (user_id, list_id),
+		KEY ix_mosdns_user_public_lists_list (list_id, user_id),
+		CONSTRAINT fk_mosdns_user_public_lists_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id),
+		CONSTRAINT fk_mosdns_user_public_lists_list FOREIGN KEY (list_id) REFERENCES mosdns_public_lists(id)
+	) ENGINE=InnoDB`,
 }
 
 var mysqlControlV3Columns = []struct {

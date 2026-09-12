@@ -57,6 +57,9 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	if c.Telemetry.QueueSize < 0 || c.Telemetry.BatchSize < 0 || c.Telemetry.FlushIntervalMS < 0 {
 		return nil, nil, errors.New("telemetry queue, batch and flush settings cannot be negative")
 	}
+	if err := telemetry.ValidateSettings(telemetrySettings(c)); err != nil {
+		return nil, nil, fmt.Errorf("invalid telemetry retention: %w", err)
+	}
 	u, err := url.Parse(c.PublicDNSURL)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, nil, errors.New("invalid control public_dns_url")
@@ -170,12 +173,22 @@ func openControlStore(c *ControlConfig) (control.Service, error) {
 }
 
 func openTelemetryStore(c *ControlConfig) (telemetry.Service, error) {
+	settings := telemetrySettings(c)
 	if effectiveTelemetryDriver(c) == "bbolt" {
-		return telemetry.Open(telemetry.Options{Path: c.StatsDatabase, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog})
+		return telemetry.Open(telemetry.Options{Path: c.StatsDatabase, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
 	}
 	mysqlCfg := effectiveTelemetryMySQL(c)
 	lifetime, timeout := mysqlDurations(mysqlCfg)
-	return telemetry.OpenMySQL(telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog})
+	return telemetry.OpenMySQL(telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+}
+
+func telemetrySettings(c *ControlConfig) telemetry.Settings {
+	return telemetry.Settings{
+		QueryLogEnabled:    c.QueryLog,
+		AggregateRetention: time.Duration(c.Telemetry.AggregateRetentionDays) * 24 * time.Hour,
+		QueryRetention:     time.Duration(c.Telemetry.QueryRetentionHours) * time.Hour,
+		MaxQueryRecords:    c.Telemetry.MaxQueryRecords,
+	}
 }
 
 func loopbackHost(host string) bool {

@@ -28,6 +28,7 @@ import {
   useLoad,
 } from "./components";
 import { useSession } from "./session";
+export { RuntimeConfigPage } from "./runtime-config";
 import type {
   Audit,
   Credential,
@@ -37,6 +38,8 @@ import type {
   LookupRecord,
   LookupResult,
   Page,
+  PublicList,
+  PublicListFormat,
   QueryRecord,
   Stats,
   SystemInfo,
@@ -45,6 +48,7 @@ import type {
   RuleMatch,
   RuleRecordType,
   UserSettings,
+  UserPublicList,
   UsagePoint,
   User,
 } from "./types";
@@ -1133,6 +1137,8 @@ const emptyQueryFilters = {
   protocol: "",
   address: "",
   cache: "all",
+  source: "all",
+  upstreamId: "",
 };
 
 type QueryFilters = typeof emptyQueryFilters;
@@ -1145,6 +1151,21 @@ const ednsOptionNames: Record<number, string> = {
   15: "EDE",
 };
 
+const responseSourceNames: Record<string, string> = {
+  cache: "缓存",
+  upstream: "上游",
+  custom_block: "自定义拦截",
+  custom_rewrite: "自定义重写",
+  public_list: "公共列表",
+  hosts: "Hosts",
+  sequence: "执行链",
+  servfail: "SERVFAIL",
+};
+
+function responseSourceName(source?: string) {
+  return source ? (responseSourceNames[source] ?? source) : "未记录";
+}
+
 function logDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
@@ -1156,10 +1177,14 @@ function QueryLogDetail({
   record,
   deviceName,
   showPrincipal,
+  ruleLabel,
+  publicListName,
 }: {
   record: QueryRecord;
   deviceName: string;
   showPrincipal: boolean;
+  ruleLabel?: string;
+  publicListName?: string;
 }) {
   const edns = record.edns;
   return (
@@ -1223,7 +1248,40 @@ function QueryLogDetail({
           </div>
           <div>
             <dt>处理路径</dt>
-            <dd>{record.cache_hit ? "缓存命中" : "正常解析"}</dd>
+            <dd>{responseSourceName(record.response_source)}</dd>
+          </div>
+          <div>
+            <dt>处理组件</dt>
+            <dd>
+              {record.response_source === "custom_block" ||
+              record.response_source === "custom_rewrite"
+                ? ruleLabel || record.response_source_id || "未记录"
+                : record.response_source === "public_list"
+                  ? publicListName || record.response_source_id || "未记录"
+                  : record.response_source_id || "未记录"}
+            </dd>
+          </div>
+          <div>
+            <dt>最终上游</dt>
+            <dd>{record.upstream_id || "未使用上游"}</dd>
+          </div>
+          <div>
+            <dt>命中规则</dt>
+            <dd>
+              {ruleLabel || record.matched_rule_id || "未命中"}
+              {ruleLabel && record.matched_rule_id ? (
+                <small>{record.matched_rule_id}</small>
+              ) : null}
+            </dd>
+          </div>
+          <div>
+            <dt>命中公共列表</dt>
+            <dd>
+              {publicListName || record.matched_public_list_id || "未命中"}
+              {publicListName && record.matched_public_list_id ? (
+                <small>{record.matched_public_list_id}</small>
+              ) : null}
+            </dd>
           </div>
           <div>
             <dt>处理耗时</dt>
@@ -1308,6 +1366,8 @@ export function QueryDetails({
     if (applied.protocol) params.protocol = applied.protocol;
     if (applied.address) params.address = applied.address;
     if (applied.cache !== "all") params.cache = applied.cache;
+    if (applied.source !== "all") params.source = applied.source;
+    if (applied.upstreamId) params.upstream_id = applied.upstreamId;
     return query(path, params);
   }, [path, applied, refreshVersion]);
   const {
@@ -1333,6 +1393,45 @@ export function QueryDetails({
     record.credential_id
       ? (credentialNames.get(record.credential_id) ?? "未知设备")
       : "未标识设备";
+  const selectedRulePath =
+    selected?.matched_rule_id && selected.user_id
+      ? path.startsWith("/admin/")
+        ? `/admin/users/${encodeURIComponent(selected.user_id)}/rules`
+        : "/me/rules"
+      : "";
+  const selectedListPath = selected?.matched_public_list_id
+    ? path.startsWith("/admin/")
+      ? "/admin/public-lists"
+      : "/me/public-lists"
+    : "";
+  const ruleLoader = useCallback(
+    (signal: AbortSignal) =>
+      selectedRulePath
+        ? allPages<Rule>(selectedRulePath, signal)
+        : Promise.resolve([] as Rule[]),
+    [selectedRulePath],
+  );
+  const listLoader = useCallback(
+    async (signal: AbortSignal) => {
+      if (!selectedListPath) return [] as PublicList[];
+      if (selectedListPath.startsWith("/admin/"))
+        return allPages<PublicList>(selectedListPath, signal);
+      const items = await allPages<UserPublicList>(selectedListPath, signal);
+      return items.map((item) => item.list);
+    },
+    [selectedListPath],
+  );
+  const { data: selectedRules } = useLoad(ruleLoader, [ruleLoader]);
+  const { data: selectedLists } = useLoad(listLoader, [listLoader]);
+  const selectedRule = selectedRules?.find(
+    (rule) => rule.id === selected?.matched_rule_id,
+  );
+  const selectedList = selectedLists?.find(
+    (list) => list.id === selected?.matched_public_list_id,
+  );
+  const selectedRuleLabel = selectedRule
+    ? `${selectedRule.action} · ${selectedRule.pattern}`
+    : undefined;
 
   function updateFilter(name: keyof QueryFilters, value: string) {
     setDraft((current) => ({ ...current, [name]: value }));
@@ -1344,6 +1443,7 @@ export function QueryDetails({
       ...draft,
       name: draft.name.trim(),
       address: draft.address.trim(),
+      upstreamId: draft.upstreamId.trim(),
     });
   }
   function resetFilters() {
@@ -1369,6 +1469,8 @@ export function QueryDetails({
                 <option value="1">最近 1 小时</option>
                 <option value="6">最近 6 小时</option>
                 <option value="24">最近 24 小时</option>
+                <option value="168">最近 7 天</option>
+                <option value="720">最近 30 天</option>
               </select>
             </Field>
             <Field label="域名">
@@ -1475,6 +1577,29 @@ export function QueryDetails({
                 <option value="miss">未命中缓存</option>
               </select>
             </Field>
+            <Field label="处理来源">
+              <select
+                value={draft.source}
+                onChange={(event) => updateFilter("source", event.target.value)}
+              >
+                <option value="all">全部来源</option>
+                {Object.entries(responseSourceNames).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="最终上游">
+              <input
+                value={draft.upstreamId}
+                onChange={(event) =>
+                  updateFilter("upstreamId", event.target.value)
+                }
+                placeholder="forward_remote/0"
+                maxLength={255}
+              />
+            </Field>
             <div className="query-filter-actions">
               <button type="button" onClick={resetFilters}>
                 重置
@@ -1534,6 +1659,9 @@ export function QueryDetails({
                         {record.cache_hit ? (
                           <small className="cache-text">缓存命中</small>
                         ) : null}
+                        <small>
+                          {responseSourceName(record.response_source)}
+                        </small>
                       </td>
                       <td className="query-detail">
                         {deviceName(record)}
@@ -1576,6 +1704,8 @@ export function QueryDetails({
                 record={selected}
                 deviceName={deviceName(selected)}
                 showPrincipal={showPrincipal}
+                ruleLabel={selectedRuleLabel}
+                publicListName={selectedList?.name}
               />
             </Modal>
           ) : null}
@@ -2715,25 +2845,408 @@ export function HelpPage() {
 }
 
 export function PublicListsPage() {
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      allPages<UserPublicList>("/me/public-lists", signal),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [error, setError] = useState("");
+  const [updating, setUpdating] = useState<Set<string>>(new Set());
+  const groups = useMemo(() => {
+    const grouped = new Map<string, UserPublicList[]>();
+    for (const item of data ?? []) {
+      const category = item.list.category?.trim() || "未分类";
+      const items = grouped.get(category) ?? [];
+      items.push(item);
+      grouped.set(category, items);
+    }
+    return [...grouped.entries()].sort(([left], [right]) =>
+      left.localeCompare(right, "zh-CN"),
+    );
+  }, [data]);
+  async function update(item: UserPublicList, enabled: boolean) {
+    const id = item.list.id;
+    setUpdating((current) => new Set(current).add(id));
+    setError("");
+    setData((current) =>
+      current?.map((entry) =>
+        entry.list.id === id ? { ...entry, enabled, overridden: true } : entry,
+      ),
+    );
+    try {
+      await request(
+        `/me/public-lists/${encodeURIComponent(id)}`,
+        json("PATCH", { enabled }),
+      );
+    } catch (reason) {
+      setData((current) =>
+        current?.map((entry) => (entry.list.id === id ? item : entry)),
+      );
+      setError(message(reason));
+    } finally {
+      setUpdating((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
   return (
     <>
       <PageTitle
         title="订阅的公共列表"
-        description="将公共规则源加入 DNS 策略需要由节点管理员配置。"
+        description="选择适用于当前账户的公共 DNS 规则源。"
       />
-      <UnavailableGroup title="公共列表总开关" items={["启用公共订阅列表"]} />
-      <UnavailableGroup
-        title="广告与追踪"
-        items={["广告域名列表", "追踪与遥测域名列表", "应用内广告列表"]}
+      <Alert error={loadError || error} />
+      {loading ? <Spinner /> : null}
+      {!loading && data?.length === 0 ? (
+        <Empty>管理员尚未发布公共列表。</Empty>
+      ) : null}
+      {groups.map(([category, items]) => (
+        <Card
+          key={category}
+          title={category}
+          className="settings-list public-list-group"
+        >
+          {items.map((item) => (
+            <div className="settings-row public-list-row" key={item.list.id}>
+              <div>
+                <strong>{item.list.name}</strong>
+                <small>
+                  {item.overridden
+                    ? "已覆盖管理员默认设置"
+                    : "继承管理员默认设置"}{" "}
+                  · {item.list.format} · 每 {item.list.refresh_seconds} 秒刷新
+                </small>
+                <small className="public-list-state">
+                  {publicListRuntimeSummary(item.list)}
+                </small>
+              </div>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={item.enabled}
+                  disabled={updating.has(item.list.id)}
+                  aria-label={`启用 ${item.list.name}`}
+                  onChange={(event) => update(item, event.target.checked)}
+                />
+                <span aria-hidden />
+              </label>
+            </div>
+          ))}
+        </Card>
+      ))}
+    </>
+  );
+}
+
+function publicListRuntimeSummary(list: PublicList) {
+  const entries =
+    list.entry_count === undefined
+      ? "条目数待刷新"
+      : `${fmt.num(list.entry_count)} 条目`;
+  const refreshed = list.last_refreshed_at
+    ? `上次刷新 ${fmt.date(list.last_refreshed_at)}`
+    : "尚未刷新";
+  const status =
+    list.last_refresh_status === "success"
+      ? "刷新成功"
+      : list.last_refresh_status === "error"
+        ? "刷新失败"
+        : list.last_refresh_status === "never"
+          ? "从未刷新"
+          : list.last_refresh_status;
+  return list.last_refresh_error
+    ? `${entries} · 刷新失败：${list.last_refresh_error} · ${refreshed}`
+    : `${entries} · ${status ? status + " · " : ""}${refreshed}`;
+}
+
+function publicListPayload(form: HTMLFormElement) {
+  const fields = new FormData(form);
+  return {
+    name: String(fields.get("name")).trim(),
+    category: String(fields.get("category")).trim(),
+    url: String(fields.get("url")).trim(),
+    format: String(fields.get("format")) as PublicListFormat,
+    enabled: fields.get("enabled") === "on",
+    sha256: String(fields.get("sha256")).trim(),
+    refresh_seconds: Number(fields.get("refresh_seconds")),
+  };
+}
+
+function validPublicListURL(value: string) {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function PublicListForm({
+  list,
+  onDone,
+  onCancel,
+}: {
+  list?: PublicList;
+  onDone: () => void;
+  onCancel?: () => void;
+}) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = publicListPayload(form);
+    if (
+      !payload.name ||
+      !payload.category ||
+      !validPublicListURL(payload.url)
+    ) {
+      setError("请填写名称、分类和 HTTPS 地址。");
+      return;
+    }
+    if (
+      !Number.isInteger(payload.refresh_seconds) ||
+      payload.refresh_seconds < 300 ||
+      payload.refresh_seconds > 86_400
+    ) {
+      setError("刷新秒数必须是 300 到 86400 的整数。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await request<PublicList>(
+        list
+          ? `/admin/public-lists/${encodeURIComponent(list.id)}`
+          : "/admin/public-lists",
+        json(list ? "PATCH" : "POST", payload),
+      );
+      if (!list) form.reset();
+      onDone();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="public-list-form" onSubmit={submit}>
+      <Alert error={error} />
+      <div className="form-grid">
+        <Field label="名称">
+          <input
+            name="name"
+            defaultValue={list?.name}
+            maxLength={128}
+            required
+          />
+        </Field>
+        <Field label="分类">
+          <input
+            name="category"
+            defaultValue={list?.category}
+            placeholder="例如 广告与追踪"
+            maxLength={64}
+            required
+          />
+        </Field>
+      </div>
+      <Field label="HTTPS URL">
+        <input
+          name="url"
+          type="url"
+          defaultValue={list?.url}
+          placeholder="https://example.com/list.txt"
+          maxLength={2048}
+          required
+        />
+      </Field>
+      <div className="form-grid">
+        <Field label="格式">
+          <select name="format" defaultValue={list?.format ?? "mosdns"}>
+            <option value="mosdns">mosdns</option>
+            <option value="hosts">hosts</option>
+          </select>
+        </Field>
+        <Field label="刷新秒数">
+          <input
+            name="refresh_seconds"
+            type="number"
+            min="300"
+            max="86400"
+            defaultValue={list?.refresh_seconds ?? 3600}
+            required
+          />
+        </Field>
+      </div>
+      <Field
+        label="SHA-256（可选）"
+        hint="填写 Release 或规则源公布的 64 位十六进制校验值。"
+      >
+        <input name="sha256" defaultValue={list?.sha256} maxLength={64} />
+      </Field>
+      <label className="check">
+        <input
+          name="enabled"
+          type="checkbox"
+          defaultChecked={list?.enabled ?? true}
+        />
+        默认启用此列表
+      </label>
+      <div className="actions">
+        {onCancel ? (
+          <button type="button" onClick={onCancel}>
+            取消
+          </button>
+        ) : null}
+        <button className="primary" disabled={busy}>
+          {busy ? "正在保存…" : list ? "保存列表" : "添加公共列表"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export function AdminPublicListsPage() {
+  const [version, setVersion] = useState(0);
+  const [editing, setEditing] = useState<PublicList | null>(null);
+  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
+  const {
+    items,
+    cursor,
+    loading,
+    error: loadError,
+    more,
+  } = usePaged<PublicList>("/admin/public-lists", version);
+  const reload = () => setVersion((current) => current + 1);
+  async function refresh(list: PublicList) {
+    setRefreshing((current) => new Set(current).add(list.id));
+    setError("");
+    try {
+      await request(
+        `/admin/public-lists/${encodeURIComponent(list.id)}/refresh`,
+        {
+          method: "POST",
+        },
+      );
+      reload();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setRefreshing((current) => {
+        const next = new Set(current);
+        next.delete(list.id);
+        return next;
+      });
+    }
+  }
+  async function remove(list: PublicList) {
+    if (!confirm(`删除公共列表“${list.name}”？`)) return;
+    setError("");
+    try {
+      await request(`/admin/public-lists/${encodeURIComponent(list.id)}`, {
+        method: "DELETE",
+      });
+      reload();
+    } catch (reason) {
+      setError(message(reason));
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title="公共列表"
+        description="发布可由用户订阅的远程 DNS 规则列表。"
       />
-      <UnavailableGroup
-        title="隐私增强"
-        items={["反跟踪列表", "恶意与钓鱼域名列表", "成人内容分级列表"]}
-      />
-      <UnavailableGroup
-        title="功能性分类"
-        items={["社交媒体列表", "流媒体与游戏平台列表", "自定义远程列表"]}
-      />
+      <Alert error={loadError || error} />
+      <Card title="添加公共列表">
+        <PublicListForm onDone={reload} />
+      </Card>
+      <Card title="已发布列表">
+        {loading ? <Spinner /> : null}
+        {!loading && items.length === 0 ? (
+          <Empty>尚未发布公共列表。</Empty>
+        ) : null}
+        {items.length ? (
+          <div className="table-wrap">
+            <table className="public-list-table">
+              <thead>
+                <tr>
+                  <th>名称与分类</th>
+                  <th>来源</th>
+                  <th>刷新状态</th>
+                  <th>默认</th>
+                  <th aria-label="操作" />
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((list) => (
+                  <tr key={list.id}>
+                    <td>
+                      <strong>{list.name}</strong>
+                      <small>{list.category?.trim() || "未分类"}</small>
+                    </td>
+                    <td>
+                      <code>{list.format}</code>
+                      <small>{list.url}</small>
+                      <small>
+                        每 {list.refresh_seconds} 秒 ·{" "}
+                        {list.sha256 ? "已校验 SHA-256" : "未设 SHA-256"}
+                      </small>
+                    </td>
+                    <td>
+                      <span
+                        className={`badge ${list.last_refresh_error ? "off" : "ok"}`}
+                      >
+                        {list.last_refresh_status ||
+                          (list.last_refresh_error ? "失败" : "未刷新")}
+                      </span>
+                      <small>{publicListRuntimeSummary(list)}</small>
+                    </td>
+                    <td>
+                      <span className={`badge ${list.enabled ? "ok" : "off"}`}>
+                        {list.enabled ? "启用" : "停用"}
+                      </span>
+                    </td>
+                    <td className="table-actions">
+                      <button
+                        disabled={refreshing.has(list.id)}
+                        onClick={() => refresh(list)}
+                      >
+                        {refreshing.has(list.id) ? "刷新中…" : "刷新"}
+                      </button>
+                      <button onClick={() => setEditing(list)}>编辑</button>
+                      <button className="danger" onClick={() => remove(list)}>
+                        删除
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        {cursor ? (
+          <button onClick={more} disabled={loading}>
+            加载更多
+          </button>
+        ) : null}
+      </Card>
+      {editing ? (
+        <Modal title="编辑公共列表" onClose={() => setEditing(null)}>
+          <PublicListForm
+            list={editing}
+            onDone={() => {
+              setEditing(null);
+              reload();
+            }}
+            onCancel={() => setEditing(null)}
+          />
+        </Modal>
+      ) : null}
     </>
   );
 }

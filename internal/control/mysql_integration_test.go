@@ -105,6 +105,8 @@ func cleanupMySQLControlTables(t *testing.T, dsn string) {
 		`DROP TABLE IF EXISTS mosdns_credentials`,
 		`DROP TABLE IF EXISTS mosdns_dns_policy_rules`,
 		`DROP TABLE IF EXISTS mosdns_dns_policy_settings`,
+		`DROP TABLE IF EXISTS mosdns_user_public_lists`,
+		`DROP TABLE IF EXISTS mosdns_public_lists`,
 		`DROP TABLE IF EXISTS mosdns_users`,
 		`DROP TABLE IF EXISTS mosdns_usage_minutes`,
 		`DROP TABLE IF EXISTS mosdns_audit_logs`,

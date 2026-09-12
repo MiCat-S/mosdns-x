@@ -18,6 +18,8 @@ import {
   PasswordPage,
   PrivacyPage,
   PublicListsPage,
+  AdminPublicListsPage,
+  RuntimeConfigPage,
   RulesPage,
   AdvancedPage,
 } from "./pages";
@@ -56,6 +58,8 @@ export function App() {
         <Route path="/admin/logs" element={<AdminLogs />} />
         <Route path="/admin/users" element={<Users />} />
         <Route path="/admin/users/:id" element={<UserDetail />} />
+        <Route path="/admin/lists" element={<AdminPublicListsPage />} />
+        <Route path="/admin/runtime" element={<RuntimeConfigPage />} />
         <Route path="/admin/audit" element={<AuditPage />} />
         <Route path="/admin/system" element={<SystemPage />} />
         <Route path="/admin/password" element={<PasswordPage />} />

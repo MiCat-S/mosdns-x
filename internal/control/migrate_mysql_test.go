@@ -35,6 +35,14 @@ func TestMigrateBoltToMySQLPreservesControlRecords(t *testing.T) {
 	if _, err := source.CreateDNSPolicyRule(ctx, user.ID, user.ID, DNSPolicyRuleSpec{Enabled: true, Priority: 10, Action: DNSPolicyBlock, Match: DNSPolicyMatchSuffix, Pattern: "ads.example"}); err != nil {
 		t.Fatal(err)
 	}
+	publicList, err := source.CreatePublicList(ctx, admin.ID, PublicListSpec{Name: "Primary", URL: "https://example.com/list", Format: PublicListFormatMosDNS, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if err := source.SetUserPublicList(ctx, user.ID, user.ID, publicList.ID, &disabled); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err = source.CreateSession(ctx, user.ID, time.Hour); err != nil {
 		t.Fatal(err)
 	}
@@ -60,14 +68,16 @@ func TestMigrateBoltToMySQLPreservesControlRecords(t *testing.T) {
 	defer db.Close()
 	destination := &MySQLStore{db: db, clock: realClock{}, operationTimeout: time.Second, closeCh: make(chan struct{})}
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT initialized,")).WillReturnRows(sqlmock.NewRows([]string{"initialized", "users", "policy_settings", "policy_rules", "sessions", "credentials", "usage", "audit"}).AddRow(false, 0, 0, 0, 0, 0, 0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT initialized,")).WillReturnRows(sqlmock.NewRows([]string{"initialized", "users", "policy_settings", "policy_rules", "public_lists", "list_overrides", "sessions", "credentials", "usage", "audit"}).AddRow(false, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 	expectExecutions(mock, `INSERT INTO mosdns_users`, 2)
 	expectExecutions(mock, `INSERT INTO mosdns_dns_policy_settings`, 2)
 	expectExecutions(mock, `INSERT INTO mosdns_dns_policy_rules`, 1)
+	expectExecutions(mock, `INSERT INTO mosdns_public_lists`, 1)
+	expectExecutions(mock, `INSERT INTO mosdns_user_public_lists`, 1)
 	expectExecutions(mock, `INSERT INTO mosdns_sessions`, 1)
 	expectExecutions(mock, `INSERT INTO mosdns_credentials`, 1)
 	expectExecutions(mock, `INSERT INTO mosdns_usage_minutes`, 3)
-	expectExecutions(mock, `INSERT INTO mosdns_audit_logs`, 5)
+	expectExecutions(mock, `INSERT INTO mosdns_audit_logs`, 7)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_control_meta SET initialized=? WHERE id=1`)).WithArgs(true).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -75,7 +85,7 @@ func TestMigrateBoltToMySQLPreservesControlRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report != (MySQLMigrationReport{Users: 2, PolicySettings: 2, PolicyRules: 1, Sessions: 1, Credentials: 1, Usage: 3, Audit: 5}) {
+	if report != (MySQLMigrationReport{Users: 2, PolicySettings: 2, PolicyRules: 1, Sessions: 1, Credentials: 1, Usage: 3, Audit: 7, PublicLists: 1, ListOverrides: 1}) {
 		t.Fatalf("report=%+v", report)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -128,7 +138,7 @@ func TestMigrateBoltV2ToMySQLSynthesizesPolicyDefaults(t *testing.T) {
 	defer mysqlDB.Close()
 	destination := &MySQLStore{db: mysqlDB, clock: realClock{}, operationTimeout: time.Second, closeCh: make(chan struct{})}
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT initialized,")).WillReturnRows(sqlmock.NewRows([]string{"initialized", "users", "policy_settings", "policy_rules", "sessions", "credentials", "usage", "audit"}).AddRow(false, 0, 0, 0, 0, 0, 0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT initialized,")).WillReturnRows(sqlmock.NewRows([]string{"initialized", "users", "policy_settings", "policy_rules", "public_lists", "list_overrides", "sessions", "credentials", "usage", "audit"}).AddRow(false, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 	expectExecutions(mock, `INSERT INTO mosdns_users`, 1)
 	expectExecutions(mock, `INSERT INTO mosdns_dns_policy_settings`, 1)
 	expectExecutions(mock, `INSERT INTO mosdns_audit_logs`, 1)

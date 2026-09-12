@@ -20,8 +20,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	_ "net/http/pprof"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -44,6 +46,10 @@ func init() {
 
 func main() {
 	if err := coremain.Run(); err != nil {
+		var exitErr interface{ ExitCode() int }
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
 		mlog.S().Fatal(err)
 	}
 }

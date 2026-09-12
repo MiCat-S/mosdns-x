@@ -179,7 +179,7 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		c.hitTotal.Inc()
 		cachedResp.Id = q.Id // change msg id
 		c.L().Debug("cache hit", qCtx.InfoField())
-		qCtx.SetResponse(cachedResp)
+		qCtx.SetResponseWithTrace(cachedResp, query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: c.Tag()})
 		qCtx.SetCacheHit(true)
 		if c.whenHit != nil {
 			return c.whenHit.Exec(ctx, qCtx, nil)
@@ -270,6 +270,10 @@ func (c *cachePlugin) lookupCache(msgKey string) (r *dns.Msg, lazyHit bool, err 
 // It has an inner singleflight.Group to de-duplicate same msgKey.
 func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, next executable_seq.ExecutableChainNode) {
 	lazyQCtx := qCtx.Copy()
+	releaseWork, ok := qCtx.ReqMeta().AcquireBackgroundWork()
+	if !ok {
+		return
+	}
 	lazyUpdateFunc := func() (interface{}, error) {
 		c.L().Debug("start lazy cache update", lazyQCtx.InfoField())
 		defer c.lazyUpdateSF.Forget(msgKey)
@@ -290,7 +294,11 @@ func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, n
 		c.L().Debug("lazy cache updated", lazyQCtx.InfoField())
 		return nil, nil
 	}
-	c.lazyUpdateSF.DoChan(msgKey, lazyUpdateFunc) // DoChan won't block this goroutine
+	result := c.lazyUpdateSF.DoChan(msgKey, lazyUpdateFunc) // DoChan won't block this goroutine
+	go func() {
+		defer releaseWork()
+		<-result
+	}()
 }
 
 // tryStoreMsg tries to store r to cache. If r should be cached.

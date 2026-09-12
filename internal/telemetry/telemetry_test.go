@@ -36,7 +36,7 @@ func flush(t *testing.T, s *Store) {
 }
 
 func result(user, credential string, rcode int) dns_handler.Result {
-	return dns_handler.Result{Principal: query_context.Principal{UserID: user, CredentialID: credential}, QuestionName: "example.org.", QuestionType: dns.TypeA, Protocol: query_context.ProtocolH3, Duration: 10 * time.Millisecond, Rcode: rcode, Admitted: true}
+	return dns_handler.Result{Principal: query_context.Principal{UserID: user, CredentialID: credential}, QuestionName: "example.org.", QuestionType: dns.TypeA, Protocol: query_context.ProtocolH3, Duration: 10 * time.Millisecond, Rcode: rcode, Admitted: true, ResponseSource: query_context.ResponseSourceUpstream, ResponseSourceID: "forward_remote", UpstreamID: "forward_remote/0"}
 }
 
 func TestSnapshotClassificationAndUserIsolation(t *testing.T) {
@@ -123,6 +123,8 @@ func TestQueryFiltersAndNewestFirst(t *testing.T) {
 	defer s.Close()
 	older := result("u1", "desktop", dns.RcodeNameError)
 	older.QuestionName = "old.example."
+	older.ResponseSource = query_context.ResponseSourceCache
+	older.UpstreamID = ""
 	s.Observe(older)
 	clockMu.Lock()
 	clock = now
@@ -151,6 +153,8 @@ func TestQueryFiltersAndNewestFirst(t *testing.T) {
 		{Protocol: "H2"},
 		{Address: "192.0.2.10"},
 		{Address: "2001:db8::10"},
+		{ResponseSource: "UPSTREAM"},
+		{UpstreamID: "forward_remote/0"},
 		{CacheHit: &cacheHit},
 	}
 	for _, filter := range filters {
@@ -178,7 +182,7 @@ func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 		t.Fatalf("queries=%+v err=%v", page, err)
 	}
 	got := page.Items[0]
-	if got.ClientIP != "2001:db8::44" || len(got.AnswerIPs) != 2 || got.AnswerIPs[0] != "192.0.2.1" || got.EDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.EDNS.ECS == nil || got.EDNS.ECS.Address != "192.0.2.0" {
+	if got.ClientIP != "2001:db8::44" || len(got.AnswerIPs) != 2 || got.AnswerIPs[0] != "192.0.2.1" || got.EDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.EDNS.ECS == nil || got.EDNS.ECS.Address != "192.0.2.0" || got.ResponseSource != query_context.ResponseSourceUpstream || got.UpstreamID != "forward_remote/0" {
 		t.Fatalf("stored snapshot=%+v", got)
 	}
 
@@ -199,6 +203,83 @@ func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 	legacy := page.Items[0]
 	if legacy.ClientIP != "" || legacy.AnswerIPs == nil || len(legacy.AnswerIPs) != 0 || legacy.EDNS.Present || legacy.EDNS.OptionCodes == nil {
 		t.Fatalf("legacy normalization=%+v", legacy)
+	}
+}
+
+func TestConfigurableRetentionAndSettingsValidation(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	clock := now.Add(-3 * time.Hour)
+	s, err := Open(Options{
+		Path: filepath.Join(t.TempDir(), "custom-retention.db"), QueryLogEnabled: true,
+		AggregateRetention: 24 * time.Hour, QueryRetention: 2 * time.Hour, MaxQueryRecords: 1000,
+		Now: func() time.Time { return clock }, BatchSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Observe(result("u", "old", dns.RcodeSuccess))
+	flush(t, s)
+	clock = now
+	s.Observe(result("u", "new", dns.RcodeSuccess))
+	flush(t, s)
+	page, err := s.Queries(context.Background(), "u", now.Add(-4*time.Hour), now.Add(time.Minute), QueryFilter{}, Page{})
+	if err != nil || len(page.Items) != 1 || page.Items[0].CredentialID != "new" {
+		t.Fatalf("custom query retention page=%+v err=%v", page, err)
+	}
+	if err := s.UpdateSettings(Settings{QueryLogEnabled: false, AggregateRetention: 48 * time.Hour, QueryRetention: 4 * time.Hour, MaxQueryRecords: 2000}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Settings(); got.QueryLogEnabled || got.AggregateRetention != 48*time.Hour || got.QueryRetention != 4*time.Hour || got.MaxQueryRecords != 2000 {
+		t.Fatalf("settings=%+v", got)
+	}
+	for _, invalid := range []Settings{
+		{AggregateRetention: 23 * time.Hour, QueryRetention: time.Hour, MaxQueryRecords: 1000},
+		{AggregateRetention: 24 * time.Hour, QueryRetention: 721 * time.Hour, MaxQueryRecords: 1000},
+		{AggregateRetention: 24 * time.Hour, QueryRetention: time.Hour, MaxQueryRecords: 999},
+	} {
+		if err := s.UpdateSettings(invalid); err == nil {
+			t.Fatalf("accepted invalid settings %+v", invalid)
+		}
+	}
+}
+
+func TestUpdatingAggregateRetentionRebuildsBoltExpiry(t *testing.T) {
+	base := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	clock := base
+	s, err := Open(Options{
+		Path:               filepath.Join(t.TempDir(), "aggregate-retention.db"),
+		AggregateRetention: 24 * time.Hour, QueryRetention: time.Hour, MaxQueryRecords: 1000,
+		Now: func() time.Time { return clock }, BatchSize: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Observe(result("u", "first", dns.RcodeSuccess))
+	flush(t, s)
+	if err := s.UpdateSettings(Settings{AggregateRetention: 48 * time.Hour, QueryRetention: time.Hour, MaxQueryRecords: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	clock = base.Add(25 * time.Hour)
+	s.Observe(result("u", "second", dns.RcodeSuccess))
+	flush(t, s)
+	snapshot, err := s.Snapshot(context.Background(), "", base.Add(-time.Minute), clock.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Completed != 2 {
+		t.Fatalf("completed after extending retention = %d, want 2", snapshot.Completed)
+	}
+	if err := s.UpdateSettings(Settings{AggregateRetention: 24 * time.Hour, QueryRetention: time.Hour, MaxQueryRecords: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = s.Snapshot(context.Background(), "", base.Add(-time.Minute), clock.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Completed != 1 {
+		t.Fatalf("completed after shortening retention = %d, want 1", snapshot.Completed)
 	}
 }
 

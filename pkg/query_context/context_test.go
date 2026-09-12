@@ -32,3 +32,25 @@ func TestCacheHitLifecycle(t *testing.T) {
 		t.Fatal("SetResponse did not clear stale cache hit")
 	}
 }
+
+func TestResponseTraceCopyAndAdopt(t *testing.T) {
+	ctx := NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), nil)
+	ctx.SetResponseWithTrace(new(dns.Msg), ResponseTrace{Source: ResponseSourceUpstream, SourceID: "remote", UpstreamID: "remote/1"})
+	ctx.SetCacheHit(true)
+
+	branch := ctx.Copy()
+	branch.SetResponseWithTrace(new(dns.Msg), ResponseTrace{Source: ResponseSourceCache, SourceID: "cache_wan"})
+	branch.SetCacheHit(true)
+	if ctx.ResponseTrace().Source != ResponseSourceUpstream {
+		t.Fatalf("copy changed parent trace: %+v", ctx.ResponseTrace())
+	}
+
+	ctx.AdoptResponse(branch)
+	if got := ctx.ResponseTrace(); got.Source != ResponseSourceCache || got.SourceID != "cache_wan" || !ctx.CacheHit() {
+		t.Fatalf("adopted state=%+v cache=%v", got, ctx.CacheHit())
+	}
+	ctx.SetResponse(new(dns.Msg))
+	if got := ctx.ResponseTrace(); got != (ResponseTrace{}) || ctx.CacheHit() {
+		t.Fatalf("stale response metadata: %+v cache=%v", got, ctx.CacheHit())
+	}
+}

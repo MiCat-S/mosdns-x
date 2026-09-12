@@ -90,6 +90,60 @@ func TestControlInitAdminReadsStorageFromConfig(t *testing.T) {
 	}
 }
 
+func TestControlStatus(t *testing.T) {
+	dir := t.TempDir()
+	disabledConfig := filepath.Join(dir, "disabled.yaml")
+	if err := os.WriteFile(disabledConfig, []byte("log:\n  level: error\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertControlStatus(t, disabledConfig, controlStatusDisabled, controlStatusExitDisabled)
+
+	database := filepath.Join(dir, "control.db")
+	config := filepath.Join(dir, "control.yaml")
+	if err := os.WriteFile(config, []byte("control:\n  database: "+database+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertControlStatus(t, config, controlStatusUninitialized, controlStatusExitUninitialized)
+	if _, err := executeControl(t, context.Background(), "admin-password-value\n", "init-admin", "--config", config, "--username", "root"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := executeControl(t, context.Background(), "", "status", "--config", config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != controlStatusReady+"\n" {
+		t.Fatalf("status output=%q", out)
+	}
+
+	invalidConfig := filepath.Join(dir, "invalid.yaml")
+	if err := os.WriteFile(invalidConfig, []byte("control:\n  storage:\n    driver: mysql\n    mysql:\n      dsn: secret-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err = executeControl(t, context.Background(), "", "status", "--config", invalidConfig)
+	if out != controlStatusStorageError+"\n" {
+		t.Fatalf("status output=%q", out)
+	}
+	if err == nil || !strings.Contains(err.Error(), "non-zero") || strings.Contains(out+err.Error(), "secret-value") {
+		t.Fatalf("storage error=%v output=%q", err, out)
+	}
+	var exitErr interface{ ExitCode() int }
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != controlStatusExitStorageError {
+		t.Fatalf("storage exit error=%v", err)
+	}
+}
+
+func assertControlStatus(t *testing.T, config, expected string, expectedExitCode int) {
+	t.Helper()
+	out, err := executeControl(t, context.Background(), "", "status", "--config", config)
+	if out != expected+"\n" {
+		t.Fatalf("status output=%q, expected %q", out, expected+"\n")
+	}
+	var exitErr interface{ ExitCode() int }
+	if err == nil || !errors.As(err, &exitErr) || exitErr.ExitCode() != expectedExitCode {
+		t.Fatalf("status error=%v, expected exit code %d", err, expectedExitCode)
+	}
+}
+
 func TestControlPasswordInputValidation(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "db")
 	for name, input := range map[string]string{"multiple": "valid-password\nextra\n", "too_long": strings.Repeat("x", 1025) + "\r\n", "too_short": "short\n"} {

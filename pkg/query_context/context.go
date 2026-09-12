@@ -56,7 +56,8 @@ type RequestMeta struct {
 
 	principal Principal
 
-	upstreamObserver UpstreamObserver
+	upstreamObserver      UpstreamObserver
+	backgroundWorkTracker BackgroundWorkTracker
 }
 
 // Principal identifies the authenticated account and credential for a query.
@@ -77,6 +78,32 @@ type UpstreamAttempt struct {
 }
 
 type UpstreamObserver func(UpstreamAttempt)
+
+// BackgroundWorkTracker keeps runtime-owned resources alive for work that can
+// continue after an entry handler has selected and returned a response.
+type BackgroundWorkTracker func() (release func(), ok bool)
+
+const (
+	ResponseSourceCache         = "cache"
+	ResponseSourceUpstream      = "upstream"
+	ResponseSourceCustomBlock   = "custom_block"
+	ResponseSourceCustomRewrite = "custom_rewrite"
+	ResponseSourcePublicList    = "public_list"
+	ResponseSourceHosts         = "hosts"
+	ResponseSourceSequence      = "sequence"
+	ResponseSourceServfail      = "servfail"
+)
+
+// ResponseTrace identifies the component that produced the response selected
+// for this branch. It is stored by value so copied query contexts can safely
+// select different responses in parallel.
+type ResponseTrace struct {
+	Source              string
+	SourceID            string
+	UpstreamID          string
+	MatchedRuleID       string
+	MatchedPublicListID string
+}
 
 func NewRequestMeta(addr netip.Addr) *RequestMeta {
 	meta := new(RequestMeta)
@@ -138,6 +165,27 @@ func (m *RequestMeta) GetUpstreamObserver() UpstreamObserver {
 	return m.upstreamObserver
 }
 
+// Copy returns an independent metadata container. Callbacks and the principal
+// are immutable after admission and are safe to copy by value.
+func (m *RequestMeta) Copy() *RequestMeta {
+	if m == nil {
+		return new(RequestMeta)
+	}
+	copy := *m
+	return &copy
+}
+
+func (m *RequestMeta) SetBackgroundWorkTracker(tracker BackgroundWorkTracker) {
+	m.backgroundWorkTracker = tracker
+}
+
+func (m *RequestMeta) AcquireBackgroundWork() (func(), bool) {
+	if m == nil || m.backgroundWorkTracker == nil {
+		return func() {}, true
+	}
+	return m.backgroundWorkTracker()
+}
+
 // Context is a query context that pass through plugins
 // A Context will always have a non-nil Q.
 // Context MUST be created using NewContext.
@@ -152,6 +200,7 @@ type Context struct {
 
 	r        *dns.Msg
 	cacheHit bool
+	trace    ResponseTrace
 	marks    map[uint]struct{}
 }
 
@@ -233,6 +282,29 @@ func (ctx *Context) R() *dns.Msg {
 func (ctx *Context) SetResponse(r *dns.Msg) {
 	ctx.r = r
 	ctx.cacheHit = false
+	ctx.trace = ResponseTrace{}
+}
+
+// SetResponseWithTrace stores a response together with its origin.
+func (ctx *Context) SetResponseWithTrace(r *dns.Msg, trace ResponseTrace) {
+	ctx.SetResponse(r)
+	ctx.trace = trace
+}
+
+// SetResponseTrace updates the origin of the current response.
+func (ctx *Context) SetResponseTrace(trace ResponseTrace) {
+	ctx.trace = trace
+}
+
+func (ctx *Context) ResponseTrace() ResponseTrace {
+	return ctx.trace
+}
+
+// AdoptResponse copies response state from a completed isolated branch.
+func (ctx *Context) AdoptResponse(src *Context) {
+	ctx.SetResponse(src.R())
+	ctx.cacheHit = src.cacheHit
+	ctx.trace = src.trace
 }
 
 func (ctx *Context) SetCacheHit(hit bool) {
@@ -280,6 +352,7 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 		d.r = r.Copy()
 	}
 	d.cacheHit = ctx.cacheHit
+	d.trace = ctx.trace
 	for m := range ctx.marks {
 		d.AddMark(m)
 	}

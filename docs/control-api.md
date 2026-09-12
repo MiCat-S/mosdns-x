@@ -45,13 +45,17 @@
 | POST | `/me/rules` | `DNSPolicyRuleSpec` → 新规则 |
 | PATCH | `/me/rules/{id}` | `DNSPolicyRulePatch` → 更新后的规则 |
 | DELETE | `/me/rules/{id}` | 删除规则 |
+| GET | `/me/public-lists` | `PageResult<UserPublicList>`，包含继承或覆盖后的启用状态 |
+| PATCH | `/me/public-lists/{id}` | `{enabled:true|false|null}`；`null` 恢复管理员默认值 |
 | POST | `/me/lookup` | `{name,qtype}` → 当前执行链的结构化 DNS 结果 |
 
 `DNSPolicySettings` 支持移除 ECS、拦截私有地址应答、拒绝指定 QTYPE、分别启停自定义拦截／放行／重写规则，以及临时暂停全部用户策略。对应字段为 `strip_ecs`、`block_private_answers`、`blocked_qtypes`、`custom_block_enabled`、`custom_allow_enabled`、`custom_rewrite_enabled` 和可空的 `policy_paused_until`。暂停截止时间使用 RFC3339，最长可设为服务端当前时间之后 24 小时；过去时间或 JSON `null` 表示取消暂停。
 
 规则动作是 `allow`、`block`、`rewrite`，匹配方式是 `exact`、`suffix`、`keyword`、`regexp`；重写支持 A、AAAA、CNAME。每个用户最多 1000 条规则，按 `priority ASC, id ASC` 判断，第一条匹配规则生效。相同优先级的规则不保证创建顺序，存在覆盖关系时应使用不同优先级。拦截返回 NXDOMAIN；A/AAAA/CNAME 重写 TTL 为 60 秒。
 
-DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因此被用户规则拦截的有效请求仍计入额度。QTYPE 拦截和请求规则在 sequence 前执行；ECS 从请求副本中移除，原始请求快照仍可用于查询明细；私有地址检查在 sequence 和缓存返回后执行。暂停期间这些请求与响应策略全部绕过，到期后无需后台任务即可恢复。ECS、私有地址和 QTYPE 设置默认关闭，三个自定义规则总开关默认开启；升级会保持已有规则继续生效。
+DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因此被用户规则或公共列表拦截的有效请求仍计入额度。处理顺序为安全 QTYPE 限制、第一条匹配的自定义规则、公共列表、sequence、私有地址应答检查；自定义 `allow` 会跳过公共列表。ECS 从请求副本中移除，原始请求快照仍可用于查询明细。暂停期间这些请求与响应策略全部绕过，到期后无需后台任务即可恢复。ECS、私有地址和 QTYPE 设置默认关闭，三个自定义规则总开关默认开启；升级会保持已有规则继续生效。
+
+管理员用 `GET/POST /admin/public-lists` 和 `GET/PATCH/DELETE /admin/public-lists/{id}` 管理 HTTPS 列表目录，用 `POST /admin/public-lists/{id}/refresh` 手动刷新。格式为 `mosdns` 或 `hosts`，列表项包含默认启用状态、刷新周期、可选 SHA-256、条目数和刷新状态。下载失败时继续使用上一份有效快照。
 
 Lookup 只接受 A、AAAA、CNAME、NS、MX、TXT，使用当前实例的同一入口 sequence 和用户策略，返回 `question`、`rcode`、`duration_ms`、`answers`、`authority`、`additional`、`edns`。它只供面板诊断，不扣周期额度，也不写查询统计；已到期用户不能调用。服务默认限制每个客户端地址每分钟 60 次、全局同时 8 次，避免把面板接口当作免费解析入口。
 
@@ -74,12 +78,29 @@ Lookup 只接受 A、AAAA、CNAME、NS、MX、TXT，使用当前实例的同一�
 
 - `series` 每项：`time`、`completed`、`failed`、`cache_hits`、`avg_latency_ms`。
 - `upstreams` 每项：`id`、`attempts`、`failures`、`avg_latency_ms`。id 使用安全的配置标识，不能包含上游 URL 中的凭证。
-- `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
-- 查询日志按 `time`、`id` 从新到旧返回。除通用的 `from`、`to`、`limit`、`cursor` 外，还支持 `name`（不区分大小写的包含匹配）、`qtype`、`rcode`、`credential_id`、`protocol`、`address`（客户端 IP 或 Answer IP）和 `cache=all|hit|miss`。继续分页时必须保持时间范围和筛选条件不变。
+- `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`、`response_source`、`response_source_id`、`upstream_id`、`matched_rule_id`、`matched_public_list_id`。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
+- `response_source` 至少可能是 `cache`、`upstream`、`custom_block`、`custom_rewrite`、`public_list`、`hosts`、`sequence` 或 `servfail`。并发和 fallback 只记录最终选中响应的来源及上游；所有实际上游尝试仍进入聚合统计。
+- 查询日志按 `time`、`id` 从新到旧返回。除通用的 `from`、`to`、`limit`、`cursor` 外，还支持 `name`（不区分大小写的包含匹配）、`qtype`、`rcode`、`credential_id`、`protocol`、`address`（客户端 IP 或 Answer IP）、`source`、`upstream_id` 和 `cache=all|hit|miss`。继续分页时必须保持时间范围和筛选条件不变。
 - `edns` 包含 `present`、`version`、`udp_size`、`dnssec_ok`、`option_codes`，以及可选的 `ecs`。`ecs` 包含规范化网络地址 `address`、`family`、`source_prefix`、`scope_prefix`。系统只记录 EDNS option code，不保存 Cookie、Padding、NSID 或其他 option 载荷。
 - `completed` 是结果统计采集量，`failed` 是其中的失败量；扣费次数以事务保存的 usage / quota 为准。`dropped` 是当前进程观测到的异步事件丢弃量，包含响应或上游尝试事件，重启后不能据此判断历史数据完整性。统计窗口和更新时刻必须展示。
-- 响应聚合保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细继续保留 24 小时且最多 100,000 条，查询更久区间不会凭空补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。
+- 响应聚合默认保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细默认保留 24 小时且最多 100,000 条，均可通过 `control.telemetry` 在允许范围内调整。查询更久区间不会补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。
 - `system` 至少提供 `version`、`started_at`、`public_dns_url`、`query_log_enabled`、`config`（配置白名单概览）。`config` 包含 `dns_protocols`、`management_enabled`、`pprof_enabled`、`control_storage` 和 `telemetry_storage`，不会返回数据库路径或 MySQL DSN。查询明细默认关闭，关闭时接口返回空数组和页面说明。
+
+## 托管运行配置
+
+配置 `control.managed_config` 后，管理员可使用以下接口；未配置时返回 `managed_config_disabled`：
+
+| 方法 | 路径 | 请求 / 响应 |
+|---|---|---|
+| GET | `/admin/runtime/config` | 当前安全配置视图及 `revision` |
+| POST | `/admin/runtime/config/validate` | `{revision,config}` → 五分钟一次性验证令牌及缓存清空提示 |
+| POST | `/admin/runtime/config/apply` | `{token}` → 新状态；令牌绑定管理员会话与修订 |
+| POST | `/admin/runtime/config/reload` | 重读主配置；不可热更新项通过 `restart_required` 返回 |
+| GET | `/admin/runtime/history` | 最近 10 个可回滚旧修订 |
+| POST | `/admin/runtime/rollback` | `{revision,target_revision}` → 回滚后的新状态 |
+| POST | `/admin/runtime/upstreams/{tag}/probe` | 每个上游的安全标识、耗时、RCODE 和成功状态 |
+
+安全视图只包含不含敏感参数的 `fast_forward`、非 Redis 内存缓存、`query_log` 和统计保留策略。应用前完整构建候选运行代；失败时当前运行代保持不变。成功后所有入口一次切换，旧运行代等待在途请求和后台上游工作完成再关闭。修改任何需要重建运行代的配置且当前存在内存缓存时，验证结果会提示缓存清空。
 
 ## 受理与兼容边界
 

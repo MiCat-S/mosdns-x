@@ -38,16 +38,33 @@ type policy struct {
 // compiled cache off the DNS request path. Invalidate makes panel writes take
 // effect on the next query.
 type Engine struct {
-	store control.Service
-	now   func() time.Time
+	store       control.Service
+	publicLists PublicListMatcher
+	now         func() time.Time
 
 	mu       sync.RWMutex
 	cache    map[string]policy
 	versions map[string]uint64
 }
 
+type PublicListMatcher interface {
+	MatchID(context.Context, string, string) (string, error)
+}
+
+type Decision struct {
+	Action       control.DNSPolicyAction `json:"action,omitempty"`
+	RuleID       string                  `json:"rule_id,omitempty"`
+	PublicListID string                  `json:"public_list_id,omitempty"`
+}
+
 func New(store control.Service) *Engine {
 	return &Engine{store: store, now: time.Now, cache: make(map[string]policy), versions: make(map[string]uint64)}
+}
+
+func NewWithPublicLists(store control.Service, publicLists PublicListMatcher) *Engine {
+	engine := New(store)
+	engine.publicLists = publicLists
+	return engine
 }
 
 func (e *Engine) Invalidate(userID string) {
@@ -58,15 +75,20 @@ func (e *Engine) Invalidate(userID string) {
 }
 
 func (e *Engine) Before(ctx context.Context, principal query_context.Principal, request *dns.Msg) (*dns.Msg, error) {
+	response, _, err := e.BeforeWithDecision(ctx, principal, request)
+	return response, err
+}
+
+func (e *Engine) BeforeWithDecision(ctx context.Context, principal query_context.Principal, request *dns.Msg) (*dns.Msg, Decision, error) {
 	if principal.UserID == "" {
-		return nil, nil
+		return nil, Decision{}, nil
 	}
 	p, err := e.load(ctx, principal.UserID)
 	if err != nil {
-		return nil, err
+		return nil, Decision{}, err
 	}
 	if policyPaused(p.settings, e.now()) {
-		return nil, nil
+		return nil, Decision{}, nil
 	}
 	if p.settings.StripECS {
 		stripECS(request)
@@ -75,7 +97,7 @@ func (e *Engine) Before(ctx context.Context, principal query_context.Principal, 
 	qtype := dns.TypeToString[question.Qtype]
 	for _, blocked := range p.settings.BlockedQTypes {
 		if strings.EqualFold(blocked, qtype) {
-			return blockedResponse(request), nil
+			return blockedResponse(request), Decision{Action: control.DNSPolicyBlock}, nil
 		}
 	}
 	name := strings.ToLower(strings.TrimSuffix(question.Name, "."))
@@ -85,39 +107,53 @@ func (e *Engine) Before(ctx context.Context, principal query_context.Principal, 
 		}
 		switch candidate.rule.Action {
 		case control.DNSPolicyAllow:
-			return nil, nil
+			return nil, Decision{Action: control.DNSPolicyAllow, RuleID: candidate.rule.ID}, nil
 		case control.DNSPolicyBlock:
-			return blockedResponse(request), nil
+			return blockedResponse(request), Decision{Action: control.DNSPolicyBlock, RuleID: candidate.rule.ID}, nil
 		case control.DNSPolicyRewrite:
 			response, ok := rewriteResponse(request, candidate.rule)
 			if ok {
-				return response, nil
+				return response, Decision{Action: control.DNSPolicyRewrite, RuleID: candidate.rule.ID}, nil
 			}
 		}
 	}
-	return nil, nil
+	if e.publicLists != nil {
+		listID, err := e.publicLists.MatchID(ctx, principal.UserID, name)
+		if err != nil {
+			return nil, Decision{}, err
+		}
+		if listID != "" {
+			return blockedResponse(request), Decision{Action: control.DNSPolicyBlock, PublicListID: listID}, nil
+		}
+	}
+	return nil, Decision{}, nil
 }
 
 func (e *Engine) After(ctx context.Context, principal query_context.Principal, request, response *dns.Msg) (*dns.Msg, error) {
+	result, _, err := e.AfterWithDecision(ctx, principal, request, response)
+	return result, err
+}
+
+func (e *Engine) AfterWithDecision(ctx context.Context, principal query_context.Principal, request, response *dns.Msg) (*dns.Msg, Decision, error) {
 	if principal.UserID == "" {
-		return response, nil
+		return response, Decision{}, nil
 	}
 	p, err := e.load(ctx, principal.UserID)
 	if err != nil {
-		return nil, err
+		return nil, Decision{}, err
 	}
 	if policyPaused(p.settings, e.now()) {
-		return response, nil
+		return response, Decision{}, nil
 	}
 	if !p.settings.BlockPrivateAnswers {
-		return response, nil
+		return response, Decision{}, nil
 	}
 	for _, answer := range response.Answer {
 		if answerHasPrivateAddress(answer) {
-			return blockedResponse(request), nil
+			return blockedResponse(request), Decision{Action: control.DNSPolicyBlock}, nil
 		}
 	}
-	return response, nil
+	return response, Decision{}, nil
 }
 
 func policyPaused(settings control.DNSPolicySettings, now time.Time) bool {

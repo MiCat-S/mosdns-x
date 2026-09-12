@@ -26,7 +26,8 @@ const (
 	legacySchemaVersion             = 1
 	credentialSchemaVersion         = 2
 	policySchemaVersion             = 3
-	schemaVersion                   = 4
+	policySwitchSchemaVersion       = 4
+	schemaVersion                   = 5
 	defaultPage                     = 100
 	maxPage                         = 1000
 	maxUsageRange                   = 31 * 24 * time.Hour
@@ -48,6 +49,9 @@ var (
 	bDNSPolicySettings  = []byte("dns_policy_settings")
 	bDNSPolicyRules     = []byte("dns_policy_rules")
 	bUserDNSPolicyRules = []byte("user_dns_policy_rules")
+	bPublicLists        = []byte("public_lists")
+	bPublicListNames    = []byte("public_list_names")
+	bUserPublicLists    = []byte("user_public_lists")
 	kSchema             = []byte("schema_version")
 )
 
@@ -134,11 +138,11 @@ func Open(path string, opts Options) (*Store, error) {
 				return fmt.Errorf("unsupported schema version")
 			}
 			previousVersion = binary.BigEndian.Uint64(v)
-			if previousVersion != legacySchemaVersion && previousVersion != credentialSchemaVersion && previousVersion != policySchemaVersion && previousVersion != schemaVersion {
+			if previousVersion != legacySchemaVersion && previousVersion != credentialSchemaVersion && previousVersion != policySchemaVersion && previousVersion != policySwitchSchemaVersion && previousVersion != schemaVersion {
 				return fmt.Errorf("unsupported schema version")
 			}
 		}
-		for _, name := range [][]byte{bUsers, bUsernames, bSessions, bUserSessions, bCredentials, bCredentialTokens, bUserCredentials, bActiveCredentials, bUsage, bAudit, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules} {
+		for _, name := range [][]byte{bUsers, bUsernames, bSessions, bUserSessions, bCredentials, bCredentialTokens, bUserCredentials, bActiveCredentials, bUsage, bAudit, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules, bPublicLists, bPublicListNames, bUserPublicLists} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}

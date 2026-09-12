@@ -17,19 +17,22 @@ import (
 	"github.com/miekg/dns"
 )
 
-const mysqlTelemetrySchemaVersion = 1
+const mysqlTelemetrySchemaVersion = 2
 
 type MySQLOptions struct {
-	DSN              string
-	MaxOpenConns     int
-	MaxIdleConns     int
-	ConnMaxLifetime  time.Duration
-	OperationTimeout time.Duration
-	QueueSize        int
-	BatchSize        int
-	FlushInterval    time.Duration
-	QueryLogEnabled  bool
-	Now              func() time.Time
+	DSN                string
+	MaxOpenConns       int
+	MaxIdleConns       int
+	ConnMaxLifetime    time.Duration
+	OperationTimeout   time.Duration
+	QueueSize          int
+	BatchSize          int
+	FlushInterval      time.Duration
+	QueryLogEnabled    bool
+	AggregateRetention time.Duration
+	QueryRetention     time.Duration
+	MaxQueryRecords    int
+	Now                func() time.Time
 }
 
 var mysqlTelemetryMigrations = []string{
@@ -97,9 +100,16 @@ var mysqlTelemetryMigrations = []string{
 		protocol VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
 		answer_ips_json LONGTEXT NOT NULL,
 		edns_json LONGTEXT NOT NULL,
+		response_source VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+		response_source_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+		upstream_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+		matched_rule_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+		matched_public_list_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
 		KEY ix_mosdns_query_logs_time (time_ns, id),
 		KEY ix_mosdns_query_logs_user (user_id, time_ns, id),
-		KEY ix_mosdns_query_logs_credential (credential_id, time_ns)
+		KEY ix_mosdns_query_logs_credential (credential_id, time_ns),
+		KEY ix_mosdns_query_logs_source (response_source, time_ns),
+		KEY ix_mosdns_query_logs_upstream (upstream_id(128), time_ns)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
 }
 
@@ -141,6 +151,10 @@ func OpenMySQL(opts MySQLOptions) (*Store, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	aggregateRetentionValue, queryRetentionValue, maxQueryRecordsValue, err := normalizeRetention(opts.AggregateRetention, opts.QueryRetention, opts.MaxQueryRecords)
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("mysql", parsed.FormatDSN())
 	if err != nil {
 		return nil, err
@@ -159,7 +173,7 @@ func OpenMySQL(opts MySQLOptions) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{mysql: db, mysqlTimeout: opts.OperationTimeout, queue: make(chan event, opts.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), batchSize: opts.BatchSize, flushInterval: opts.FlushInterval, queryLogEnabled: opts.QueryLogEnabled, now: opts.Now, droppedByWindow: make(map[string]uint64)}
+	s := &Store{mysql: db, mysqlTimeout: opts.OperationTimeout, queue: make(chan event, opts.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), batchSize: opts.BatchSize, flushInterval: opts.FlushInterval, queryLogEnabled: opts.QueryLogEnabled, aggregateRetention: aggregateRetentionValue, queryRetention: queryRetentionValue, maxQueryRecords: maxQueryRecordsValue, now: opts.Now, droppedByWindow: make(map[string]uint64)}
 	var updated int64
 	if err := db.QueryRowContext(ctx, `SELECT updated_at_ns FROM mosdns_telemetry_meta WHERE id=1`).Scan(&updated); err != nil {
 		_ = db.Close()
@@ -204,11 +218,53 @@ func initializeMySQLTelemetry(ctx context.Context, db *sql.DB) error {
 		return nil
 	case err != nil:
 		return fmt.Errorf("mysql telemetry: %w", err)
+	case version == 1:
+		if err := migrateMySQLTelemetryV1ToV2(ctx, conn); err != nil {
+			return fmt.Errorf("mysql telemetry: %w", err)
+		}
+		return nil
 	case version != mysqlTelemetrySchemaVersion:
 		return fmt.Errorf("unsupported mysql telemetry schema version %d", version)
 	default:
 		return nil
 	}
+}
+
+func migrateMySQLTelemetryV1ToV2(ctx context.Context, conn *sql.Conn) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"response_source", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
+		{"response_source_id", "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''"},
+		{"upstream_id", "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''"},
+		{"matched_rule_id", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
+		{"matched_public_list_id", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
+	}
+	for _, column := range columns {
+		var count int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='mosdns_query_logs' AND column_name=?`, column.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE mosdns_query_logs ADD COLUMN `+column.name+` `+column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	for _, index := range []struct{ name, columns string }{{"ix_mosdns_query_logs_source", "response_source, time_ns"}, {"ix_mosdns_query_logs_upstream", "upstream_id(128), time_ns"}} {
+		var count int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='mosdns_query_logs' AND index_name=?`, index.name).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE mosdns_query_logs ADD KEY `+index.name+` (`+index.columns+`)`); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := conn.ExecContext(ctx, `UPDATE mosdns_schema_migrations SET version=? WHERE component='telemetry' AND version=1`, mysqlTelemetrySchemaVersion)
+	return err
 }
 
 func (s *Store) mysqlContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -240,6 +296,7 @@ type mysqlUpstreamKey struct {
 }
 
 func (s *Store) writeMySQLBatch(events []event) error {
+	settings := s.Settings()
 	minutes := make(map[mysqlMinuteKey]minuteAggregate)
 	rcodes := make(map[mysqlRcodeKey]uint64)
 	latencies := make(map[mysqlLatencyKey]uint64)
@@ -269,7 +326,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 				rcodes[mysqlRcodeKey{mysqlMinuteKey: key, Rcode: rcode}]++
 				latencies[mysqlLatencyKey{mysqlMinuteKey: key, Bucket: latencyBucket(r.Duration)}]++
 			}
-			if s.queryLogEnabled {
+			if settings.QueryLogEnabled {
 				idSuffix, err := randomTelemetryID()
 				if err != nil {
 					return err
@@ -295,7 +352,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 					ecs := *r.EDNS.ECS
 					edns.ECS = &ecs
 				}
-				queries = append(queries, QueryRecord{ID: fmt.Sprintf("%020d.%s", e.time.UnixNano(), idSuffix), Time: e.time, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns})
+				queries = append(queries, QueryRecord{ID: fmt.Sprintf("%020d.%s", e.time.UnixNano(), idSuffix), Time: e.time, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns, ResponseSource: r.ResponseSource, ResponseSourceID: r.ResponseSourceID, UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID, MatchedPublicListID: r.MatchedPublicListID})
 			}
 		}
 		if e.attempt != nil {
@@ -367,8 +424,8 @@ func (s *Store) writeMySQLBatch(events []event) error {
 			return rollback(err)
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_query_logs
-			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON)
+			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json, response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON, q.ResponseSource, q.ResponseSourceID, q.UpstreamID, q.MatchedRuleID, q.MatchedPublicListID)
 		if err != nil {
 			return rollback(err)
 		}
@@ -379,19 +436,19 @@ func (s *Store) writeMySQLBatch(events []event) error {
 	shouldPrune := lastPrune < minute
 	if shouldPrune {
 		for _, table := range []string{"mosdns_telemetry_minutes", "mosdns_telemetry_rcodes", "mosdns_telemetry_latency", "mosdns_telemetry_upstreams"} {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE minute_epoch<?`, now.Add(-aggregateRetention).Unix()); err != nil {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE minute_epoch<?`, now.Add(-settings.AggregateRetention).Unix()); err != nil {
 				return rollback(err)
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-queryRetention).UnixNano()); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-settings.QueryRetention).UnixNano()); err != nil {
 			return rollback(err)
 		}
 		var count uint64
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_query_logs`).Scan(&count); err != nil {
 			return rollback(err)
 		}
-		if count > maxQueryRecords {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs ORDER BY time_ns, id LIMIT ?`, count-maxQueryRecords); err != nil {
+		if count > uint64(settings.MaxQueryRecords) {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs ORDER BY time_ns, id LIMIT ?`, count-uint64(settings.MaxQueryRecords)); err != nil {
 				return rollback(err)
 			}
 		}
@@ -422,11 +479,12 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		return StatsSnapshot{}, err
 	}
 	requestedFrom := from
-	retainedFrom := s.now().UTC().Add(-aggregateRetention)
+	settings := s.Settings()
+	retainedFrom := s.now().UTC().Add(-settings.AggregateRetention)
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}
-	snapshot := StatsSnapshot{From: requestedFrom, To: to, RcodeCounts: make(map[string]uint64), Series: []SeriesPoint{}, Upstreams: []UpstreamStats{}, Dropped: s.droppedFor(userID, from, to), QueryLogEnabled: s.queryLogEnabled}
+	snapshot := StatsSnapshot{From: requestedFrom, To: to, RcodeCounts: make(map[string]uint64), Series: []SeriesPoint{}, Upstreams: []UpstreamStats{}, Dropped: s.droppedFor(userID, from, to), QueryLogEnabled: settings.QueryLogEnabled}
 	if !from.Before(to) {
 		return snapshot, nil
 	}
@@ -547,13 +605,14 @@ func mysqlQueryCursor(value string) (int64, string, error) {
 
 func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.Time, filter QueryFilter, page Page) (QueryPage, error) {
 	result := QueryPage{Items: []QueryRecord{}}
-	if !s.queryLogEnabled {
+	settings := s.Settings()
+	if !settings.QueryLogEnabled {
 		return result, nil
 	}
 	if err := validateRange(from, to); err != nil {
 		return result, err
 	}
-	retainedFrom := s.now().UTC().Add(-queryRetention)
+	retainedFrom := s.now().UTC().Add(-settings.QueryRetention)
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}
@@ -568,7 +627,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	}
 	opCtx, cancel := s.mysqlContext(ctx)
 	defer cancel()
-	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json
+	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json, response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id
 		FROM mosdns_query_logs WHERE time_ns>=? AND time_ns<?`
 	args := []any{from.UnixNano(), to.UnixNano()}
 	if page.Cursor != "" {
@@ -607,6 +666,14 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		query += ` AND (client_ip=? OR answer_ips_json LIKE ?)`
 		args = append(args, filter.Address, `%"`+filter.Address+`"%`)
 	}
+	if filter.ResponseSource != "" {
+		query += ` AND response_source=?`
+		args = append(args, strings.ToLower(filter.ResponseSource))
+	}
+	if filter.UpstreamID != "" {
+		query += ` AND upstream_id=?`
+		args = append(args, filter.UpstreamID)
+	}
 	if filter.CacheHit != nil {
 		query += ` AND cache_hit=?`
 		args = append(args, *filter.CacheHit)
@@ -622,7 +689,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		var r QueryRecord
 		var ns int64
 		var answerJSON, ednsJSON []byte
-		if err := rows.Scan(&r.ID, &ns, &r.UserID, &r.CredentialID, &r.ClientIP, &r.Name, &r.QType, &r.Rcode, &r.DurationMS, &r.CacheHit, &r.Protocol, &answerJSON, &ednsJSON); err != nil {
+		if err := rows.Scan(&r.ID, &ns, &r.UserID, &r.CredentialID, &r.ClientIP, &r.Name, &r.QType, &r.Rcode, &r.DurationMS, &r.CacheHit, &r.Protocol, &answerJSON, &ednsJSON, &r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID, &r.MatchedRuleID, &r.MatchedPublicListID); err != nil {
 			return result, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		r.Time = time.Unix(0, ns).UTC()

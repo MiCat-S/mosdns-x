@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -117,19 +118,31 @@ func StartServerContext(ctx context.Context, sf *serverFlags) error {
 		mlog.L().Info("working directory changed", zap.String("path", sf.dir))
 	}
 
-	cfg, fileUsed, err := loadConfig(sf.c)
+	cfg, err := loadMergedConfig(sf.c)
 	if err != nil {
-		return fmt.Errorf("fail to load config, %w", err)
-	}
-
-	if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
-		return fmt.Errorf("failed to load sub config file, %w", err)
+		return err
 	}
 
 	if err := RunMosdnsContext(ctx, cfg); err != nil {
 		return fmt.Errorf("mosdns exited, %w", err)
 	}
 	return nil
+}
+
+func loadMergedConfig(filePath string) (*Config, error) {
+	cfg, fileUsed, err := loadConfig(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("fail to load config, %w", err)
+	}
+	if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
+		return nil, fmt.Errorf("failed to load sub config file, %w", err)
+	}
+	absPath, err := filepath.Abs(fileUsed)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config source path: %w", err)
+	}
+	cfg.sourcePath = absPath
+	return cfg, nil
 }
 
 // loadConfig load a config from a file. If filePath is empty, it will

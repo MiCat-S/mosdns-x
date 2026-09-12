@@ -99,6 +99,98 @@ export interface Page<T> {
   items: T[];
   next_cursor?: string;
 }
+export type PublicListFormat = "mosdns" | "hosts";
+export interface PublicList {
+  id: string;
+  name: string;
+  category?: string;
+  url: string;
+  format: PublicListFormat;
+  enabled: boolean;
+  sha256?: string;
+  refresh_seconds: number;
+  entry_count?: number;
+  last_refresh_status?: string;
+  last_refreshed_at?: string;
+  last_refresh_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface UserPublicList {
+  list: PublicList;
+  enabled: boolean;
+  overridden: boolean;
+}
+export interface RuntimeTelemetry {
+  aggregate_retention_days: number;
+  query_retention_hours: number;
+  max_query_records: number;
+}
+export interface RuntimeUpstream {
+  addr: string;
+  dial_addr?: string;
+  trusted?: boolean;
+  so_mark?: number;
+  bind_to_device?: string;
+  idle_timeout?: number;
+  max_conns?: number;
+  enable_pipeline?: boolean;
+  bootstrap?: string;
+  insecure?: boolean;
+  kernel_tx?: boolean;
+  kernel_rx?: boolean;
+}
+export interface RuntimeFastForward {
+  upstreams: RuntimeUpstream[];
+}
+export interface RuntimeCache {
+  size: number;
+  lazy_cache_ttl: number;
+  lazy_cache_reply_ttl: number;
+  compress_resp: boolean;
+}
+export interface RuntimePlugin {
+  tag: string;
+  type: string;
+  editable: boolean;
+  read_only_reason?: string;
+  fast_forward?: RuntimeFastForward;
+  cache?: RuntimeCache;
+}
+export interface RuntimeConfig {
+  version: number;
+  query_log: boolean;
+  telemetry: RuntimeTelemetry;
+  plugins: RuntimePlugin[];
+}
+export interface RuntimeState {
+  revision: string;
+  config: RuntimeConfig;
+}
+export interface RuntimeValidation {
+  token: string;
+  expires_at: string;
+  revision: string;
+  will_clear_caches: boolean;
+}
+export interface RuntimeApplyResult extends RuntimeState {
+  caches_cleared: boolean;
+}
+export interface RuntimeReloadResult extends RuntimeState {
+  restart_required: string[];
+  caches_cleared: boolean;
+}
+export interface RuntimeRevision {
+  revision: string;
+  created_at: string;
+}
+export interface RuntimeProbe {
+  upstream_id: string;
+  duration_ms: number;
+  rcode: number;
+  success: boolean;
+  error?: string;
+}
 export interface UsagePoint {
   minute: string;
   user_id: string;
@@ -148,6 +240,11 @@ export interface QueryRecord {
   protocol: string;
   answer_ips: string[];
   edns?: EDNSInfo;
+  response_source?: string;
+  response_source_id?: string;
+  upstream_id?: string;
+  matched_rule_id?: string;
+  matched_public_list_id?: string;
 }
 export interface EDNSInfo {
   present: boolean;

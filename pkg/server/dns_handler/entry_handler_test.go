@@ -68,6 +68,73 @@ func TestResultIncludesFinalCacheHit(t *testing.T) {
 	}
 }
 
+func TestResultIncludesSelectedResponseTrace(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		r := new(dns.Msg)
+		r.SetReply(qCtx.Q())
+		qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{Source: query_context.ResponseSourceUpstream, SourceID: "forward_remote", UpstreamID: "forward_remote/1"})
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: exec, Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResponseSource != query_context.ResponseSourceUpstream || got.ResponseSourceID != "forward_remote" || got.UpstreamID != "forward_remote/1" {
+		t.Fatalf("response trace=%+v", got)
+	}
+}
+
+func TestResultIncludesPolicyResponseTrace(t *testing.T) {
+	var got Result
+	exec := new(testExecutable)
+	h, _ := NewEntryHandler(EntryHandlerOpts{
+		Entry: exec,
+		BeforeExecWithTrace: func(_ context.Context, _ query_context.Principal, request *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
+			response := new(dns.Msg)
+			response.SetRcode(request, dns.RcodeNameError)
+			return response, query_context.ResponseTrace{Source: query_context.ResponseSourcePublicList, SourceID: "list-1", MatchedPublicListID: "list-1"}, nil
+		},
+		Observe: func(result Result) { got = result },
+	})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if exec.calls != 0 || got.ResponseSource != query_context.ResponseSourcePublicList || got.MatchedPublicListID != "list-1" {
+		t.Fatalf("exec calls=%d trace=%+v", exec.calls, got)
+	}
+}
+
+func TestResultPreservesAllowRuleAndSelectedUpstreamTrace(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		response := new(dns.Msg)
+		response.SetReply(qCtx.Q())
+		qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
+			Source: query_context.ResponseSourceUpstream, SourceID: "forward", UpstreamID: "forward/1",
+		})
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{
+		Entry: exec,
+		BeforeExecWithTrace: func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
+			return nil, query_context.ResponseTrace{MatchedRuleID: "allow-rule"}, nil
+		},
+		AfterExecWithTrace: func(_ context.Context, _ query_context.Principal, request, _ *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
+			response := new(dns.Msg)
+			response.SetRcode(request, dns.RcodeNameError)
+			return response, query_context.ResponseTrace{Source: query_context.ResponseSourceCustomBlock}, nil
+		},
+		Observe: func(result Result) { got = result },
+	})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.ResponseSource != query_context.ResponseSourceCustomBlock || got.UpstreamID != "forward/1" || got.MatchedRuleID != "allow-rule" {
+		t.Fatalf("response trace=%+v", got)
+	}
+}
+
 func TestResultSnapshotsOriginalEDNSAndFinalAnswerIPs(t *testing.T) {
 	q := validQuery()
 	q.SetEdns0(1232, true)
@@ -300,6 +367,9 @@ func TestExecFailureAndNilResponseBecomeSERVFAIL(t *testing.T) {
 			}
 			if got.ExecError != (tc.exec.err != nil) {
 				t.Fatalf("ExecError=%v", got.ExecError)
+			}
+			if got.ResponseSource != query_context.ResponseSourceServfail {
+				t.Fatalf("ResponseSource=%q", got.ResponseSource)
 			}
 		})
 	}

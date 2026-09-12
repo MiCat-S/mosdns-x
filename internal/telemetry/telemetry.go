@@ -28,11 +28,17 @@ import (
 const (
 	// Minute aggregates are retained for seven days. Query records use the
 	// shorter limits below because they contain per-request details.
-	aggregateRetention = 7 * 24 * time.Hour
-	queryRetention     = 24 * time.Hour
-	maxQueryRecords    = 100000
-	maxRange           = 31 * 24 * time.Hour
-	maxPageLimit       = 1000
+	aggregateRetention    = 7 * 24 * time.Hour
+	queryRetention        = 24 * time.Hour
+	maxQueryRecords       = 100000
+	maxRange              = 31 * 24 * time.Hour
+	maxPageLimit          = 1000
+	minAggregateRetention = 24 * time.Hour
+	maxAggregateRetention = 31 * 24 * time.Hour
+	minQueryRetention     = time.Hour
+	maxQueryRetention     = 720 * time.Hour
+	minQueryRecords       = 1000
+	maxQueryRecordLimit   = 5000000
 )
 
 var (
@@ -47,12 +53,22 @@ var (
 )
 
 type Options struct {
-	Path            string
-	QueueSize       int
-	BatchSize       int
-	FlushInterval   time.Duration
-	QueryLogEnabled bool
-	Now             func() time.Time
+	Path               string
+	QueueSize          int
+	BatchSize          int
+	FlushInterval      time.Duration
+	QueryLogEnabled    bool
+	AggregateRetention time.Duration
+	QueryRetention     time.Duration
+	MaxQueryRecords    int
+	Now                func() time.Time
+}
+
+type Settings struct {
+	QueryLogEnabled    bool          `json:"query_log_enabled"`
+	AggregateRetention time.Duration `json:"aggregate_retention"`
+	QueryRetention     time.Duration `json:"query_retention"`
+	MaxQueryRecords    int           `json:"max_query_records"`
 }
 
 type SeriesPoint struct {
@@ -87,19 +103,24 @@ type StatsSnapshot struct {
 }
 
 type QueryRecord struct {
-	ID           string               `json:"id"`
-	Time         time.Time            `json:"time"`
-	UserID       string               `json:"user_id"`
-	CredentialID string               `json:"credential_id"`
-	ClientIP     string               `json:"client_ip"`
-	Name         string               `json:"name"`
-	QType        string               `json:"qtype"`
-	Rcode        string               `json:"rcode"`
-	DurationMS   float64              `json:"duration_ms"`
-	CacheHit     bool                 `json:"cache_hit"`
-	Protocol     string               `json:"protocol"`
-	AnswerIPs    []string             `json:"answer_ips"`
-	EDNS         dns_handler.EDNSInfo `json:"edns"`
+	ID                  string               `json:"id"`
+	Time                time.Time            `json:"time"`
+	UserID              string               `json:"user_id"`
+	CredentialID        string               `json:"credential_id"`
+	ClientIP            string               `json:"client_ip"`
+	Name                string               `json:"name"`
+	QType               string               `json:"qtype"`
+	Rcode               string               `json:"rcode"`
+	DurationMS          float64              `json:"duration_ms"`
+	CacheHit            bool                 `json:"cache_hit"`
+	Protocol            string               `json:"protocol"`
+	AnswerIPs           []string             `json:"answer_ips"`
+	EDNS                dns_handler.EDNSInfo `json:"edns"`
+	ResponseSource      string               `json:"response_source"`
+	ResponseSourceID    string               `json:"response_source_id"`
+	UpstreamID          string               `json:"upstream_id"`
+	MatchedRuleID       string               `json:"matched_rule_id"`
+	MatchedPublicListID string               `json:"matched_public_list_id"`
 }
 
 type Page struct {
@@ -108,13 +129,15 @@ type Page struct {
 }
 
 type QueryFilter struct {
-	Name         string
-	QType        string
-	Rcode        string
-	CredentialID string
-	Protocol     string
-	Address      string
-	CacheHit     *bool
+	Name           string
+	QType          string
+	Rcode          string
+	CredentialID   string
+	Protocol       string
+	Address        string
+	ResponseSource string
+	UpstreamID     string
+	CacheHit       *bool
 }
 
 type QueryPage struct {
@@ -145,27 +168,33 @@ type event struct {
 }
 
 type Store struct {
-	db              *bolt.DB
-	mysql           *sql.DB
-	mysqlTimeout    time.Duration
-	mysqlPrunedAt   atomic.Int64
-	queue           chan event
-	stop            chan struct{}
-	done            chan struct{}
-	batchSize       int
-	flushInterval   time.Duration
-	queryLogEnabled bool
-	now             func() time.Time
-	closed          atomic.Bool
-	dropped         atomic.Uint64
-	droppedMu       sync.RWMutex
-	droppedByWindow map[string]uint64
-	droppedPrunedAt atomic.Int64
-	updatedUnixNano atomic.Int64
-	closeOnce       sync.Once
-	closeErr        error
-	runErr          error
-	enqueueMu       sync.RWMutex
+	db                  *bolt.DB
+	mysql               *sql.DB
+	mysqlTimeout        time.Duration
+	mysqlPrunedAt       atomic.Int64
+	queue               chan event
+	stop                chan struct{}
+	done                chan struct{}
+	batchSize           int
+	flushInterval       time.Duration
+	queryLogEnabled     bool
+	aggregateRetention  time.Duration
+	queryRetention      time.Duration
+	maxQueryRecords     int
+	settingsMu          sync.RWMutex
+	settingsUpdateMu    sync.Mutex
+	boltExpiryRetention time.Duration
+	now                 func() time.Time
+	closed              atomic.Bool
+	dropped             atomic.Uint64
+	droppedMu           sync.RWMutex
+	droppedByWindow     map[string]uint64
+	droppedPrunedAt     atomic.Int64
+	updatedUnixNano     atomic.Int64
+	closeOnce           sync.Once
+	closeErr            error
+	runErr              error
+	enqueueMu           sync.RWMutex
 }
 
 func Open(opts Options) (*Store, error) {
@@ -183,6 +212,10 @@ func Open(opts Options) (*Store, error) {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	aggregateRetentionValue, queryRetentionValue, maxQueryRecordsValue, err := normalizeRetention(opts.AggregateRetention, opts.QueryRetention, opts.MaxQueryRecords)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(opts.Path), 0o700); err != nil {
 		return nil, err
@@ -214,7 +247,7 @@ func Open(opts Options) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, queue: make(chan event, opts.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), batchSize: opts.BatchSize, flushInterval: opts.FlushInterval, queryLogEnabled: opts.QueryLogEnabled, now: opts.Now, droppedByWindow: make(map[string]uint64)}
+	s := &Store{db: db, queue: make(chan event, opts.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), batchSize: opts.BatchSize, flushInterval: opts.FlushInterval, queryLogEnabled: opts.QueryLogEnabled, aggregateRetention: aggregateRetentionValue, queryRetention: queryRetentionValue, maxQueryRecords: maxQueryRecordsValue, boltExpiryRetention: aggregateRetentionValue, now: opts.Now, droppedByWindow: make(map[string]uint64)}
 	if err := db.View(func(tx *bolt.Tx) error {
 		if v := tx.Bucket(bucketMeta).Get(keyUpdatedAt); len(v) == 8 {
 			s.updatedUnixNano.Store(int64(binary.BigEndian.Uint64(v)))
@@ -226,6 +259,105 @@ func Open(opts Options) (*Store, error) {
 	}
 	go s.run()
 	return s, nil
+}
+
+func normalizeRetention(aggregate, query time.Duration, records int) (time.Duration, time.Duration, int, error) {
+	if aggregate == 0 {
+		aggregate = aggregateRetention
+	}
+	if query == 0 {
+		query = queryRetention
+	}
+	if records == 0 {
+		records = maxQueryRecords
+	}
+	if aggregate < minAggregateRetention || aggregate > maxAggregateRetention {
+		return 0, 0, 0, fmt.Errorf("aggregate retention must be between 1 and 31 days")
+	}
+	if query < minQueryRetention || query > maxQueryRetention {
+		return 0, 0, 0, fmt.Errorf("query retention must be between 1 and 720 hours")
+	}
+	if records < minQueryRecords || records > maxQueryRecordLimit {
+		return 0, 0, 0, fmt.Errorf("max query records must be between 1000 and 5000000")
+	}
+	return aggregate, query, records, nil
+}
+
+func ValidateSettings(settings Settings) error {
+	_, _, _, err := normalizeRetention(settings.AggregateRetention, settings.QueryRetention, settings.MaxQueryRecords)
+	return err
+}
+
+func (s *Store) Settings() Settings {
+	s.settingsMu.RLock()
+	settings := Settings{
+		QueryLogEnabled:    s.queryLogEnabled,
+		AggregateRetention: s.aggregateRetention,
+		QueryRetention:     s.queryRetention,
+		MaxQueryRecords:    s.maxQueryRecords,
+	}
+	s.settingsMu.RUnlock()
+	if settings.AggregateRetention == 0 {
+		settings.AggregateRetention = aggregateRetention
+	}
+	if settings.QueryRetention == 0 {
+		settings.QueryRetention = queryRetention
+	}
+	if settings.MaxQueryRecords == 0 {
+		settings.MaxQueryRecords = maxQueryRecords
+	}
+	return settings
+}
+
+// UpdateSettings applies telemetry settings without reopening the database.
+// Pruning uses the new limits on the next flush.
+func (s *Store) UpdateSettings(settings Settings) error {
+	s.settingsUpdateMu.Lock()
+	defer s.settingsUpdateMu.Unlock()
+	aggregate, query, records, err := normalizeRetention(settings.AggregateRetention, settings.QueryRetention, settings.MaxQueryRecords)
+	if err != nil {
+		return err
+	}
+	s.settingsMu.Lock()
+	s.queryLogEnabled = settings.QueryLogEnabled
+	s.aggregateRetention = aggregate
+	s.queryRetention = query
+	s.maxQueryRecords = records
+	s.settingsMu.Unlock()
+	if s.db != nil && s.boltExpiryRetention != aggregate {
+		// Expiry keys include the retention value that was active when an
+		// aggregate was written. Rebuild them when the setting changes so
+		// increasing retention does not delete data early and decreasing it
+		// takes effect without waiting for the old deadline.
+		if err := s.db.Update(func(tx *bolt.Tx) error {
+			if err := tx.DeleteBucket(bucketExpiry); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
+				return err
+			}
+			if _, err := tx.CreateBucket(bucketExpiry); err != nil {
+				return err
+			}
+			for _, item := range []struct {
+				bucket []byte
+				code   byte
+			}{{bucketMinutes, 'm'}, {bucketUpstream, 'u'}} {
+				bucket := tx.Bucket(item.bucket)
+				if err := bucket.ForEach(func(key, _ []byte) error {
+					minute, err := aggregateMinute(key)
+					if err != nil {
+						return err
+					}
+					return putExpiry(tx, minute.Add(aggregate), item.code, key)
+				}); err != nil {
+					return err
+				}
+			}
+			return s.prune(tx, s.now().UTC())
+		}); err != nil {
+			return err
+		}
+		s.boltExpiryRetention = aggregate
+	}
+	return nil
 }
 
 func (s *Store) Observe(result dns_handler.Result) {
@@ -279,7 +411,7 @@ func (s *Store) addDropped(userID string, at time.Time) {
 	minute := at.Truncate(time.Minute).Unix()
 	s.droppedMu.Lock()
 	if minute > s.droppedPrunedAt.Load() {
-		cutoff := at.Add(-aggregateRetention).Truncate(time.Minute).Unix()
+		cutoff := at.Add(-s.Settings().AggregateRetention).Truncate(time.Minute).Unix()
 		for key := range s.droppedByWindow {
 			parts := strings.Split(key, "\x00")
 			stored, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
@@ -435,6 +567,18 @@ func minuteKey(scope, userID string, minute time.Time, suffix string) []byte {
 	return []byte(scope + "\x00" + userID + "\x00" + fmt.Sprintf("%020d", minute.Unix()) + "\x00" + suffix)
 }
 
+func aggregateMinute(key []byte) (time.Time, error) {
+	parts := bytes.SplitN(key, []byte{0}, 4)
+	if len(parts) != 4 || len(parts[2]) != 20 {
+		return time.Time{}, errors.New("invalid telemetry aggregate key")
+	}
+	seconds, err := strconv.ParseInt(string(parts[2]), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid telemetry aggregate key: %w", err)
+	}
+	return time.Unix(seconds, 0).UTC(), nil
+}
+
 func putExpiry(tx *bolt.Tx, expires time.Time, bucketCode byte, target []byte) error {
 	key := append([]byte(fmt.Sprintf("%020d\x00%c\x00", expires.Unix(), bucketCode)), target...)
 	return tx.Bucket(bucketExpiry).Put(key, nil)
@@ -464,6 +608,7 @@ func latencyBucket(d time.Duration) int {
 }
 
 func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) error {
+	settings := s.Settings()
 	minute := now.Truncate(time.Minute)
 	failed := r.ExecError || r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused
 	for _, pair := range [][2]string{{"g", ""}, {"u", r.Principal.UserID}} {
@@ -496,11 +641,11 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 		if err := b.Put(key, v); err != nil {
 			return err
 		}
-		if err := putExpiry(tx, minute.Add(aggregateRetention), 'm', key); err != nil {
+		if err := putExpiry(tx, minute.Add(settings.AggregateRetention), 'm', key); err != nil {
 			return err
 		}
 	}
-	if s.queryLogEnabled {
+	if settings.QueryLogEnabled {
 		sequence, err := tx.Bucket(bucketQueries).NextSequence()
 		if err != nil {
 			return err
@@ -531,7 +676,7 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 			ecs := *r.EDNS.ECS
 			edns.ECS = &ecs
 		}
-		record := QueryRecord{ID: id, Time: now, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns}
+		record := QueryRecord{ID: id, Time: now, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns, ResponseSource: r.ResponseSource, ResponseSourceID: r.ResponseSourceID, UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID, MatchedPublicListID: r.MatchedPublicListID}
 		v, _ := json.Marshal(record)
 		if err := tx.Bucket(bucketQueries).Put([]byte(id), v); err != nil {
 			return err
@@ -548,6 +693,7 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 
 func (s *Store) writeAttempt(tx *bolt.Tx, now time.Time, a query_context.UpstreamAttempt) error {
 	minute := now.Truncate(time.Minute)
+	retention := s.Settings().AggregateRetention
 	for _, pair := range [][2]string{{"g", ""}, {"u", a.Principal.UserID}} {
 		key := minuteKey(pair[0], pair[1], minute, a.UpstreamID)
 		var agg upstreamAggregate
@@ -566,7 +712,7 @@ func (s *Store) writeAttempt(tx *bolt.Tx, now time.Time, a query_context.Upstrea
 		if err := b.Put(key, v); err != nil {
 			return err
 		}
-		if err := putExpiry(tx, minute.Add(aggregateRetention), 'u', key); err != nil {
+		if err := putExpiry(tx, minute.Add(retention), 'u', key); err != nil {
 			return err
 		}
 	}
@@ -574,6 +720,7 @@ func (s *Store) writeAttempt(tx *bolt.Tx, now time.Time, a query_context.Upstrea
 }
 
 func (s *Store) prune(tx *bolt.Tx, now time.Time) error {
+	settings := s.Settings()
 	expiry := tx.Bucket(bucketExpiry)
 	c := expiry.Cursor()
 	for k, _ := c.First(); k != nil; k, _ = c.Next() {
@@ -611,10 +758,10 @@ func (s *Store) prune(tx *bolt.Tx, now time.Time) error {
 		}
 	}
 	q := tx.Bucket(bucketQueries)
-	cutoff := fmt.Sprintf("%020d", now.Add(-queryRetention).UnixNano())
+	cutoff := fmt.Sprintf("%020d", now.Add(-settings.QueryRetention).UnixNano())
 	c = q.Cursor()
 	count := metaUint64(tx, keyQueryCount)
-	for k, v := c.First(); k != nil && (string(k[:20]) < cutoff || count > maxQueryRecords); k, v = c.Next() {
+	for k, v := c.First(); k != nil && (string(k[:20]) < cutoff || count > uint64(settings.MaxQueryRecords)); k, v = c.Next() {
 		var record QueryRecord
 		_ = json.Unmarshal(v, &record)
 		if err := tx.Bucket(bucketUserQ).Delete([]byte(record.UserID + "\x00" + string(k))); err != nil {
@@ -648,11 +795,12 @@ func (s *Store) Snapshot(ctx context.Context, userID string, from, to time.Time)
 		return StatsSnapshot{}, err
 	}
 	requestedFrom := from
-	retainedFrom := s.now().UTC().Add(-aggregateRetention)
+	settings := s.Settings()
+	retainedFrom := s.now().UTC().Add(-settings.AggregateRetention)
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}
-	snapshot := StatsSnapshot{From: requestedFrom, To: to, RcodeCounts: make(map[string]uint64), Series: []SeriesPoint{}, Upstreams: []UpstreamStats{}, Dropped: s.droppedFor(userID, from, to), QueryLogEnabled: s.queryLogEnabled}
+	snapshot := StatsSnapshot{From: requestedFrom, To: to, RcodeCounts: make(map[string]uint64), Series: []SeriesPoint{}, Upstreams: []UpstreamStats{}, Dropped: s.droppedFor(userID, from, to), QueryLogEnabled: settings.QueryLogEnabled}
 	if !from.Before(to) {
 		return snapshot, nil
 	}
@@ -771,13 +919,14 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 		return s.mysqlQueries(ctx, userID, from, to, filter, page)
 	}
 	result := QueryPage{Items: []QueryRecord{}}
-	if !s.queryLogEnabled {
+	settings := s.Settings()
+	if !settings.QueryLogEnabled {
 		return result, nil
 	}
 	if err := validateRange(from, to); err != nil {
 		return result, err
 	}
-	retainedFrom := s.now().UTC().Add(-queryRetention)
+	retainedFrom := s.now().UTC().Add(-settings.QueryRetention)
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}
@@ -869,6 +1018,12 @@ func (f QueryFilter) matches(r QueryRecord) bool {
 		if !found {
 			return false
 		}
+	}
+	if f.ResponseSource != "" && !strings.EqualFold(r.ResponseSource, f.ResponseSource) {
+		return false
+	}
+	if f.UpstreamID != "" && r.UpstreamID != f.UpstreamID {
+		return false
 	}
 	return f.CacheHit == nil || r.CacheHit == *f.CacheHit
 }

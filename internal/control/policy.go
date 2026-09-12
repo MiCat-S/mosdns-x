@@ -49,7 +49,7 @@ func initializeDNSPolicyData(tx *bbolt.Tx, previousVersion uint64) error {
 		if encoded == nil {
 			return putDefaultDNSPolicySettings(tx, string(userID), user.CreatedAt)
 		}
-		if previousVersion >= schemaVersion {
+		if previousVersion >= policySwitchSchemaVersion {
 			return nil
 		}
 		var settings DNSPolicySettings

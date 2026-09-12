@@ -197,6 +197,69 @@ type DNSPolicyRulePatch struct {
 	Value      *string               `json:"value,omitempty"`
 }
 
+type PublicListFormat string
+
+type PublicListRefreshStatus string
+
+const (
+	PublicListFormatMosDNS PublicListFormat = "mosdns"
+	PublicListFormatHosts  PublicListFormat = "hosts"
+
+	PublicListRefreshNever   PublicListRefreshStatus = "never"
+	PublicListRefreshSuccess PublicListRefreshStatus = "success"
+	PublicListRefreshError   PublicListRefreshStatus = "error"
+)
+
+type PublicList struct {
+	ID                string                  `json:"id"`
+	Name              string                  `json:"name"`
+	Category          string                  `json:"category"`
+	URL               string                  `json:"url"`
+	Format            PublicListFormat        `json:"format"`
+	Enabled           bool                    `json:"enabled"`
+	SHA256            string                  `json:"sha256,omitempty"`
+	RefreshSeconds    uint32                  `json:"refresh_seconds"`
+	EntryCount        uint64                  `json:"entry_count"`
+	LastRefreshStatus PublicListRefreshStatus `json:"last_refresh_status"`
+	LastRefreshedAt   *time.Time              `json:"last_refreshed_at"`
+	LastRefreshError  string                  `json:"last_refresh_error,omitempty"`
+	CreatedAt         time.Time               `json:"created_at"`
+	UpdatedAt         time.Time               `json:"updated_at"`
+}
+
+type PublicListSpec struct {
+	Name           string           `json:"name"`
+	Category       string           `json:"category"`
+	URL            string           `json:"url"`
+	Format         PublicListFormat `json:"format"`
+	Enabled        bool             `json:"enabled"`
+	SHA256         string           `json:"sha256,omitempty"`
+	RefreshSeconds uint32           `json:"refresh_seconds"`
+}
+
+type PublicListPatch struct {
+	Name           *string           `json:"name,omitempty"`
+	Category       *string           `json:"category,omitempty"`
+	URL            *string           `json:"url,omitempty"`
+	Format         *PublicListFormat `json:"format,omitempty"`
+	Enabled        *bool             `json:"enabled,omitempty"`
+	SHA256         *string           `json:"sha256,omitempty"`
+	RefreshSeconds *uint32           `json:"refresh_seconds,omitempty"`
+}
+
+type PublicListRefreshResult struct {
+	Status      PublicListRefreshStatus
+	EntryCount  uint64
+	RefreshedAt time.Time
+	Error       string
+}
+
+type UserPublicList struct {
+	List       PublicList `json:"list"`
+	Enabled    bool       `json:"enabled"`
+	Overridden bool       `json:"overridden"`
+}
+
 type Page struct {
 	Limit  int    `json:"limit"`
 	Cursor string `json:"cursor,omitempty"`
@@ -236,6 +299,14 @@ type Service interface {
 	UpdateDNSPolicyRule(ctx context.Context, actorID, userID, ruleID string, patch DNSPolicyRulePatch) (DNSPolicyRule, error)
 	DeleteDNSPolicyRule(ctx context.Context, actorID, userID, ruleID string) error
 	ListDNSPolicyRules(ctx context.Context, userID string, page Page) (PageResult[DNSPolicyRule], error)
+	CreatePublicList(ctx context.Context, actorID string, spec PublicListSpec) (PublicList, error)
+	UpdatePublicList(ctx context.Context, actorID, listID string, patch PublicListPatch) (PublicList, error)
+	DeletePublicList(ctx context.Context, actorID, listID string) error
+	GetPublicList(ctx context.Context, listID string) (PublicList, error)
+	ListPublicLists(ctx context.Context, page Page) (PageResult[PublicList], error)
+	RecordPublicListRefresh(ctx context.Context, listID string, result PublicListRefreshResult) error
+	SetUserPublicList(ctx context.Context, actorID, userID, listID string, enabled *bool) error
+	ListUserPublicLists(ctx context.Context, userID string, page Page) (PageResult[UserPublicList], error)
 	ListAudit(ctx context.Context, from, to time.Time, page Page) (PageResult[AuditRecord], error)
 	Close() error
 }

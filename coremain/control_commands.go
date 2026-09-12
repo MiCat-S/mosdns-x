@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,12 +18,105 @@ import (
 
 const maxPasswordInput = 1026 // 1024-byte password plus one CRLF line ending.
 
+const (
+	controlStatusReady         = "ready"
+	controlStatusDisabled      = "disabled"
+	controlStatusUninitialized = "uninitialized"
+	controlStatusStorageError  = "storage_error"
+
+	controlStatusExitReady         = 0
+	controlStatusExitDisabled      = 10
+	controlStatusExitUninitialized = 11
+	controlStatusExitStorageError  = 12
+)
+
+// ExitCodeError lets a command request a deliberate process exit status
+// without changing the error handling of the other commands.
+type ExitCodeError struct {
+	code int
+}
+
+func (e *ExitCodeError) Error() string { return "command completed with a non-zero status" }
+
+func (e *ExitCodeError) ExitCode() int { return e.code }
+
 func init() { AddSubCmd(newControlCommand()) }
 
 func newControlCommand() *cobra.Command {
 	c := &cobra.Command{Use: "control", Short: "Manage the multi-user control database", SilenceUsage: true}
-	c.AddCommand(newControlInitAdminCommand(), newControlBackupCommand(), newControlRestoreCommand(), newControlMigrateMySQLCommand())
+	c.AddCommand(newControlInitAdminCommand(), newControlStatusCommand(), newControlBackupCommand(), newControlRestoreCommand(), newControlMigrateMySQLCommand())
 	return c
+}
+
+func newControlStatusCommand() *cobra.Command {
+	var configFile string
+	c := &cobra.Command{Use: "status --config CONFIG", Short: "Report whether control storage is ready for service startup", Args: cobra.NoArgs, SilenceErrors: true, RunE: func(cmd *cobra.Command, _ []string) error {
+		status := inspectControlStatus(cmd.Context(), configFile)
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), status); err != nil {
+			return err
+		}
+		switch status {
+		case controlStatusReady:
+			return nil
+		case controlStatusDisabled:
+			return &ExitCodeError{code: controlStatusExitDisabled}
+		case controlStatusUninitialized:
+			return &ExitCodeError{code: controlStatusExitUninitialized}
+		default:
+			return &ExitCodeError{code: controlStatusExitStorageError}
+		}
+	}}
+	c.Flags().StringVarP(&configFile, "config", "c", "", "read control storage from a Mosdns config file")
+	_ = c.MarkFlagRequired("config")
+	return c
+}
+
+func inspectControlStatus(ctx context.Context, configFile string) string {
+	cfg, fileUsed, err := loadConfig(configFile)
+	if err == nil {
+		err = mergeInclude(cfg, 0, []string{fileUsed})
+	}
+	if err != nil || cfg.Control == nil {
+		if err == nil {
+			return controlStatusDisabled
+		}
+		return controlStatusStorageError
+	}
+
+	var store control.Service
+	switch effectiveControlDriver(cfg.Control) {
+	case "bbolt":
+		if err := requireExistingFile(cfg.Control.Database); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return controlStatusUninitialized
+			}
+			return controlStatusStorageError
+		}
+		store, err = control.Open(cfg.Control.Database, control.Options{})
+	case "mysql":
+		lifetime, timeout := mysqlDurations(cfg.Control.Storage.MySQL)
+		store, err = control.OpenMySQL(control.MySQLOptions{
+			DSN:              cfg.Control.Storage.MySQL.DSN,
+			MaxOpenConns:     cfg.Control.Storage.MySQL.MaxOpenConns,
+			MaxIdleConns:     cfg.Control.Storage.MySQL.MaxIdleConns,
+			ConnMaxLifetime:  lifetime,
+			OperationTimeout: timeout,
+		})
+	default:
+		return controlStatusStorageError
+	}
+	if err != nil {
+		return controlStatusStorageError
+	}
+	ready, listErr := hasEnabledAdministrator(ctx, store)
+	closeErr := store.Close()
+	if listErr != nil || closeErr != nil {
+		return controlStatusStorageError
+	}
+	if !ready {
+		return controlStatusUninitialized
+	}
+	return controlStatusReady
 }
 
 func newControlInitAdminCommand() *cobra.Command {
@@ -35,8 +129,11 @@ func newControlInitAdminCommand() *cobra.Command {
 			if database != "" || mysqlDSN != "" {
 				return errors.New("--config cannot be combined with --database or --mysql-dsn")
 			}
-			cfg, _, err := loadConfig(configFile)
+			cfg, fileUsed, err := loadConfig(configFile)
 			if err != nil {
+				return err
+			}
+			if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
 				return err
 			}
 			if cfg.Control == nil {
@@ -161,7 +258,7 @@ func newControlMigrateMySQLCommand() *cobra.Command {
 		}
 		if dryRun {
 			if migrateControl {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "控制数据：用户 %d，策略设置 %d，策略规则 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", controlReport.Users, controlReport.PolicySettings, controlReport.PolicyRules, controlReport.Sessions, controlReport.Credentials, controlReport.Usage, controlReport.Audit); err != nil {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "控制数据：用户 %d，策略设置 %d，策略规则 %d，公共列表 %d，列表覆盖 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", controlReport.Users, controlReport.PolicySettings, controlReport.PolicyRules, controlReport.PublicLists, controlReport.ListOverrides, controlReport.Sessions, controlReport.Credentials, controlReport.Usage, controlReport.Audit); err != nil {
 					return err
 				}
 			}
@@ -205,7 +302,7 @@ func runControlMySQLMigration(cmd *cobra.Command, source, dsn string) error {
 	if err := operationAndCloseError("migrate control data", opErr, closeErr); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(cmd.OutOrStdout(), "控制数据迁移完成：用户 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", report.Users, report.Sessions, report.Credentials, report.Usage, report.Audit)
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "控制数据迁移完成：用户 %d，策略设置 %d，策略规则 %d，公共列表 %d，列表覆盖 %d，会话 %d，凭证 %d，用量 %d，审计 %d。\n", report.Users, report.PolicySettings, report.PolicyRules, report.PublicLists, report.ListOverrides, report.Sessions, report.Credentials, report.Usage, report.Audit)
 	return err
 }
 

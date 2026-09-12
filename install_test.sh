@@ -128,8 +128,48 @@ assert_fails 'unit without ExecStart was accepted' \
   unit_uses_installed_binary <<< '[Unit]
 Description=A DNS forwarder'
 
+service_test_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-service-test.XXXXXXXX")
+trap 'rm -rf -- "${checksum_dir:-}" "$service_test_dir"' EXIT
+fake_mosdns="$service_test_dir/mosdns"
+fake_systemctl="$service_test_dir/systemctl"
+fake_systemctl_log="$service_test_dir/systemctl.log"
+cat > "$fake_mosdns" <<'EOF'
+#!/usr/bin/env bash
+case "${FAKE_CONTROL_STATE:?}" in
+  ready) printf 'ready\n'; exit 0 ;;
+  disabled) printf 'disabled\n'; exit 10 ;;
+  uninitialized) printf 'uninitialized\n'; exit 11 ;;
+  storage_error) printf 'storage_error\n'; exit 12 ;;
+  *) exit 99 ;;
+esac
+EOF
+cat > "$fake_systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_SYSTEMCTL_LOG:?}"
+if [[ $1 == is-active ]]; then
+  [[ ${FAKE_SYSTEMCTL_ACTIVE:-0} == 1 ]]
+fi
+EOF
+chmod 0755 "$fake_mosdns" "$fake_systemctl"
+SYSTEMCTL_BIN=$fake_systemctl
+export FAKE_SYSTEMCTL_LOG=$fake_systemctl_log
+export FAKE_CONTROL_STATE=ready
+export FAKE_SYSTEMCTL_ACTIVE=1
+start_mosdns_service true "$fake_mosdns" "$service_test_dir/config.yaml"
+assert_eq $'is-active --quiet mosdns.service\nstop mosdns.service\nenable mosdns.service\nrestart mosdns.service\nis-active --quiet mosdns.service' \
+  "$(cat "$fake_systemctl_log")" 'ready control service sequence'
+
+has_interactive_tty() { return 1; }
+: > "$fake_systemctl_log"
+export FAKE_CONTROL_STATE=uninitialized
+if (start_mosdns_service false "$fake_mosdns" "$service_test_dir/config.yaml" > "$service_test_dir/uninitialized.out" 2>&1); then
+  fail 'uninitialized non-interactive control service started'
+fi
+assert_eq '' "$(cat "$fake_systemctl_log")" 'uninitialized control touched systemd'
+[[ $(<"$service_test_dir/uninitialized.out") == *'control init-admin --config'* ]] ||
+  fail 'uninitialized control did not print manual initialization command'
+
 checksum_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-installer-test.XXXXXXXX")
-trap 'rm -rf -- "$checksum_dir"' EXIT
 asset=mosdns-linux-amd64.zip
 printf 'verified archive\n' > "$checksum_dir/$asset"
 hash=$(sha256sum "$checksum_dir/$asset")

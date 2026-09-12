@@ -8,6 +8,10 @@ readonly CLOUDFLARE_TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
 readonly BINARY_PATH="/usr/local/bin/mosdns"
 readonly CONFIG_DIR="/etc/mosdns"
 readonly CONFIG_PATH="${CONFIG_DIR}/config.yaml"
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+readonly CONTROL_STATUS_DISABLED=10
+readonly CONTROL_STATUS_UNINITIALIZED=11
+readonly CONTROL_STATUS_STORAGE_ERROR=12
 die() {
   printf '错误：%s\n' "$*" >&2
   exit 1
@@ -172,6 +176,101 @@ unit_uses_installed_binary() {
   done
   [[ $exec_start_seen == true && $exec_start_matches == true && $executable_condition_matches == true ]]
 }
+run_systemctl() {
+  "$SYSTEMCTL_BIN" "$@"
+}
+control_storage_status() {
+  local binary=$1
+  local config=$2
+  local output status=0
+  if output=$("$binary" control status --config "$config" 2>&1); then
+    status=0
+  else
+    status=$?
+  fi
+  case "${status}:${output}" in
+    '0:ready') printf '%s\n' ready ;;
+    "${CONTROL_STATUS_DISABLED}:disabled") printf '%s\n' disabled ;;
+    "${CONTROL_STATUS_UNINITIALIZED}:uninitialized") printf '%s\n' uninitialized ;;
+    "${CONTROL_STATUS_STORAGE_ERROR}:storage_error") printf '%s\n' storage_error ;;
+    *) return 1 ;;
+  esac
+}
+has_interactive_tty() {
+  [[ -r /dev/tty && -w /dev/tty ]]
+}
+print_manual_control_initialization() {
+  local binary=$1
+  local config=$2
+  cat >&2 <<EOF
+控制面板尚未初始化，服务没有启动。请在可交互终端执行：
+read -r -s -p '管理员密码: ' MOSDNS_ADMIN_PASSWORD
+printf '\n'
+printf '%s\n' "\$MOSDNS_ADMIN_PASSWORD" | "$binary" control init-admin --config "$config" --username admin
+unset MOSDNS_ADMIN_PASSWORD
+EOF
+}
+ensure_control_initialized() {
+  local binary=$1
+  local config=$2
+  local state username password password_confirmation
+  state=$(control_storage_status "$binary" "$config") || die '无法检查控制存储状态；请检查配置和存储连接后重试'
+  case "$state" in
+    disabled)
+      printf '控制模式未启用，跳过管理员初始化。\n'
+      return 0
+      ;;
+    ready)
+      printf '控制面板管理员已初始化。\n'
+      return 0
+      ;;
+    storage_error) die '控制存储不可用；服务没有启动' ;;
+    uninitialized) ;;
+    *) die '控制存储返回了未知状态；服务没有启动' ;;
+  esac
+  if ! has_interactive_tty; then
+    print_manual_control_initialization "$binary" "$config"
+    die '控制面板需要先初始化管理员'
+  fi
+  printf '控制面板尚未初始化。\n' >/dev/tty
+  printf '管理员用户名 [admin]: ' >/dev/tty
+  IFS= read -r username </dev/tty || die '无法读取管理员用户名'
+  username=${username:-admin}
+  printf '管理员密码: ' >/dev/tty
+  IFS= read -r -s password </dev/tty || die '无法读取管理员密码'
+  printf '\n确认管理员密码: ' >/dev/tty
+  IFS= read -r -s password_confirmation </dev/tty || die '无法读取管理员密码确认'
+  printf '\n' >/dev/tty
+  if [[ $password != "$password_confirmation" ]]; then
+    unset password password_confirmation
+    die '两次管理员密码不一致；服务没有启动'
+  fi
+  unset password_confirmation
+  if ! printf '%s\n' "$password" | "$binary" control init-admin --config "$config" --username "$username"; then
+    unset password
+    die '管理员初始化失败；服务没有启动'
+  fi
+  unset password
+  state=$(control_storage_status "$binary" "$config") || die '无法确认管理员初始化结果；服务没有启动'
+  [[ $state == ready ]] || die '管理员初始化后控制存储仍未就绪；服务没有启动'
+  printf '控制面板管理员已初始化。\n'
+}
+start_mosdns_service() {
+  local unit_exists=$1
+  local binary=${2:-$BINARY_PATH}
+  local config=${3:-$CONFIG_PATH}
+  if [[ $unit_exists == true ]] && run_systemctl is-active --quiet mosdns.service; then
+    run_systemctl stop mosdns.service || die '停止正在运行的 mosdns.service 失败'
+  fi
+  ensure_control_initialized "$binary" "$config"
+  run_systemctl enable mosdns.service
+  if [[ $unit_exists == true ]]; then
+    run_systemctl restart mosdns.service
+  else
+    run_systemctl start mosdns.service
+  fi
+  run_systemctl is-active --quiet mosdns.service || die 'mosdns.service 未进入 active 状态'
+}
 cleanup() {
   local status=$?
   if [[ -n ${staged_binary:-} && ( -e ${staged_binary:-} || -L ${staged_binary:-} ) ]]; then
@@ -240,7 +339,7 @@ main() {
     asset_for_arch "$requested_arch"
     return 0
   fi
-  for command_name in curl unzip sha256sum install uname mktemp systemctl chmod mv rm; do
+  for command_name in curl unzip sha256sum install uname mktemp "$SYSTEMCTL_BIN" chmod mv rm; do
     require_command "$command_name"
   done
   [[ $(uname -s) == Linux ]] || die '本安装器只支持 Linux'
@@ -302,7 +401,7 @@ main() {
   fi
   local unit_exists=false
   local unit_text=''
-  if unit_text=$(systemctl cat mosdns.service 2>/dev/null); then
+  if unit_text=$(run_systemctl cat mosdns.service 2>/dev/null); then
     unit_exists=true
     if ! unit_uses_installed_binary <<< "$unit_text"; then
       printf '检测到 mosdns.service 未使用 %s，正在重新安装服务。\n' "$BINARY_PATH"
@@ -314,16 +413,10 @@ main() {
     "$BINARY_PATH" service install -d "$CONFIG_DIR" -c "$CONFIG_PATH" ||
       die 'mosdns service install 失败'
   fi
-  unit_text=$(systemctl cat mosdns.service 2>/dev/null) || die '无法读取 mosdns.service'
+  unit_text=$(run_systemctl cat mosdns.service 2>/dev/null) || die '无法读取 mosdns.service'
   unit_uses_installed_binary <<< "$unit_text" ||
     die "mosdns.service 未使用 $BINARY_PATH"
-  systemctl enable mosdns.service
-  if [[ $unit_exists == true ]]; then
-    systemctl restart mosdns.service
-  else
-    systemctl start mosdns.service
-  fi
-  systemctl is-active --quiet mosdns.service || die 'mosdns.service 未进入 active 状态'
+  start_mosdns_service "$unit_exists"
   printf 'Mosdns-x %s 已安装到 %s，mosdns.service 正在运行。\n' "$version" "$BINARY_PATH"
 }
 if [[ ${MOSDNS_INSTALLER_LIB_ONLY:-0} != 1 ]]; then

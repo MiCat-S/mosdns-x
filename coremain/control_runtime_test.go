@@ -51,6 +51,9 @@ func TestValidateControlConfig(t *testing.T) {
 		{name: "mysql pool bounds", change: func(c *Config) {
 			c.Control.Storage = StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: "mosdns:secret@tcp(127.0.0.1:3306)/mosdns", MaxOpenConns: 2, MaxIdleConns: 3}}
 		}, want: "max_idle_conns"},
+		{name: "aggregate retention bounds", change: func(c *Config) { c.Control.Telemetry.AggregateRetentionDays = 32 }, want: "aggregate retention"},
+		{name: "query retention bounds", change: func(c *Config) { c.Control.Telemetry.QueryRetentionHours = 721 }, want: "query retention"},
+		{name: "query record bounds", change: func(c *Config) { c.Control.Telemetry.MaxQueryRecords = 999 }, want: "max query records"},
 		{name: "mysql control with bbolt telemetry", change: func(c *Config) {
 			c.Control.Database = ""
 			c.Control.Storage = StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: "mosdns:secret@tcp(127.0.0.1:3306)/mosdns"}}

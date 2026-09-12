@@ -18,6 +18,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
+	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
 
@@ -33,6 +34,81 @@ type fakeTelemetry struct {
 	mu      sync.Mutex
 	userIDs []string
 	filters []telemetry.QueryFilter
+}
+
+type fakePublicLists struct {
+	mu            sync.Mutex
+	refreshed     []string
+	invalidations []string
+	deleted       []string
+}
+
+type fakeRuntimeConfig struct {
+	mu        sync.Mutex
+	sessionID string
+	state     runtimeconfig.State
+}
+
+func (f *fakeRuntimeConfig) Get(context.Context) (runtimeconfig.State, error) {
+	return f.state, nil
+}
+func (f *fakeRuntimeConfig) Validate(_ context.Context, sessionID, revision string, config runtimeconfig.Config) (runtimeconfig.Validation, error) {
+	f.mu.Lock()
+	f.sessionID = sessionID
+	f.mu.Unlock()
+	if revision == "conflict" {
+		return runtimeconfig.Validation{}, runtimeconfig.ErrRevisionConflict
+	}
+	f.state = runtimeconfig.State{Revision: revision, Config: config}
+	return runtimeconfig.Validation{Token: "validation-token", Revision: revision, ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+func (f *fakeRuntimeConfig) Apply(_ context.Context, sessionID, token string) (runtimeconfig.ApplyResult, error) {
+	f.mu.Lock()
+	f.sessionID = sessionID
+	f.mu.Unlock()
+	if token != "validation-token" {
+		return runtimeconfig.ApplyResult{}, runtimeconfig.ErrValidationTokenInvalid
+	}
+	return runtimeconfig.ApplyResult{State: f.state}, nil
+}
+func (f *fakeRuntimeConfig) Reload(context.Context) (runtimeconfig.ReloadResult, error) {
+	return runtimeconfig.ReloadResult{State: f.state}, nil
+}
+func (f *fakeRuntimeConfig) History(context.Context) ([]runtimeconfig.Revision, error) {
+	return []runtimeconfig.Revision{{Revision: "previous", CreatedAt: time.Now()}}, nil
+}
+func (f *fakeRuntimeConfig) Rollback(_ context.Context, revision, target string) (runtimeconfig.ApplyResult, error) {
+	if revision != f.state.Revision || target != "previous" {
+		return runtimeconfig.ApplyResult{}, runtimeconfig.ErrRevisionConflict
+	}
+	f.state.Revision = target
+	return runtimeconfig.ApplyResult{State: f.state}, nil
+}
+func (f *fakeRuntimeConfig) Probe(_ context.Context, tag string) ([]runtimeconfig.Probe, error) {
+	if tag != "forward" {
+		return nil, errors.New("unknown upstream")
+	}
+	return []runtimeconfig.Probe{{UpstreamID: "forward/0", Rcode: dns.RcodeSuccess, Success: true}}, nil
+}
+
+func (f *fakePublicLists) Refresh(_ context.Context, id string) error {
+	f.mu.Lock()
+	f.refreshed = append(f.refreshed, id)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakePublicLists) Invalidate(userID string) {
+	f.mu.Lock()
+	f.invalidations = append(f.invalidations, userID)
+	f.mu.Unlock()
+}
+
+func (f *fakePublicLists) Delete(id string) error {
+	f.mu.Lock()
+	f.deleted = append(f.deleted, id)
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *fakeTelemetry) Snapshot(_ context.Context, user string, from, to time.Time) (telemetry.StatsSnapshot, error) {
@@ -60,6 +136,8 @@ func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
 		"credential_id": {"device-1"},
 		"protocol":      {"H3"},
 		"address":       {"2001:db8::1"},
+		"source":        {"UPSTREAM"},
+		"upstream_id":   {"forward_remote/0"},
 		"cache":         {"hit"},
 	}
 	w := req(f.handler, http.MethodGet, "/api/v1/me/queries?"+values.Encode(), "", alice, "")
@@ -70,13 +148,32 @@ func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
 	gotUser := f.telemetry.userIDs[len(f.telemetry.userIDs)-1]
 	gotFilter := f.telemetry.filters[len(f.telemetry.filters)-1]
 	f.telemetry.mu.Unlock()
-	if gotUser != f.user1.ID || gotFilter.Name != "Example.COM" || gotFilter.QType != "AAAA" || gotFilter.Rcode != "NXDOMAIN" || gotFilter.CredentialID != "device-1" || gotFilter.Protocol != "h3" || gotFilter.Address != "2001:db8::1" || gotFilter.CacheHit == nil || !*gotFilter.CacheHit {
+	if gotUser != f.user1.ID || gotFilter.Name != "Example.COM" || gotFilter.QType != "AAAA" || gotFilter.Rcode != "NXDOMAIN" || gotFilter.CredentialID != "device-1" || gotFilter.Protocol != "h3" || gotFilter.Address != "2001:db8::1" || gotFilter.ResponseSource != "upstream" || gotFilter.UpstreamID != "forward_remote/0" || gotFilter.CacheHit == nil || !*gotFilter.CacheHit {
 		t.Fatalf("user=%q filter=%+v", gotUser, gotFilter)
 	}
-	for _, path := range []string{"/api/v1/me/queries?address=not-an-ip", "/api/v1/me/queries?cache=maybe"} {
+	for _, path := range []string{"/api/v1/me/queries?address=not-an-ip", "/api/v1/me/queries?cache=maybe", "/api/v1/me/queries?source=unknown"} {
 		if invalid := req(f.handler, http.MethodGet, path, "", alice, ""); invalid.Code != http.StatusBadRequest {
 			t.Fatalf("invalid filter %q=%d", path, invalid.Code)
 		}
+	}
+}
+
+func TestAdminCanReadUserRulesWithoutMutatingThem(t *testing.T) {
+	f := newFixture(t)
+	rule, err := f.store.CreateDNSPolicyRule(context.Background(), f.user1.ID, f.user1.ID, control.DNSPolicyRuleSpec{
+		Enabled: true, Priority: 10, Action: control.DNSPolicyBlock, Match: control.DNSPolicyMatchSuffix, Pattern: "ads.example",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
+	path := "/api/v1/admin/users/" + f.user1.ID + "/rules"
+	w := req(f.handler, http.MethodGet, path, "", admin, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), rule.ID) || !strings.Contains(w.Body.String(), "ads.example") {
+		t.Fatalf("rules=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPost, path, `{}`, admin, csrf); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("write through read-only admin route=%d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -301,6 +398,134 @@ func TestUserPolicySettingsAndRules(t *testing.T) {
 	}
 	if invalidations != 7 {
 		t.Fatalf("invalidations=%d", invalidations)
+	}
+}
+
+func TestPublicListAdminCRUDRefreshAndUserOverrides(t *testing.T) {
+	f := newFixture(t)
+	publicLists := new(fakePublicLists)
+	f.handler.opts.PublicLists = publicLists
+	admin, adminCSRF := login(t, f.handler, "admin", "password-for-admin")
+	alice, aliceCSRF := login(t, f.handler, "alice", "password-for-alice")
+
+	if w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists", `{"name":"bad","category":"ads","url":"http://example.test/list","format":"mosdns","enabled":true,"refresh_seconds":300}`, alice, aliceCSRF); w.Code != http.StatusForbidden {
+		t.Fatalf("user admin create=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists", `{"name":"bad","category":"ads","url":"http://example.test/list","format":"mosdns","enabled":true,"refresh_seconds":300}`, admin, adminCSRF); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid create=%d %s", w.Code, w.Body.String())
+	}
+
+	w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists", `{"name":"Ads","category":"广告","url":"https://example.test/list","format":"mosdns","enabled":false,"refresh_seconds":300}`, admin, adminCSRF)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", w.Code, w.Body.String())
+	}
+	var list control.PublicList
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || list.ID == "" || list.Category != "广告" || list.LastRefreshStatus != control.PublicListRefreshNever {
+		t.Fatalf("list=%+v err=%v", list, err)
+	}
+	if w = req(f.handler, http.MethodGet, "/api/v1/admin/public-lists/"+list.ID, "", admin, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"Ads"`) {
+		t.Fatalf("get=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPatch, "/api/v1/admin/public-lists/"+list.ID, `{"category":"隐私","enabled":true}`, admin, adminCSRF); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"category":"隐私"`) {
+		t.Fatalf("patch=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPost, "/api/v1/admin/public-lists/"+list.ID+"/refresh", "{}", admin, adminCSRF); w.Code != http.StatusOK {
+		t.Fatalf("refresh=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodGet, "/api/v1/me/public-lists", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), list.ID) || !strings.Contains(w.Body.String(), `"overridden":false`) {
+		t.Fatalf("user lists=%d %s", w.Code, w.Body.String())
+	}
+	for _, body := range []string{`{"enabled":false}`, `{"enabled":true}`, `{"enabled":null}`} {
+		if w = req(f.handler, http.MethodPatch, "/api/v1/me/public-lists/"+list.ID, body, alice, aliceCSRF); w.Code != http.StatusNoContent {
+			t.Fatalf("override %s=%d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if w = req(f.handler, http.MethodPatch, "/api/v1/me/public-lists/"+list.ID, `{}`, alice, aliceCSRF); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing override=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodDelete, "/api/v1/admin/public-lists/"+list.ID, "", admin, adminCSRF); w.Code != http.StatusNoContent {
+		t.Fatalf("delete=%d %s", w.Code, w.Body.String())
+	}
+	publicLists.mu.Lock()
+	defer publicLists.mu.Unlock()
+	if len(publicLists.refreshed) != 1 || publicLists.refreshed[0] != list.ID || len(publicLists.deleted) != 1 || publicLists.deleted[0] != list.ID {
+		t.Fatalf("public list calls=%+v", publicLists)
+	}
+	if len(publicLists.invalidations) < 5 {
+		t.Fatalf("invalidations=%v", publicLists.invalidations)
+	}
+}
+
+func TestManagedRuntimeRoutesUseAdminSessionAndRevisionChecks(t *testing.T) {
+	f := newFixture(t)
+	manager := &fakeRuntimeConfig{state: runtimeconfig.State{
+		Revision: "current",
+		Config: runtimeconfig.Config{
+			Version: 1,
+			Telemetry: runtimeconfig.Telemetry{
+				AggregateRetentionDays: 7,
+				QueryRetentionHours:    24,
+				MaxQueryRecords:        100000,
+			},
+		},
+	}}
+	f.handler.opts.RuntimeConfig = manager
+	admin, adminCSRF := login(t, f.handler, "admin", "password-for-admin")
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+
+	if w := req(f.handler, http.MethodGet, "/api/v1/admin/runtime/config", "", alice, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("user runtime config=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPost, "/api/v1/admin/runtime/config/reload", "", admin, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("reload without csrf=%d %s", w.Code, w.Body.String())
+	}
+	w := req(f.handler, http.MethodGet, "/api/v1/admin/runtime/config", "", admin, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"revision":"current"`) {
+		t.Fatalf("get runtime=%d %s", w.Code, w.Body.String())
+	}
+
+	validateBody, err := json.Marshal(map[string]any{"revision": "current", "config": manager.state.Config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/config/validate", string(validateBody), admin, adminCSRF)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"token":"validation-token"`) {
+		t.Fatalf("validate=%d %s", w.Code, w.Body.String())
+	}
+	manager.mu.Lock()
+	validatedSession := manager.sessionID
+	manager.mu.Unlock()
+	if validatedSession == "" {
+		t.Fatal("validation did not receive the authenticated session id")
+	}
+	w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/config/apply", `{"token":"validation-token"}`, admin, adminCSRF)
+	if w.Code != http.StatusOK {
+		t.Fatalf("apply=%d %s", w.Code, w.Body.String())
+	}
+	manager.mu.Lock()
+	appliedSession := manager.sessionID
+	manager.mu.Unlock()
+	if appliedSession != validatedSession {
+		t.Fatalf("apply session=%q, validate session=%q", appliedSession, validatedSession)
+	}
+	if w = req(f.handler, http.MethodGet, "/api/v1/admin/runtime/history", "", admin, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"revision":"previous"`) {
+		t.Fatalf("history=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/rollback", `{"revision":"current","target_revision":"previous"}`, admin, adminCSRF); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"revision":"previous"`) {
+		t.Fatalf("rollback=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/config/reload", "", admin, adminCSRF); w.Code != http.StatusOK {
+		t.Fatalf("reload=%d %s", w.Code, w.Body.String())
+	}
+	if w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/upstreams/forward/probe", "", admin, adminCSRF); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"upstream_id":"forward/0"`) {
+		t.Fatalf("probe=%d %s", w.Code, w.Body.String())
+	}
+	conflictBody, err := json.Marshal(map[string]any{"revision": "conflict", "config": manager.state.Config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/config/validate", string(conflictBody), admin, adminCSRF); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "revision_conflict") {
+		t.Fatalf("conflict=%d %s", w.Code, w.Body.String())
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
+	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
 
@@ -31,6 +32,12 @@ const (
 type Telemetry interface {
 	Snapshot(context.Context, string, time.Time, time.Time) (telemetry.StatsSnapshot, error)
 	Queries(context.Context, string, time.Time, time.Time, telemetry.QueryFilter, telemetry.Page) (telemetry.QueryPage, error)
+}
+
+type PublicLists interface {
+	Refresh(context.Context, string) error
+	Invalidate(string)
+	Delete(string) error
 }
 
 type SystemInfo struct {
@@ -61,6 +68,8 @@ type Options struct {
 	SystemInfo        func(context.Context) (SystemInfo, error)
 	Lookup            func(context.Context, string, string, uint16) (*dns.Msg, error)
 	InvalidatePolicy  func(string)
+	PublicLists       PublicLists
+	RuntimeConfig     runtimeconfig.Manager
 	Assets            fs.FS
 	Legacy            http.Handler
 	EnablePprof       bool
@@ -292,7 +301,7 @@ func (h *Handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
-		h.admin(w, r, u, strings.TrimPrefix(p, "/admin"))
+		h.admin(w, r, ss, u, strings.TrimPrefix(p, "/admin"))
 		return
 	}
 	writeError(w, http.StatusNotFound, "not_found")
@@ -495,6 +504,9 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request, ss control.Session,
 	case "/rules":
 		h.rules(w, r, u.ID, "")
 		return
+	case "/public-lists":
+		h.userPublicLists(w, r, u.ID, "")
+		return
 	}
 	if strings.HasPrefix(p, "/rules/") {
 		h.rules(w, r, u.ID, strings.TrimPrefix(p, "/rules/"))
@@ -504,10 +516,26 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request, ss control.Session,
 		h.credentials(w, r, u.ID, u.ID, strings.TrimPrefix(p, "/credentials/"))
 		return
 	}
+	if strings.HasPrefix(p, "/public-lists/") {
+		h.userPublicLists(w, r, u.ID, strings.TrimPrefix(p, "/public-lists/"))
+		return
+	}
 	writeError(w, http.StatusNotFound, "not_found")
 }
 
-func (h *Handler) admin(w http.ResponseWriter, r *http.Request, admin control.User, p string) {
+func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.Session, admin control.User, p string) {
+	if strings.HasPrefix(p, "/runtime/") {
+		h.adminRuntime(w, r, session.ID, strings.TrimPrefix(p, "/runtime"))
+		return
+	}
+	if p == "/public-lists" {
+		h.adminPublicLists(w, r, admin.ID, "")
+		return
+	}
+	if strings.HasPrefix(p, "/public-lists/") {
+		h.adminPublicLists(w, r, admin.ID, strings.TrimPrefix(p, "/public-lists/"))
+		return
+	}
 	if p == "/users" {
 		if r.Method == http.MethodGet {
 			pg, ok := parsePage(w, r)
@@ -671,6 +699,26 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, admin control.Us
 		h.deviceUsage(w, r, userID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "rules" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		page, ok := parsePage(w, r)
+		if !ok {
+			return
+		}
+		rules, err := h.opts.Control.ListDNSPolicyRules(r.Context(), userID, page)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		if rules.Items == nil {
+			rules.Items = []control.DNSPolicyRule{}
+		}
+		writeJSON(w, http.StatusOK, rules)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "credentials" {
 		rest := ""
 		if len(parts) > 2 {
@@ -680,6 +728,311 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, admin control.Us
 		return
 	}
 	writeError(w, http.StatusNotFound, "not_found")
+}
+
+func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID, path string) {
+	if h.opts.RuntimeConfig == nil {
+		writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
+		return
+	}
+	switch path {
+	case "/config":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		state, err := h.opts.RuntimeConfig.Get(r.Context())
+		if err != nil {
+			h.runtimeError(w, err, false)
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+	case "/config/validate":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var request struct {
+			Revision string               `json:"revision"`
+			Config   runtimeconfig.Config `json:"config"`
+		}
+		if decodeJSON(w, r, &request) != nil {
+			return
+		}
+		result, err := h.opts.RuntimeConfig.Validate(r.Context(), sessionID, request.Revision, request.Config)
+		if err != nil {
+			h.runtimeError(w, err, true)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case "/config/apply":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var request struct {
+			Token string `json:"token"`
+		}
+		if decodeJSON(w, r, &request) != nil {
+			return
+		}
+		if strings.TrimSpace(request.Token) == "" || len(request.Token) > 256 {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return
+		}
+		result, err := h.opts.RuntimeConfig.Apply(r.Context(), sessionID, request.Token)
+		if err != nil {
+			h.runtimeError(w, err, false)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case "/config/reload":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		result, err := h.opts.RuntimeConfig.Reload(r.Context())
+		if err != nil {
+			h.runtimeError(w, err, false)
+			return
+		}
+		if result.RestartRequired == nil {
+			result.RestartRequired = []string{}
+		}
+		writeJSON(w, http.StatusOK, result)
+	case "/history":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		history, err := h.opts.RuntimeConfig.History(r.Context())
+		if err != nil {
+			h.runtimeError(w, err, false)
+			return
+		}
+		if history == nil {
+			history = []runtimeconfig.Revision{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": history})
+	case "/rollback":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var request struct {
+			Revision       string `json:"revision"`
+			TargetRevision string `json:"target_revision"`
+		}
+		if decodeJSON(w, r, &request) != nil {
+			return
+		}
+		if request.TargetRevision == "" || len(request.TargetRevision) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return
+		}
+		result, err := h.opts.RuntimeConfig.Rollback(r.Context(), request.Revision, request.TargetRevision)
+		if err != nil {
+			h.runtimeError(w, err, false)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	default:
+		const upstreamPrefix = "/upstreams/"
+		if !strings.HasPrefix(path, upstreamPrefix) || !strings.HasSuffix(path, "/probe") || r.Method != http.MethodPost {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		tag := strings.TrimSuffix(strings.TrimPrefix(path, upstreamPrefix), "/probe")
+		if tag == "" || strings.Contains(tag, "/") || len(tag) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return
+		}
+		results, err := h.opts.RuntimeConfig.Probe(r.Context(), tag)
+		if err != nil {
+			h.runtimeError(w, err, true)
+			return
+		}
+		if results == nil {
+			results = []runtimeconfig.Probe{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": results})
+	}
+}
+
+func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadRequest bool) {
+	switch {
+	case errors.Is(err, runtimeconfig.ErrRevisionConflict):
+		writeError(w, http.StatusConflict, "revision_conflict")
+	case errors.Is(err, runtimeconfig.ErrValidationTokenInvalid):
+		writeError(w, http.StatusConflict, "validation_token_invalid")
+	case errors.Is(err, runtimeconfig.ErrValidationTokenExpired):
+		writeError(w, http.StatusConflict, "validation_token_expired")
+	case errors.Is(err, runtimeconfig.ErrDisabled):
+		writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
+	case errors.Is(err, runtimeconfig.ErrConfigSourceUnavailable):
+		writeError(w, http.StatusConflict, "config_source_unavailable")
+	case invalidAsBadRequest:
+		writeError(w, http.StatusBadRequest, "invalid_config")
+	default:
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+	}
+}
+
+func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actorID, rest string) {
+	if rest == "" {
+		switch r.Method {
+		case http.MethodGet:
+			page, ok := parsePage(w, r)
+			if !ok {
+				return
+			}
+			lists, err := h.opts.Control.ListPublicLists(r.Context(), page)
+			if err != nil {
+				h.serviceError(w, err)
+				return
+			}
+			if lists.Items == nil {
+				lists.Items = []control.PublicList{}
+			}
+			writeJSON(w, http.StatusOK, lists)
+		case http.MethodPost:
+			var spec control.PublicListSpec
+			if decodeJSON(w, r, &spec) != nil {
+				return
+			}
+			list, err := h.opts.Control.CreatePublicList(r.Context(), actorID, spec)
+			if err != nil {
+				h.serviceError(w, err)
+				return
+			}
+			if h.opts.PublicLists != nil {
+				h.opts.PublicLists.Invalidate("")
+			}
+			writeJSON(w, http.StatusCreated, list)
+		default:
+			methodNotAllowed(w)
+		}
+		return
+	}
+	parts := strings.Split(rest, "/")
+	id := parts[0]
+	if id == "" || len(parts) > 2 {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if len(parts) == 2 {
+		if parts[1] != "refresh" || r.Method != http.MethodPost {
+			writeError(w, http.StatusNotFound, "not_found")
+			return
+		}
+		if h.opts.PublicLists == nil {
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		if err := h.opts.PublicLists.Refresh(r.Context(), id); err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		h.opts.PublicLists.Invalidate("")
+		list, err := h.opts.Control.GetPublicList(r.Context(), id)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		list, err := h.opts.Control.GetPublicList(r.Context(), id)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
+	case http.MethodPatch:
+		var patch control.PublicListPatch
+		if decodeJSON(w, r, &patch) != nil {
+			return
+		}
+		list, err := h.opts.Control.UpdatePublicList(r.Context(), actorID, id, patch)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		if h.opts.PublicLists != nil {
+			h.opts.PublicLists.Invalidate("")
+		}
+		writeJSON(w, http.StatusOK, list)
+	case http.MethodDelete:
+		if err := h.opts.Control.DeletePublicList(r.Context(), actorID, id); err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		if h.opts.PublicLists != nil {
+			if err := h.opts.PublicLists.Delete(id); err != nil {
+				h.serviceError(w, err)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (h *Handler) userPublicLists(w http.ResponseWriter, r *http.Request, userID, listID string) {
+	if listID == "" {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		page, ok := parsePage(w, r)
+		if !ok {
+			return
+		}
+		lists, err := h.opts.Control.ListUserPublicLists(r.Context(), userID, page)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		if lists.Items == nil {
+			lists.Items = []control.UserPublicList{}
+		}
+		writeJSON(w, http.StatusOK, lists)
+		return
+	}
+	if strings.Contains(listID, "/") || r.Method != http.MethodPatch {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	var request struct {
+		Enabled json.RawMessage `json:"enabled"`
+	}
+	if decodeJSON(w, r, &request) != nil {
+		return
+	}
+	if len(request.Enabled) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_input")
+		return
+	}
+	var enabled *bool
+	if string(request.Enabled) != "null" {
+		var value bool
+		if err := json.Unmarshal(request.Enabled, &value); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return
+		}
+		enabled = &value
+	}
+	if err := h.opts.Control.SetUserPublicList(r.Context(), userID, userID, listID, enabled); err != nil {
+		h.serviceError(w, err)
+		return
+	}
+	if h.opts.PublicLists != nil {
+		h.opts.PublicLists.Invalidate(userID)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type issuedResponse struct {
@@ -1157,16 +1510,31 @@ func (h *Handler) queries(w http.ResponseWriter, r *http.Request, userID string)
 func parseQueryFilter(w http.ResponseWriter, r *http.Request) (telemetry.QueryFilter, bool) {
 	q := r.URL.Query()
 	filter := telemetry.QueryFilter{
-		Name:         strings.TrimSpace(q.Get("name")),
-		QType:        strings.ToUpper(strings.TrimSpace(q.Get("qtype"))),
-		Rcode:        strings.ToUpper(strings.TrimSpace(q.Get("rcode"))),
-		CredentialID: strings.TrimSpace(q.Get("credential_id")),
-		Protocol:     strings.ToLower(strings.TrimSpace(q.Get("protocol"))),
-		Address:      strings.TrimSpace(q.Get("address")),
+		Name:           strings.TrimSpace(q.Get("name")),
+		QType:          strings.ToUpper(strings.TrimSpace(q.Get("qtype"))),
+		Rcode:          strings.ToUpper(strings.TrimSpace(q.Get("rcode"))),
+		CredentialID:   strings.TrimSpace(q.Get("credential_id")),
+		Protocol:       strings.ToLower(strings.TrimSpace(q.Get("protocol"))),
+		Address:        strings.TrimSpace(q.Get("address")),
+		ResponseSource: strings.ToLower(strings.TrimSpace(q.Get("source"))),
+		UpstreamID:     strings.TrimSpace(q.Get("upstream_id")),
 	}
-	if len(filter.Name) > 255 || len(filter.QType) > 16 || len(filter.Rcode) > 32 || len(filter.CredentialID) > 64 || len(filter.Protocol) > 16 {
+	if len(filter.Name) > 255 || len(filter.QType) > 16 || len(filter.Rcode) > 32 || len(filter.CredentialID) > 64 || len(filter.Protocol) > 16 || len(filter.UpstreamID) > 255 {
 		writeError(w, http.StatusBadRequest, "invalid_input")
 		return telemetry.QueryFilter{}, false
+	}
+	if filter.ResponseSource == "all" {
+		filter.ResponseSource = ""
+	}
+	if filter.ResponseSource != "" {
+		valid := map[string]struct{}{
+			"cache": {}, "upstream": {}, "custom_block": {}, "custom_rewrite": {},
+			"public_list": {}, "hosts": {}, "sequence": {}, "servfail": {},
+		}
+		if _, ok := valid[filter.ResponseSource]; !ok {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return telemetry.QueryFilter{}, false
+		}
 	}
 	if filter.Address != "" {
 		if _, err := netip.ParseAddr(filter.Address); err != nil {

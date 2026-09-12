@@ -4,6 +4,8 @@ log:
 control:
   public_dns_url: https://dns.example.com/dns-query
   panel_origin: https://panel.example.com
+  # 可选：将可安全热更新的上游、缓存与统计保留策略交给管理员面板管理。
+  # managed_config: /var/lib/mosdns/managed.yaml
   development: false
   query_log: true
   enable_pprof: false
@@ -25,6 +27,10 @@ control:
     queue_size: 8192
     batch_size: 256
     flush_interval_ms: 1000
+    # 分钟聚合 1～31 天；查询明细 1～720 小时；记录数 1000～5000000。
+    aggregate_retention_days: 7
+    query_retention_hours: 24
+    max_query_records: 100000
 
 api:
   http: 127.0.0.1:18081
