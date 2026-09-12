@@ -164,27 +164,62 @@ type NavIconName =
   | "list"
   | "lab"
   | "runtime";
-type NavItem = { to: string; label: string; icon: NavIconName };
+type NavItem = {
+  to: string;
+  label: string;
+  icon: NavIconName;
+  section: string;
+};
 
 const adminNav: NavItem[] = [
-  { to: "/admin", label: "总览", icon: "overview" },
-  { to: "/admin/logs", label: "查询日志", icon: "logs" },
-  { to: "/admin/users", label: "用户", icon: "users" },
-  { to: "/admin/lists", label: "公共列表", icon: "list" },
-  { to: "/admin/runtime", label: "运行配置", icon: "runtime" },
-  { to: "/admin/audit", label: "审计", icon: "audit" },
-  { to: "/admin/system", label: "系统", icon: "system" },
+  { to: "/admin", label: "总览", icon: "overview", section: "概览" },
+  { to: "/admin/logs", label: "查询日志", icon: "logs", section: "监控" },
+  { to: "/admin/users", label: "用户", icon: "users", section: "服务" },
+  { to: "/admin/lists", label: "公共列表", icon: "list", section: "服务" },
+  {
+    to: "/admin/runtime",
+    label: "运行配置",
+    icon: "runtime",
+    section: "服务",
+  },
+  { to: "/admin/audit", label: "审计", icon: "audit", section: "管理" },
+  { to: "/admin/system", label: "系统", icon: "system", section: "管理" },
 ];
 const userNav: NavItem[] = [
-  { to: "/app", label: "首页", icon: "overview" },
-  { to: "/app/privacy", label: "安全与隐私保护", icon: "shield" },
-  { to: "/app/lists", label: "订阅的公共列表", icon: "list" },
-  { to: "/app/rules", label: "自定义规则", icon: "rules" },
-  { to: "/app/usage", label: "统计与日志", icon: "usage" },
-  { to: "/app/labs", label: "实验性功能", icon: "lab" },
-  { to: "/app/advanced", label: "高级设置", icon: "system" },
-  { to: "/app/lookup", label: "Lookup", icon: "lookup" },
-  { to: "/app/help", label: "获取支持", icon: "help" },
+  { to: "/app", label: "首页", icon: "overview", section: "概览" },
+  {
+    to: "/app/privacy",
+    label: "安全与隐私保护",
+    icon: "shield",
+    section: "服务",
+  },
+  {
+    to: "/app/lists",
+    label: "订阅的公共列表",
+    icon: "list",
+    section: "服务",
+  },
+  {
+    to: "/app/rules",
+    label: "自定义规则",
+    icon: "rules",
+    section: "服务",
+  },
+  {
+    to: "/app/usage",
+    label: "统计与日志",
+    icon: "usage",
+    section: "工具",
+  },
+  { to: "/app/labs", label: "实验性功能", icon: "lab", section: "工具" },
+  {
+    to: "/app/advanced",
+    label: "高级设置",
+    icon: "system",
+    section: "工具",
+  },
+  { to: "/app/lookup", label: "Lookup", icon: "lookup", section: "工具" },
+  { to: "/app/help", label: "获取支持", icon: "help", section: "支持" },
 ];
 
 function NavIcon({ name }: { name: NavIconName }) {
@@ -311,9 +346,23 @@ export function Shell() {
   const links = admin
     ? [
         ...adminNav,
-        { to: "/admin/password", label: "密码", icon: "password" as const },
+        {
+          to: "/admin/password",
+          label: "密码",
+          icon: "password" as const,
+          section: "管理",
+        },
       ]
     : userNav;
+  const sections = links.reduce<Array<{ label: string; items: NavItem[] }>>(
+    (groups, item) => {
+      const current = groups[groups.length - 1];
+      if (current?.label === item.section) current.items.push(item);
+      else groups.push({ label: item.section, items: [item] });
+      return groups;
+    },
+    [],
+  );
   useEffect(() => {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
@@ -357,15 +406,23 @@ export function Shell() {
             <small>Network Console</small>
           </span>
         </NavLink>
-        <span className="nav-caption">{admin ? "管理控制台" : "用户中心"}</span>
         <nav ref={navRef} aria-label="主导航">
-          {links.map(({ to, label, icon }, i) => (
-            <NavLink key={to} to={to} end={i === 0}>
-              <i>
-                <NavIcon name={icon} />
-              </i>
-              <span>{label}</span>
-            </NavLink>
+          {sections.map((section) => (
+            <div className="nav-group" key={section.label}>
+              <span className="nav-section-label">{section.label}</span>
+              {section.items.map(({ to, label, icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === (admin ? "/admin" : "/app")}
+                >
+                  <i>
+                    <NavIcon name={icon} />
+                  </i>
+                  <span>{label}</span>
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="account">

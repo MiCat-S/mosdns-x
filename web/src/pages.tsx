@@ -200,29 +200,15 @@ export function Login() {
   return (
     <div className="login">
       <div className="login-shell">
-        <div className="login-intro" aria-hidden>
-          <div className="login-monogram">M</div>
-          <div className="login-intro-copy">
-            <p className="login-kicker">MOSDNS X / CONTROL PLANE</p>
-            <h2>DNS 服务的统一控制界面</h2>
-            <p>集中管理接入、策略、可观测性与运行状态。</p>
-          </div>
-          <div className="login-capabilities">
-            <span>身份鉴权</span>
-            <span>运行观测</span>
-            <span>策略控制</span>
-          </div>
-        </div>
         <section>
-          <div className="brand login-brand" translate="no">
-            <span className="brandmark">M</span>
-            <span className="brand-copy">
-              <strong>MosDNS X</strong>
-              <small>Network Console</small>
-            </span>
+          <div className="login-app-icon" aria-hidden>
+            M
           </div>
-          <h1>登录控制台</h1>
-          <p>使用管理员或用户账户继续</p>
+          <p className="login-kicker" translate="no">
+            MOSDNS X
+          </p>
+          <h1>登录网络控制台</h1>
+          <p>管理 DNS 服务、访问策略与运行状态。</p>
           <Alert error={error} />
           <form onSubmit={submit}>
             <Field label="用户名">
@@ -246,6 +232,7 @@ export function Login() {
               {busy ? "正在登录…" : "登录"}
             </button>
           </form>
+          <p className="login-footnote">凭证仅用于当前控制台会话</p>
         </section>
       </div>
     </div>

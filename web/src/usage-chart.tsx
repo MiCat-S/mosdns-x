@@ -132,9 +132,9 @@ export default function UsageChart({
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
     const resultSeries = [
-      line("已完成", "#567f90", series, "completed"),
-      line("失败", "#b56770", series, "failed"),
-      line("缓存命中", "#7583a3", series, "cache_hits"),
+      line("已完成", "#0071e3", series, "completed"),
+      line("失败", "#ff3b30", series, "failed"),
+      line("缓存命中", "#34c759", series, "cache_hits"),
     ];
     const bounds = timeAxisBounds(from, to);
     const reduceMotion =
@@ -147,16 +147,16 @@ export default function UsageChart({
         trigger: "axis",
         formatter: tooltip,
         confine: true,
-        backgroundColor: "rgba(18, 27, 35, 0.95)",
-        borderColor: "rgba(183, 201, 210, 0.22)",
+        backgroundColor: "rgba(29, 29, 31, 0.94)",
+        borderColor: "rgba(255, 255, 255, 0.16)",
         borderWidth: 1,
         padding: [10, 12],
-        textStyle: { color: "#f2f5f6", fontSize: 12, lineHeight: 20 },
+        textStyle: { color: "#f5f5f7", fontSize: 12, lineHeight: 20 },
         extraCssText:
-          "border-radius:10px;box-shadow:0 14px 38px rgba(12,22,30,.24);backdrop-filter:blur(10px)",
+          "border-radius:12px;box-shadow:0 18px 48px rgba(0,0,0,.2);backdrop-filter:blur(14px)",
         axisPointer: {
           type: "line",
-          lineStyle: { color: "#8ca3ad", type: "dashed", width: 1 },
+          lineStyle: { color: "#8e8e93", type: "dashed", width: 1 },
         },
       },
       legend: {
@@ -165,20 +165,20 @@ export default function UsageChart({
         itemWidth: 8,
         itemHeight: 8,
         itemGap: 22,
-        textStyle: { color: "#566b75", fontSize: 12 },
+        textStyle: { color: "#6e6e73", fontSize: 12 },
       },
       grid: { left: 52, right: 20, top: 22, bottom: 58 },
       xAxis: {
         type: "time",
         min: bounds.min,
         max: bounds.max,
-        axisLine: { lineStyle: { color: "#d8dee3" } },
+        axisLine: { lineStyle: { color: "#d1d1d6" } },
         axisTick: { show: false },
         axisLabel: {
           formatter: (value: number) => formatAxisMinute(value),
           hideOverlap: true,
           margin: 12,
-          color: "#536873",
+          color: "#6e6e73",
           fontSize: 11,
           lineHeight: 16,
         },
@@ -190,12 +190,12 @@ export default function UsageChart({
         minInterval: 1,
         axisLine: { show: false },
         axisTick: { show: false },
-        axisLabel: { color: "#536873", fontSize: 11 },
-        splitLine: { lineStyle: { color: "#e7ecef", width: 1 } },
+        axisLabel: { color: "#6e6e73", fontSize: 11 },
+        splitLine: { lineStyle: { color: "#e5e5ea", width: 1 } },
       },
       series:
         kind === "usage"
-          ? [line("已受理", "#567f90", series, "completed")]
+          ? [line("已受理", "#0071e3", series, "completed")]
           : resultSeries,
     });
     const resize = () => chart.resize();
