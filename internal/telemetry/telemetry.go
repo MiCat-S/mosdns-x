@@ -21,6 +21,7 @@ import (
 	"github.com/miekg/dns"
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/dns_handler"
 )
@@ -103,24 +104,29 @@ type StatsSnapshot struct {
 }
 
 type QueryRecord struct {
-	ID                  string               `json:"id"`
-	Time                time.Time            `json:"time"`
-	UserID              string               `json:"user_id"`
-	CredentialID        string               `json:"credential_id"`
-	ClientIP            string               `json:"client_ip"`
-	Name                string               `json:"name"`
-	QType               string               `json:"qtype"`
-	Rcode               string               `json:"rcode"`
-	DurationMS          float64              `json:"duration_ms"`
-	CacheHit            bool                 `json:"cache_hit"`
-	Protocol            string               `json:"protocol"`
-	AnswerIPs           []string             `json:"answer_ips"`
-	EDNS                dns_handler.EDNSInfo `json:"edns"`
-	ResponseSource      string               `json:"response_source"`
-	ResponseSourceID    string               `json:"response_source_id"`
-	UpstreamID          string               `json:"upstream_id"`
-	MatchedRuleID       string               `json:"matched_rule_id"`
-	MatchedPublicListID string               `json:"matched_public_list_id"`
+	ID                   string                 `json:"id"`
+	Time                 time.Time              `json:"time"`
+	UserID               string                 `json:"user_id"`
+	CredentialID         string                 `json:"credential_id"`
+	ClientIP             string                 `json:"client_ip"`
+	Name                 string                 `json:"name"`
+	QType                string                 `json:"qtype"`
+	Rcode                string                 `json:"rcode"`
+	DurationMS           float64                `json:"duration_ms"`
+	CacheHit             bool                   `json:"cache_hit"`
+	Protocol             string                 `json:"protocol"`
+	AnswerIPs            []string               `json:"answer_ips"`
+	EDNS                 dns_handler.EDNSInfo   `json:"edns"`
+	EDNSTraceVersion     uint8                  `json:"edns_trace_version"`
+	UpstreamStageStatus  string                 `json:"upstream_stage_status"`
+	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot `json:"upstream_request_edns"`
+	UpstreamResponseEDNS *dnsutils.EDNSSnapshot `json:"upstream_response_edns"`
+	ResponseEDNS         *dnsutils.EDNSSnapshot `json:"response_edns"`
+	ResponseSource       string                 `json:"response_source"`
+	ResponseSourceID     string                 `json:"response_source_id"`
+	UpstreamID           string                 `json:"upstream_id"`
+	MatchedRuleID        string                 `json:"matched_rule_id"`
+	MatchedPublicListID  string                 `json:"matched_public_list_id"`
 }
 
 type Page struct {
@@ -366,11 +372,10 @@ func (s *Store) Observe(result dns_handler.Result) {
 	}
 	r := result
 	r.AnswerIPs = append([]string(nil), result.AnswerIPs...)
-	r.EDNS.OptionCodes = append([]uint16(nil), result.EDNS.OptionCodes...)
-	if result.EDNS.ECS != nil {
-		ecs := *result.EDNS.ECS
-		r.EDNS.ECS = &ecs
-	}
+	r.EDNS = *dnsutils.CloneEDNSSnapshot(&result.EDNS)
+	r.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(result.UpstreamRequestEDNS)
+	r.UpstreamResponseEDNS = dnsutils.CloneEDNSSnapshot(result.UpstreamResponseEDNS)
+	r.ResponseEDNS = dnsutils.CloneEDNSSnapshot(result.ResponseEDNS)
 	s.enqueue(event{result: &r, time: s.now().UTC()})
 }
 
@@ -667,16 +672,23 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 		if answerIPs == nil {
 			answerIPs = []string{}
 		}
-		edns := r.EDNS
-		edns.OptionCodes = append([]uint16(nil), r.EDNS.OptionCodes...)
+		edns := *dnsutils.CloneEDNSSnapshot(&r.EDNS)
 		if edns.OptionCodes == nil {
 			edns.OptionCodes = []uint16{}
 		}
-		if r.EDNS.ECS != nil {
-			ecs := *r.EDNS.ECS
-			edns.ECS = &ecs
+		record := QueryRecord{
+			ID: id, Time: now, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID,
+			ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode,
+			DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit,
+			Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns,
+			EDNSTraceVersion: r.EDNSTraceVersion, UpstreamStageStatus: r.UpstreamStageStatus,
+			UpstreamRequestEDNS:  dnsutils.CloneEDNSSnapshot(r.UpstreamRequestEDNS),
+			UpstreamResponseEDNS: dnsutils.CloneEDNSSnapshot(r.UpstreamResponseEDNS),
+			ResponseEDNS:         dnsutils.CloneEDNSSnapshot(r.ResponseEDNS),
+			ResponseSource:       r.ResponseSource, ResponseSourceID: r.ResponseSourceID,
+			UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID,
+			MatchedPublicListID: r.MatchedPublicListID,
 		}
-		record := QueryRecord{ID: id, Time: now, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns, ResponseSource: r.ResponseSource, ResponseSourceID: r.ResponseSourceID, UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID, MatchedPublicListID: r.MatchedPublicListID}
 		v, _ := json.Marshal(record)
 		if err := tx.Bucket(bucketQueries).Put([]byte(id), v); err != nil {
 			return err
@@ -973,6 +985,7 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 			if r.EDNS.OptionCodes == nil {
 				r.EDNS.OptionCodes = []uint16{}
 			}
+			normalizeEDNSTrace(&r)
 			if r.Time.Before(from) {
 				break
 			}
@@ -992,6 +1005,12 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 		return nil
 	})
 	return result, err
+}
+
+func normalizeEDNSTrace(record *QueryRecord) {
+	if record.UpstreamStageStatus == "" {
+		record.UpstreamStageStatus = query_context.UpstreamStageUnavailable
+	}
 }
 
 func (f QueryFilter) matches(r QueryRecord) bool {

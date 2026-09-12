@@ -42,6 +42,7 @@ import type {
   PublicListFormat,
   PublicListValidation,
   RuntimeDataProvider,
+  EDNSInfo,
   QueryRecord,
   Stats,
   SystemInfo,
@@ -1153,6 +1154,14 @@ const ednsOptionNames: Record<number, string> = {
   15: "EDE",
 };
 
+const ednsAnomalyNames: Record<string, string> = {
+  multiple_opt: "检测到多个 OPT 记录",
+  multiple_ecs: "检测到多个 ECS 选项",
+  invalid_ecs_family: "ECS 地址族无效",
+  invalid_ecs_prefix: "ECS 前缀长度无效",
+  invalid_ecs_address: "ECS 地址无效",
+};
+
 const responseSourceNames: Record<string, string> = {
   cache: "缓存",
   upstream: "上游",
@@ -1168,11 +1177,218 @@ function responseSourceName(source?: string) {
   return source ? (responseSourceNames[source] ?? source) : "未记录";
 }
 
+function finalUpstreamName(record: QueryRecord) {
+  if (record.upstream_id) return record.upstream_id;
+  switch (record.upstream_stage_status) {
+    case "attempted_no_selection":
+      return "发生过尝试，无最终采用上游";
+    case "discarded":
+      return "上游结果已被最终响应替换";
+    case "not_linked":
+      return "最终响应无对应上游";
+    default:
+      return "未记录";
+  }
+}
+
 function logDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(new Date(value));
+}
+
+type EDNSStage =
+  | "client_request"
+  | "upstream_request"
+  | "upstream_response"
+  | "client_response";
+
+function missingEDNSMessage(record: QueryRecord, stage: EDNSStage) {
+  if (stage === "client_request") {
+    return record.edns_trace_version
+      ? "该阶段快照暂不可用"
+      : "历史记录未采集客户端请求快照";
+  }
+  if (stage === "client_response") {
+    return record.edns_trace_version
+      ? "该阶段快照暂不可用"
+      : "历史记录未采集客户端响应快照";
+  }
+  if (!record.edns_trace_version) {
+    return "历史记录未采集该上游阶段";
+  }
+  switch (record.upstream_stage_status) {
+    case "selected":
+      return "已记录最终上游，但该阶段快照暂不可用";
+    case "attempted_no_selection":
+      return "发生过上游尝试，但没有最终采用的上游结果";
+    case "discarded":
+      return "上游结果已被后续本地响应完整替换，无对应最终上游快照";
+    case "not_linked":
+      if (record.response_source === "cache") {
+        return "本次响应来自缓存，无对应上游快照";
+      }
+      if (
+        ["custom_block", "custom_rewrite", "public_list", "hosts"].includes(
+          record.response_source ?? "",
+        )
+      ) {
+        return "本次由本地策略生成响应，无对应上游快照";
+      }
+      return "本次最终响应没有可关联的上游快照";
+    default:
+      return "该阶段快照暂不可用";
+  }
+}
+
+function ecsDescription(edns: EDNSInfo) {
+  if (!edns.ecs) return "无";
+  const family =
+    edns.ecs.family === 1
+      ? "IPv4"
+      : edns.ecs.family === 2
+        ? "IPv6"
+        : `地址族 ${edns.ecs.family}`;
+  return `${edns.ecs.address}/${edns.ecs.source_prefix} · ${family} · Scope Prefix ${edns.ecs.scope_prefix}`;
+}
+
+function EDNSStageCard({
+  title,
+  note,
+  snapshot,
+  missing,
+}: {
+  title: string;
+  note: string;
+  snapshot?: EDNSInfo | null;
+  missing: string;
+}) {
+  return (
+    <article className="edns-stage">
+      <header>
+        <div>
+          <h4>{title}</h4>
+          <small>{note}</small>
+        </div>
+        {snapshot ? (
+          <span className={`badge ${snapshot.present ? "ok" : "off"}`}>
+            {snapshot.present ? "有 EDNS" : "无 EDNS"}
+          </span>
+        ) : null}
+      </header>
+      {!snapshot ? (
+        <p className="edns-stage-missing">{missing}</p>
+      ) : !snapshot.present ? (
+        <p className="edns-stage-empty">已观察报文：没有 EDNS</p>
+      ) : (
+        <dl>
+          <div>
+            <dt>版本</dt>
+            <dd>EDNS v{snapshot.version}</dd>
+          </div>
+          <div>
+            <dt>通告 UDP Size</dt>
+            <dd>{snapshot.udp_size} bytes</dd>
+          </div>
+          <div>
+            <dt>DO 位</dt>
+            <dd>
+              {snapshot.dnssec_ok ? "已设置（请求 DNSSEC 数据）" : "未设置"}
+            </dd>
+          </div>
+          <div>
+            <dt>Option Code</dt>
+            <dd>
+              {snapshot.option_codes?.length
+                ? snapshot.option_codes
+                    .map(
+                      (code) =>
+                        `${code}${ednsOptionNames[code] ? ` (${ednsOptionNames[code]})` : ""}`,
+                    )
+                    .join(", ")
+                : "无已记录选项"}
+              {snapshot.option_codes_truncated ? (
+                <small>仅显示前 64 项，不能据此判断其他 Option 不存在</small>
+              ) : null}
+            </dd>
+          </div>
+          <div className="edns-stage-wide">
+            <dt>ECS</dt>
+            <dd>{ecsDescription(snapshot)}</dd>
+          </div>
+          {snapshot.anomalies?.length ? (
+            <div className="edns-stage-wide">
+              <dt>采集异常</dt>
+              <dd className="edns-anomalies">
+                {snapshot.anomalies
+                  .map((item) => ednsAnomalyNames[item] ?? item)
+                  .join("；")}
+                <small>异常信息仅用于解释快照，不影响 DNS 请求处理。</small>
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+      )}
+    </article>
+  );
+}
+
+function snapshotComparable(snapshot?: EDNSInfo | null) {
+  return Boolean(
+    snapshot && !snapshot.option_codes_truncated && !snapshot.anomalies?.length,
+  );
+}
+
+function sameECS(left?: EDNSInfo["ecs"], right?: EDNSInfo["ecs"]) {
+  if (!left || !right) return left === right;
+  return (
+    left.address === right.address &&
+    left.family === right.family &&
+    left.source_prefix === right.source_prefix &&
+    left.scope_prefix === right.scope_prefix
+  );
+}
+
+function ednsDifferences(record: QueryRecord) {
+  if (record.upstream_stage_status !== "selected") return [];
+  const stages = [
+    record.edns,
+    record.upstream_request_edns,
+    record.upstream_response_edns,
+    record.response_edns,
+  ];
+  if (!stages.every(snapshotComparable)) {
+    return ["阶段信息未知、异常或不完整，无法确定完整的 EDNS/ECS 变化"];
+  }
+  const [client, upstreamRequest, upstreamResponse, response] = stages as [
+    EDNSInfo,
+    EDNSInfo,
+    EDNSInfo,
+    EDNSInfo,
+  ];
+  const differences: string[] = [];
+  if (!client.present && upstreamRequest.present) {
+    differences.push("客户端请求没有 EDNS，上游请求中出现 EDNS");
+  } else if (client.present && !upstreamRequest.present) {
+    differences.push("客户端请求携带 EDNS，上游请求中已不存在");
+  }
+  if (!client.ecs && upstreamRequest.ecs) {
+    differences.push("客户端请求中没有 ECS，上游请求中出现 ECS");
+  } else if (client.ecs && !upstreamRequest.ecs) {
+    differences.push("客户端请求携带 ECS，上游请求中已不存在");
+  } else if (!sameECS(client.ecs, upstreamRequest.ecs)) {
+    differences.push("上游请求中的 ECS 与客户端请求不同");
+  }
+  if (upstreamResponse.present && !response.present) {
+    differences.push("上游响应携带 EDNS，客户端逻辑响应中已不存在");
+  }
+  if (upstreamResponse.ecs && !response.ecs) {
+    differences.push("上游响应携带 ECS，客户端逻辑响应中已不存在");
+  } else if (!sameECS(upstreamResponse.ecs, response.ecs)) {
+    differences.push("客户端逻辑响应中的 ECS 与上游原始响应不同");
+  }
+  return differences;
 }
 
 function QueryLogDetail({
@@ -1188,7 +1404,7 @@ function QueryLogDetail({
   ruleLabel?: string;
   publicListName?: string;
 }) {
-  const edns = record.edns;
+  const differences = ednsDifferences(record);
   return (
     <div className="log-detail">
       <div className="log-detail-summary">
@@ -1265,7 +1481,7 @@ function QueryLogDetail({
           </div>
           <div>
             <dt>最终上游</dt>
-            <dd>{record.upstream_id || "未使用上游"}</dd>
+            <dd>{finalUpstreamName(record)}</dd>
           </div>
           <div>
             <dt>命中规则</dt>
@@ -1293,41 +1509,57 @@ function QueryLogDetail({
       </section>
       <section>
         <h3>传输与 EDNS</h3>
-        <dl>
+        <dl className="transport-summary">
           <div>
             <dt>协议</dt>
             <dd>{record.protocol?.toUpperCase() || "未记录"}</dd>
           </div>
           <div>
-            <dt>EDNS</dt>
+            <dt>采集版本</dt>
             <dd>
-              {edns?.present
-                ? `v${edns.version} · UDP ${edns.udp_size} bytes${edns.dnssec_ok ? " · DNSSEC OK" : ""}`
-                : "未携带"}
-            </dd>
-          </div>
-          <div>
-            <dt>EDNS 选项</dt>
-            <dd>
-              {edns?.option_codes?.length
-                ? edns.option_codes
-                    .map(
-                      (code) =>
-                        `${code}${ednsOptionNames[code] ? ` (${ednsOptionNames[code]})` : ""}`,
-                    )
-                    .join(", ")
-                : "无"}
-            </dd>
-          </div>
-          <div>
-            <dt>ECS</dt>
-            <dd>
-              {edns?.ecs
-                ? `${edns.ecs.address || "地址无效"}/${edns.ecs.source_prefix} · family ${edns.ecs.family} · scope ${edns.ecs.scope_prefix}`
-                : "无"}
+              {record.edns_trace_version
+                ? `四阶段 v${record.edns_trace_version}`
+                : "历史记录"}
             </dd>
           </div>
         </dl>
+        <div className="edns-stage-grid">
+          <EDNSStageCard
+            title="客户端请求"
+            note="进入控制策略与执行链之前"
+            snapshot={record.edns}
+            missing={missingEDNSMessage(record, "client_request")}
+          />
+          <EDNSStageCard
+            title="最终上游请求"
+            note="最终采用交换的协议发送边界"
+            snapshot={record.upstream_request_edns}
+            missing={missingEDNSMessage(record, "upstream_request")}
+          />
+          <EDNSStageCard
+            title="上游原始响应"
+            note="同一次交换解码后、响应后处理之前"
+            snapshot={record.upstream_response_edns}
+            missing={missingEDNSMessage(record, "upstream_response")}
+          />
+          <EDNSStageCard
+            title="客户端逻辑响应"
+            note="全部响应处理后、交给协议写出层之前"
+            snapshot={record.response_edns}
+            missing={missingEDNSMessage(record, "client_response")}
+          />
+        </div>
+        {differences.length ? (
+          <div className="edns-differences" role="note">
+            <strong>阶段变化</strong>
+            <ul>
+              {differences.map((difference) => (
+                <li key={difference}>{difference}</li>
+              ))}
+            </ul>
+            <small>变化仅来自报文快照，不能据此确定由哪个插件造成。</small>
+          </div>
+        ) : null}
       </section>
     </div>
   );
@@ -1701,6 +1933,7 @@ export function QueryDetails({
             <Modal
               title={selected.name || "查询详情"}
               onClose={() => setSelected(null)}
+              className="query-log-modal"
             >
               <QueryLogDetail
                 record={selected}
@@ -2755,8 +2988,8 @@ export function LookupPage() {
                 </strong>
               </div>
               <div>
-                <span>DNSSEC OK</span>
-                <strong>{data.edns?.dnssec_ok ? "是" : "否"}</strong>
+                <span>DO 位（请求 DNSSEC 数据）</span>
+                <strong>{data.edns?.dnssec_ok ? "已设置" : "未设置"}</strong>
               </div>
               <div>
                 <span>ECS</span>

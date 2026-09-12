@@ -32,6 +32,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/pmkol/mosdns-x/pkg/dnsutils"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 	"github.com/pmkol/mosdns-x/pkg/upstream/transport"
 )
 
@@ -374,6 +375,15 @@ func (u *Upstream) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, e
 	}
 }
 
+func (u *Upstream) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	requestSnapshot := dnsutils.SnapshotEDNS(q)
+	r, err := u.ExchangeContext(ctx, q)
+	if err != nil {
+		return upstreamtrace.Result{}, err
+	}
+	return upstreamtrace.NewResult(r, requestSnapshot), nil
+}
+
 func (u *Upstream) pendingJanitor() {
 	var timer *time.Timer
 	for {
@@ -456,6 +466,12 @@ func (p *UpstreamPool) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Ms
 	i := atomic.AddUint32(&p.next, 1)
 	u := p.upstreams[i%uint32(len(p.upstreams))]
 	return u.ExchangeContext(ctx, q)
+}
+
+func (p *UpstreamPool) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	i := atomic.AddUint32(&p.next, 1)
+	u := p.upstreams[i%uint32(len(p.upstreams))]
+	return u.ExchangeContextDetailed(ctx, q)
 }
 
 func (p *UpstreamPool) Close() error {

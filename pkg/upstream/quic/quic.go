@@ -28,6 +28,7 @@ import (
 	"github.com/quic-go/quic-go"
 
 	"github.com/pmkol/mosdns-x/pkg/dnsutils"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 )
 
 var _ error = (*closedConnError)(nil)
@@ -150,21 +151,37 @@ func (h *Upstream) Close() error {
 }
 
 func (h *Upstream) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	result, err := h.exchangeContext(ctx, q, false)
+	return result.Response, err
+}
+
+func (h *Upstream) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	return h.exchangeContext(ctx, q, true)
+}
+
+func (h *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool) (upstreamtrace.Result, error) {
 	q.Id = 0
+	var requestSnapshot dnsutils.EDNSSnapshot
+	if capture {
+		requestSnapshot = dnsutils.SnapshotEDNS(q)
+	}
 	var err error
 	for range 3 {
 		var conn *Conn
 		conn, err = h.offer(ctx)
 		if err != nil {
-			return nil, err
+			return upstreamtrace.Result{}, err
 		}
 		var resp *dns.Msg
 		resp, err = exchangeMsg(ctx, conn, q)
 		if err == nil {
-			return resp, err
+			if capture {
+				return upstreamtrace.NewResult(resp, requestSnapshot), nil
+			}
+			return upstreamtrace.Result{Response: resp}, nil
 		}
 	}
-	return nil, err
+	return upstreamtrace.Result{}, err
 }
 
 func exchangeMsg(ctx context.Context, conn *Conn, q *dns.Msg) (*dns.Msg, error) {

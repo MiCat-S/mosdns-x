@@ -148,12 +148,12 @@ func (s *Selector) Exec(ctx context.Context, qCtx *query_context.Context, next e
 			qCtx.SetResponse(r)
 			return nil
 		case <-shouldPass:
-			*qCtx = *qCtxSub
+			qCtxSub.CopyTo(qCtx)
 			return err
 		case <-waitTimeoutTimer.C:
 			// We have been waiting the reference query for too long.
 			// Something may go wrong. We accept the original reply.
-			*qCtx = *qCtxSub
+			qCtxSub.CopyTo(qCtx)
 			return err
 		}
 	}

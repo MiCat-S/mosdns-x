@@ -31,6 +31,31 @@ import (
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 )
 
+type failedUpstreamExecutable struct{}
+
+func (*failedUpstreamExecutable) Exec(_ context.Context, qCtx *query_context.Context, _ ExecutableChainNode) error {
+	qCtx.SetResponseTrace(query_context.ResponseTrace{UpstreamStageStatus: query_context.UpstreamStageAttemptedNoSelection})
+	return errors.New("upstream failed")
+}
+
+func TestFastFallbackAllFailuresKeepAttemptedStatus(t *testing.T) {
+	fallback := &FallbackNode{
+		primary:              WrapExecutable(new(failedUpstreamExecutable)),
+		secondary:            WrapExecutable(new(failedUpstreamExecutable)),
+		fastFallbackDuration: time.Millisecond,
+		logger:               zap.NewNop(),
+	}
+	qCtx := query_context.NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), nil)
+	qCtx.SetCaptureQueryDetails(true)
+	if err := fallback.exec(context.Background(), qCtx); err == nil {
+		t.Fatal("expected fallback error")
+	}
+	trace := qCtx.ResponseTrace()
+	if trace.UpstreamStageStatus != query_context.UpstreamStageAttemptedNoSelection || trace.UpstreamID != "" || trace.UpstreamRequestEDNS != nil || trace.UpstreamResponseEDNS != nil {
+		t.Fatalf("failure trace = %+v", trace)
+	}
+}
+
 func Test_FallbackECS_fallback(t *testing.T) {
 	r1 := new(dns.Msg)
 	r2 := new(dns.Msg)

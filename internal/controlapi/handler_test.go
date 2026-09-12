@@ -35,6 +35,7 @@ type fakeTelemetry struct {
 	mu      sync.Mutex
 	userIDs []string
 	filters []telemetry.QueryFilter
+	page    telemetry.QueryPage
 }
 
 type fakePublicLists struct {
@@ -173,7 +174,7 @@ func (f *fakeTelemetry) Queries(_ context.Context, user string, _, _ time.Time, 
 	f.userIDs = append(f.userIDs, user)
 	f.filters = append(f.filters, filter)
 	f.mu.Unlock()
-	return telemetry.QueryPage{Items: []telemetry.QueryRecord{}}, nil
+	return f.page, nil
 }
 
 func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
@@ -205,6 +206,30 @@ func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
 	for _, path := range []string{"/api/v1/me/queries?address=not-an-ip", "/api/v1/me/queries?cache=maybe", "/api/v1/me/queries?source=unknown"} {
 		if invalid := req(f.handler, http.MethodGet, path, "", alice, ""); invalid.Code != http.StatusBadRequest {
 			t.Fatalf("invalid filter %q=%d", path, invalid.Code)
+		}
+	}
+}
+
+func TestQueryAPIEmitsUnknownEDNSStagesAsNull(t *testing.T) {
+	f := newFixture(t)
+	f.telemetry.page = telemetry.QueryPage{Items: []telemetry.QueryRecord{{ID: "query-1"}}}
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+	w := req(f.handler, http.MethodGet, "/api/v1/me/queries", "", alice, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("queries=%d %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("items=%s", w.Body.String())
+	}
+	for _, field := range []string{"upstream_request_edns", "upstream_response_edns", "response_edns"} {
+		if got, ok := response.Items[0][field]; !ok || string(got) != "null" {
+			t.Fatalf("%s=%s present=%t body=%s", field, got, ok, w.Body.String())
 		}
 	}
 }

@@ -36,6 +36,7 @@ func asyncWait(ctx context.Context, qCtx *query_context.Context, logger *zap.Log
 		select {
 		case res := <-c:
 			if res.err != nil {
+				qCtx.AdoptFailureTrace(res.qCtx)
 				logger.Warn("sequence failed", qCtx.InfoField(), zap.Int("sequence", res.from), zap.Error(res.err))
 				continue
 			}
@@ -47,6 +48,7 @@ func asyncWait(ctx context.Context, qCtx *query_context.Context, logger *zap.Log
 			}
 
 			logger.Debug("sequence returned with an empty response", qCtx.InfoField(), zap.Int("sequence", res.from))
+			qCtx.AdoptFailureTrace(res.qCtx)
 			continue
 
 		case <-ctx.Done():

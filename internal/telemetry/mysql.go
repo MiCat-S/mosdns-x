@@ -15,9 +15,12 @@ import (
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/miekg/dns"
+
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
+	"github.com/pmkol/mosdns-x/pkg/query_context"
 )
 
-const mysqlTelemetrySchemaVersion = 2
+const mysqlTelemetrySchemaVersion = 3
 
 type MySQLOptions struct {
 	DSN                string
@@ -100,6 +103,11 @@ var mysqlTelemetryMigrations = []string{
 		protocol VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
 		answer_ips_json LONGTEXT NOT NULL,
 		edns_json LONGTEXT NOT NULL,
+		edns_trace_version TINYINT UNSIGNED NOT NULL DEFAULT 0,
+		upstream_stage_status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'unavailable',
+		upstream_request_edns_json LONGTEXT NULL,
+		upstream_response_edns_json LONGTEXT NULL,
+		response_edns_json LONGTEXT NULL,
 		response_source VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
 		response_source_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
 		upstream_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
@@ -207,49 +215,70 @@ func initializeMySQLTelemetry(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("mysql telemetry: %w", err)
 		}
 	}
-	var version int
-	err = conn.QueryRowContext(ctx, `SELECT version FROM mosdns_schema_migrations WHERE component='telemetry'`).Scan(&version)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		_, err = conn.ExecContext(ctx, `INSERT INTO mosdns_schema_migrations (component, version) VALUES ('telemetry', ?)`, mysqlTelemetrySchemaVersion)
-		if err != nil {
-			return fmt.Errorf("mysql telemetry: %w", err)
-		}
-		return nil
-	case err != nil:
+	if err := convergeMySQLTelemetrySchema(ctx, conn); err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
-	case version == 1:
-		if err := migrateMySQLTelemetryV1ToV2(ctx, conn); err != nil {
-			return fmt.Errorf("mysql telemetry: %w", err)
-		}
-		return nil
-	case version != mysqlTelemetrySchemaVersion:
-		return fmt.Errorf("unsupported mysql telemetry schema version %d", version)
-	default:
-		return nil
 	}
+	return nil
 }
 
-func migrateMySQLTelemetryV1ToV2(ctx context.Context, conn *sql.Conn) error {
-	columns := []struct {
-		name       string
-		definition string
-	}{
-		{"response_source", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
-		{"response_source_id", "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''"},
-		{"upstream_id", "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''"},
-		{"matched_rule_id", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
-		{"matched_public_list_id", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
+func convergeMySQLTelemetrySchema(ctx context.Context, conn *sql.Conn) error {
+	var version int
+	err := conn.QueryRowContext(ctx, `SELECT version FROM mosdns_schema_migrations WHERE component='telemetry'`).Scan(&version)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
-	for _, column := range columns {
-		var count int
-		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='mosdns_query_logs' AND column_name=?`, column.name).Scan(&count); err != nil {
-			return err
-		}
-		if count == 0 {
+	if err == nil && (version < 1 || version > mysqlTelemetrySchemaVersion) {
+		return fmt.Errorf("unsupported mysql telemetry schema version %d", version)
+	}
+	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO mosdns_schema_migrations (component, version) VALUES ('telemetry', ?)
+		ON DUPLICATE KEY UPDATE version=VALUES(version)`, mysqlTelemetrySchemaVersion); err != nil {
+		return err
+	}
+	return nil
+}
+
+type mysqlTelemetryColumn struct {
+	name       string
+	definition string
+	columnType string
+	nullable   bool
+	defaultVal sql.NullString
+}
+
+var mysqlTelemetryQueryLogColumns = []mysqlTelemetryColumn{
+	{"response_source", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''", "varchar(32)", false, sql.NullString{String: "", Valid: true}},
+	{"response_source_id", "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''", "varchar(255)", false, sql.NullString{String: "", Valid: true}},
+	{"upstream_id", "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''", "varchar(255)", false, sql.NullString{String: "", Valid: true}},
+	{"matched_rule_id", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''", "varchar(64)", false, sql.NullString{String: "", Valid: true}},
+	{"matched_public_list_id", "VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''", "varchar(64)", false, sql.NullString{String: "", Valid: true}},
+	{"edns_trace_version", "TINYINT UNSIGNED NOT NULL DEFAULT 0", "tinyint unsigned", false, sql.NullString{String: "0", Valid: true}},
+	{"upstream_stage_status", "VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'unavailable'", "varchar(32)", false, sql.NullString{String: "unavailable", Valid: true}},
+	{"upstream_request_edns_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
+	{"upstream_response_edns_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
+	{"response_edns_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
+}
+
+func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) error {
+	for _, column := range mysqlTelemetryQueryLogColumns {
+		var columnType, nullable string
+		var defaultVal sql.NullString
+		err := conn.QueryRowContext(ctx, `SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+			FROM information_schema.columns
+			WHERE table_schema=DATABASE() AND table_name='mosdns_query_logs' AND column_name=?`, column.name).Scan(&columnType, &nullable, &defaultVal)
+		if errors.Is(err, sql.ErrNoRows) {
 			if _, err := conn.ExecContext(ctx, `ALTER TABLE mosdns_query_logs ADD COLUMN `+column.name+` `+column.definition); err != nil {
 				return err
 			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(columnType, column.columnType) || (nullable == "YES") != column.nullable || defaultVal != column.defaultVal {
+			return fmt.Errorf("incompatible mosdns_query_logs column %s", column.name)
 		}
 	}
 	for _, index := range []struct{ name, columns string }{{"ix_mosdns_query_logs_source", "response_source, time_ns"}, {"ix_mosdns_query_logs_upstream", "upstream_id(128), time_ns"}} {
@@ -263,8 +292,7 @@ func migrateMySQLTelemetryV1ToV2(ctx context.Context, conn *sql.Conn) error {
 			}
 		}
 	}
-	_, err := conn.ExecContext(ctx, `UPDATE mosdns_schema_migrations SET version=? WHERE component='telemetry' AND version=1`, mysqlTelemetrySchemaVersion)
-	return err
+	return nil
 }
 
 func (s *Store) mysqlContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -343,16 +371,24 @@ func (s *Store) writeMySQLBatch(events []event) error {
 				if answerIPs == nil {
 					answerIPs = []string{}
 				}
-				edns := r.EDNS
-				edns.OptionCodes = append([]uint16(nil), r.EDNS.OptionCodes...)
+				edns := *dnsutils.CloneEDNSSnapshot(&r.EDNS)
 				if edns.OptionCodes == nil {
 					edns.OptionCodes = []uint16{}
 				}
-				if r.EDNS.ECS != nil {
-					ecs := *r.EDNS.ECS
-					edns.ECS = &ecs
-				}
-				queries = append(queries, QueryRecord{ID: fmt.Sprintf("%020d.%s", e.time.UnixNano(), idSuffix), Time: e.time, UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID, ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode, DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit, Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns, ResponseSource: r.ResponseSource, ResponseSourceID: r.ResponseSourceID, UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID, MatchedPublicListID: r.MatchedPublicListID})
+				queries = append(queries, QueryRecord{
+					ID: fmt.Sprintf("%020d.%s", e.time.UnixNano(), idSuffix), Time: e.time,
+					UserID: r.Principal.UserID, CredentialID: r.Principal.CredentialID,
+					ClientIP: clientIP, Name: r.QuestionName, QType: qtype, Rcode: rcode,
+					DurationMS: float64(r.Duration.Microseconds()) / 1000, CacheHit: r.CacheHit,
+					Protocol: r.Protocol, AnswerIPs: answerIPs, EDNS: edns,
+					EDNSTraceVersion: r.EDNSTraceVersion, UpstreamStageStatus: r.UpstreamStageStatus,
+					UpstreamRequestEDNS:  dnsutils.CloneEDNSSnapshot(r.UpstreamRequestEDNS),
+					UpstreamResponseEDNS: dnsutils.CloneEDNSSnapshot(r.UpstreamResponseEDNS),
+					ResponseEDNS:         dnsutils.CloneEDNSSnapshot(r.ResponseEDNS),
+					ResponseSource:       r.ResponseSource, ResponseSourceID: r.ResponseSourceID,
+					UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID,
+					MatchedPublicListID: r.MatchedPublicListID,
+				})
 			}
 		}
 		if e.attempt != nil {
@@ -423,9 +459,25 @@ func (s *Store) writeMySQLBatch(events []event) error {
 		if err != nil {
 			return rollback(err)
 		}
+		upstreamRequestEDNSJSON, err := marshalOptionalEDNSSnapshot(q.UpstreamRequestEDNS)
+		if err != nil {
+			return rollback(err)
+		}
+		upstreamResponseEDNSJSON, err := marshalOptionalEDNSSnapshot(q.UpstreamResponseEDNS)
+		if err != nil {
+			return rollback(err)
+		}
+		responseEDNSJSON, err := marshalOptionalEDNSSnapshot(q.ResponseEDNS)
+		if err != nil {
+			return rollback(err)
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_query_logs
-			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json, response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON, q.ResponseSource, q.ResponseSourceID, q.UpstreamID, q.MatchedRuleID, q.MatchedPublicListID)
+			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
+			 edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
+			 response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
+			q.EDNSTraceVersion, normalizedUpstreamStageStatus(q.UpstreamStageStatus), upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON,
+			q.ResponseSource, q.ResponseSourceID, q.UpstreamID, q.MatchedRuleID, q.MatchedPublicListID)
 		if err != nil {
 			return rollback(err)
 		}
@@ -472,6 +524,34 @@ func randomTelemetryID() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func normalizedUpstreamStageStatus(status string) string {
+	if status == "" {
+		return query_context.UpstreamStageUnavailable
+	}
+	return status
+}
+
+func marshalOptionalEDNSSnapshot(snapshot *dnsutils.EDNSSnapshot) (any, error) {
+	if snapshot == nil {
+		return nil, nil
+	}
+	return json.Marshal(snapshot)
+}
+
+func unmarshalOptionalEDNSSnapshot(raw []byte) (*dnsutils.EDNSSnapshot, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var snapshot dnsutils.EDNSSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, err
+	}
+	if snapshot.OptionCodes == nil {
+		snapshot.OptionCodes = []uint16{}
+	}
+	return &snapshot, nil
 }
 
 func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.Time) (StatsSnapshot, error) {
@@ -627,7 +707,9 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	}
 	opCtx, cancel := s.mysqlContext(ctx)
 	defer cancel()
-	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json, response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id
+	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
+		edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
+		response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id
 		FROM mosdns_query_logs WHERE time_ns>=? AND time_ns<?`
 	args := []any{from.UnixNano(), to.UnixNano()}
 	if page.Cursor != "" {
@@ -689,7 +771,10 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		var r QueryRecord
 		var ns int64
 		var answerJSON, ednsJSON []byte
-		if err := rows.Scan(&r.ID, &ns, &r.UserID, &r.CredentialID, &r.ClientIP, &r.Name, &r.QType, &r.Rcode, &r.DurationMS, &r.CacheHit, &r.Protocol, &answerJSON, &ednsJSON, &r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID, &r.MatchedRuleID, &r.MatchedPublicListID); err != nil {
+		var upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON []byte
+		if err := rows.Scan(&r.ID, &ns, &r.UserID, &r.CredentialID, &r.ClientIP, &r.Name, &r.QType, &r.Rcode, &r.DurationMS, &r.CacheHit, &r.Protocol, &answerJSON, &ednsJSON,
+			&r.EDNSTraceVersion, &r.UpstreamStageStatus, &upstreamRequestEDNSJSON, &upstreamResponseEDNSJSON, &responseEDNSJSON,
+			&r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID, &r.MatchedRuleID, &r.MatchedPublicListID); err != nil {
 			return result, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		r.Time = time.Unix(0, ns).UTC()
@@ -699,12 +784,25 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		if err := json.Unmarshal(ednsJSON, &r.EDNS); err != nil {
 			return result, fmt.Errorf("mysql telemetry: %w", err)
 		}
+		r.UpstreamRequestEDNS, err = unmarshalOptionalEDNSSnapshot(upstreamRequestEDNSJSON)
+		if err != nil {
+			return result, fmt.Errorf("mysql telemetry: %w", err)
+		}
+		r.UpstreamResponseEDNS, err = unmarshalOptionalEDNSSnapshot(upstreamResponseEDNSJSON)
+		if err != nil {
+			return result, fmt.Errorf("mysql telemetry: %w", err)
+		}
+		r.ResponseEDNS, err = unmarshalOptionalEDNSSnapshot(responseEDNSJSON)
+		if err != nil {
+			return result, fmt.Errorf("mysql telemetry: %w", err)
+		}
 		if r.AnswerIPs == nil {
 			r.AnswerIPs = []string{}
 		}
 		if r.EDNS.OptionCodes == nil {
 			r.EDNS.OptionCodes = []uint16{}
 		}
+		normalizeEDNSTrace(&r)
 		result.Items = append(result.Items, r)
 	}
 	if err := rows.Err(); err != nil {

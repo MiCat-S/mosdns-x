@@ -94,15 +94,39 @@ const (
 	ResponseSourceServfail      = "servfail"
 )
 
+const (
+	UpstreamStageSelected             = "selected"
+	UpstreamStageAttemptedNoSelection = "attempted_no_selection"
+	UpstreamStageDiscarded            = "discarded"
+	UpstreamStageNotLinked            = "not_linked"
+	UpstreamStageUnavailable          = "unavailable"
+)
+
 // ResponseTrace identifies the component that produced the response selected
-// for this branch. It is stored by value so copied query contexts can safely
-// select different responses in parallel.
+// for this branch. Context setters and copy operations clone its snapshots so
+// parallel branches never share mutable trace data.
 type ResponseTrace struct {
-	Source              string
-	SourceID            string
-	UpstreamID          string
-	MatchedRuleID       string
-	MatchedPublicListID string
+	Source               string
+	SourceID             string
+	UpstreamID           string
+	MatchedRuleID        string
+	MatchedPublicListID  string
+	UpstreamStageStatus  string
+	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot
+	UpstreamResponseEDNS *dnsutils.EDNSSnapshot
+}
+
+func (t ResponseTrace) Clone() ResponseTrace {
+	t.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(t.UpstreamRequestEDNS)
+	t.UpstreamResponseEDNS = dnsutils.CloneEDNSSnapshot(t.UpstreamResponseEDNS)
+	return t
+}
+
+func (t ResponseTrace) IsZero() bool {
+	return t.Source == "" && t.SourceID == "" && t.UpstreamID == "" &&
+		t.MatchedRuleID == "" && t.MatchedPublicListID == "" &&
+		t.UpstreamStageStatus == "" && t.UpstreamRequestEDNS == nil &&
+		t.UpstreamResponseEDNS == nil
 }
 
 func NewRequestMeta(addr netip.Addr) *RequestMeta {
@@ -198,10 +222,11 @@ type Context struct {
 	id            uint32 // additional uint to distinguish duplicated msg
 	reqMeta       *RequestMeta
 
-	r        *dns.Msg
-	cacheHit bool
-	trace    ResponseTrace
-	marks    map[uint]struct{}
+	r                   *dns.Msg
+	cacheHit            bool
+	trace               ResponseTrace
+	captureQueryDetails bool
+	marks               map[uint]struct{}
 }
 
 var (
@@ -280,31 +305,71 @@ func (ctx *Context) R() *dns.Msg {
 // Note: It just stores the pointer of r. So the caller
 // shouldn't modify or read r after the call.
 func (ctx *Context) SetResponse(r *dns.Msg) {
+	discardedUpstream := ctx.captureQueryDetails &&
+		(ctx.trace.UpstreamStageStatus == UpstreamStageSelected || ctx.trace.UpstreamID != "")
 	ctx.r = r
 	ctx.cacheHit = false
 	ctx.trace = ResponseTrace{}
+	if discardedUpstream {
+		ctx.trace.UpstreamStageStatus = UpstreamStageDiscarded
+	}
 }
 
 // SetResponseWithTrace stores a response together with its origin.
 func (ctx *Context) SetResponseWithTrace(r *dns.Msg, trace ResponseTrace) {
 	ctx.SetResponse(r)
-	ctx.trace = trace
+	if trace.UpstreamStageStatus == "" && ctx.trace.UpstreamStageStatus == UpstreamStageDiscarded {
+		trace.UpstreamStageStatus = UpstreamStageDiscarded
+	}
+	ctx.trace = trace.Clone()
 }
 
 // SetResponseTrace updates the origin of the current response.
 func (ctx *Context) SetResponseTrace(trace ResponseTrace) {
-	ctx.trace = trace
+	ctx.trace = trace.Clone()
 }
 
 func (ctx *Context) ResponseTrace() ResponseTrace {
-	return ctx.trace
+	return ctx.trace.Clone()
 }
 
 // AdoptResponse copies response state from a completed isolated branch.
 func (ctx *Context) AdoptResponse(src *Context) {
 	ctx.SetResponse(src.R())
 	ctx.cacheHit = src.cacheHit
-	ctx.trace = src.trace
+	ctx.trace = src.trace.Clone()
+}
+
+// AdoptFailureTrace retains only reliable branch-level evidence that upstream
+// work produced no selectable response. It never adopts a failed branch's
+// response, upstream ID, or EDNS snapshots.
+func (ctx *Context) AdoptFailureTrace(src *Context) {
+	if !ctx.captureQueryDetails || src == nil {
+		return
+	}
+	incoming := src.trace.UpstreamStageStatus
+	if incoming != UpstreamStageAttemptedNoSelection && incoming != UpstreamStageUnavailable {
+		return
+	}
+	if ctx.trace.UpstreamStageStatus == UpstreamStageSelected || ctx.trace.UpstreamStageStatus == UpstreamStageDiscarded {
+		return
+	}
+	if incoming == UpstreamStageAttemptedNoSelection || ctx.trace.UpstreamStageStatus == "" {
+		ctx.trace.UpstreamStageStatus = incoming
+	}
+	ctx.trace.UpstreamID = ""
+	ctx.trace.UpstreamRequestEDNS = nil
+	ctx.trace.UpstreamResponseEDNS = nil
+}
+
+// SetCaptureQueryDetails fixes the detailed-observation choice for this query.
+// It must be called before the context is shared with executable branches.
+func (ctx *Context) SetCaptureQueryDetails(enabled bool) {
+	ctx.captureQueryDetails = enabled
+}
+
+func (ctx *Context) CaptureQueryDetails() bool {
+	return ctx.captureQueryDetails
 }
 
 func (ctx *Context) SetCacheHit(hit bool) {
@@ -352,7 +417,8 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 		d.r = r.Copy()
 	}
 	d.cacheHit = ctx.cacheHit
-	d.trace = ctx.trace
+	d.trace = ctx.trace.Clone()
+	d.captureQueryDetails = ctx.captureQueryDetails
 	for m := range ctx.marks {
 		d.AddMark(m)
 	}

@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/dns_handler"
 )
@@ -171,18 +173,26 @@ func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 	r := result("u1", "c1", dns.RcodeSuccess)
 	r.ClientAddr = netip.MustParseAddr("2001:db8::44")
 	r.AnswerIPs = []string{"192.0.2.1", "2001:db8::1"}
-	r.EDNS = dns_handler.EDNSInfo{Present: true, Version: 0, UDPSize: 1232, DNSSECOK: true, OptionCodes: []uint16{dns.EDNS0SUBNET, dns.EDNS0COOKIE}, ECS: &dns_handler.ECSInfo{Address: "192.0.2.0", Family: 1, SourcePrefix: 24}}
+	r.EDNS = dns_handler.EDNSInfo{Present: true, Version: 0, UDPSize: 1232, DNSSECOK: true, OptionCodes: []uint16{dns.EDNS0SUBNET, dns.EDNS0COOKIE}, ECS: &dns_handler.ECSInfo{Address: "192.0.2.0", Family: 1, SourcePrefix: 24}, Anomalies: []string{dnsutils.EDNSAnomalyMultipleECS}}
+	r.EDNSTraceVersion = 1
+	r.UpstreamStageStatus = "selected"
+	r.UpstreamRequestEDNS = &dnsutils.EDNSSnapshot{Present: true, OptionCodes: []uint16{dns.EDNS0SUBNET}, ECS: &dnsutils.ECSSnapshot{Address: "192.0.2.0", Family: 1, SourcePrefix: 24}}
+	r.UpstreamResponseEDNS = &dnsutils.EDNSSnapshot{Present: false, OptionCodes: []uint16{}}
+	r.ResponseEDNS = &dnsutils.EDNSSnapshot{Present: true, OptionCodes: []uint16{dns.EDNS0COOKIE}}
 	s.Observe(r)
 	r.AnswerIPs[0] = "203.0.113.99"
 	r.EDNS.OptionCodes[0] = dns.EDNS0PADDING
 	r.EDNS.ECS.Address = "203.0.113.0"
+	r.EDNS.Anomalies[0] = dnsutils.EDNSAnomalyMultipleOPT
+	r.UpstreamRequestEDNS.OptionCodes[0] = dns.EDNS0PADDING
+	r.UpstreamRequestEDNS.ECS.Address = "203.0.113.0"
 	flush(t, s)
 	page, err := s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("queries=%+v err=%v", page, err)
 	}
 	got := page.Items[0]
-	if got.ClientIP != "2001:db8::44" || len(got.AnswerIPs) != 2 || got.AnswerIPs[0] != "192.0.2.1" || got.EDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.EDNS.ECS == nil || got.EDNS.ECS.Address != "192.0.2.0" || got.ResponseSource != query_context.ResponseSourceUpstream || got.UpstreamID != "forward_remote/0" {
+	if got.ClientIP != "2001:db8::44" || len(got.AnswerIPs) != 2 || got.AnswerIPs[0] != "192.0.2.1" || got.EDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.EDNS.ECS == nil || got.EDNS.ECS.Address != "192.0.2.0" || len(got.EDNS.Anomalies) != 1 || got.EDNS.Anomalies[0] != dnsutils.EDNSAnomalyMultipleECS || got.ResponseSource != query_context.ResponseSourceUpstream || got.UpstreamID != "forward_remote/0" || got.UpstreamRequestEDNS == nil || got.UpstreamRequestEDNS.OptionCodes[0] != dns.EDNS0SUBNET || got.UpstreamRequestEDNS.ECS.Address != "192.0.2.0" || got.UpstreamResponseEDNS == nil || got.UpstreamResponseEDNS.Present || got.ResponseEDNS == nil || got.ResponseEDNS.OptionCodes[0] != dns.EDNS0COOKIE {
 		t.Fatalf("stored snapshot=%+v", got)
 	}
 
@@ -201,8 +211,24 @@ func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 		t.Fatalf("queries with legacy=%+v err=%v", page, err)
 	}
 	legacy := page.Items[0]
-	if legacy.ClientIP != "" || legacy.AnswerIPs == nil || len(legacy.AnswerIPs) != 0 || legacy.EDNS.Present || legacy.EDNS.OptionCodes == nil {
+	if legacy.ClientIP != "" || legacy.AnswerIPs == nil || len(legacy.AnswerIPs) != 0 || legacy.EDNS.Present || legacy.EDNS.OptionCodes == nil || legacy.EDNSTraceVersion != 0 || legacy.UpstreamStageStatus != "unavailable" || legacy.UpstreamRequestEDNS != nil || legacy.UpstreamResponseEDNS != nil || legacy.ResponseEDNS != nil {
 		t.Fatalf("legacy normalization=%+v", legacy)
+	}
+}
+
+func TestQueryRecordJSONKeepsUnknownEDNSStagesExplicit(t *testing.T) {
+	raw, err := json.Marshal(QueryRecord{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"upstream_request_edns", "upstream_response_edns", "response_edns"} {
+		if got, ok := record[field]; !ok || string(got) != "null" {
+			t.Fatalf("%s=%s present=%t json=%s", field, got, ok, raw)
+		}
 	}
 }
 

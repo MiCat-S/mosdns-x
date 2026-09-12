@@ -35,6 +35,7 @@ import (
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/upstream"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 	"github.com/pmkol/mosdns-x/pkg/utils"
 )
 
@@ -173,6 +174,18 @@ func (u *upstreamWrapper) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, e
 	return u.u.ExchangeContext(ctx, q)
 }
 
+func (u *upstreamWrapper) ExchangeDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	q.Compress = true
+	if detailed, ok := u.u.(upstream.DetailedUpstream); ok {
+		return detailed.ExchangeContextDetailed(ctx, q)
+	}
+	r, err := u.u.ExchangeContext(ctx, q)
+	if err != nil {
+		return upstreamtrace.Result{}, err
+	}
+	return upstreamtrace.Result{Response: r}, nil
+}
+
 func (u *upstreamWrapper) Address() string {
 	return u.address
 }
@@ -194,6 +207,32 @@ func (f *fastForward) Exec(ctx context.Context, qCtx *query_context.Context, nex
 }
 
 func (f *fastForward) exec(ctx context.Context, qCtx *query_context.Context) (err error) {
+	if qCtx.CaptureQueryDetails() {
+		result, err := bundled_upstream.ExchangeParallelDetailed(ctx, qCtx, f.upstreamWrappers, f.L())
+		if err != nil {
+			status := query_context.UpstreamStageUnavailable
+			if result.Attempted {
+				status = query_context.UpstreamStageAttemptedNoSelection
+			}
+			trace := qCtx.ResponseTrace()
+			trace.UpstreamID = ""
+			trace.UpstreamStageStatus = status
+			trace.UpstreamRequestEDNS = nil
+			trace.UpstreamResponseEDNS = nil
+			qCtx.SetResponseTrace(trace)
+			return err
+		}
+		status := query_context.UpstreamStageSelected
+		if !result.DetailsAvailable {
+			status = query_context.UpstreamStageUnavailable
+		}
+		qCtx.SetResponseWithTrace(result.Response, query_context.ResponseTrace{
+			Source: query_context.ResponseSourceUpstream, SourceID: f.Tag(), UpstreamID: result.UpstreamID,
+			UpstreamStageStatus: status,
+			UpstreamRequestEDNS: result.RequestEDNS, UpstreamResponseEDNS: result.ResponseEDNS,
+		})
+		return nil
+	}
 	r, upstreamID, err := bundled_upstream.ExchangeParallel(ctx, qCtx, f.upstreamWrappers, f.L())
 	if err != nil {
 		return err

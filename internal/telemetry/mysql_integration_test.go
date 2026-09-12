@@ -11,6 +11,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/miekg/dns"
 
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/dns_handler"
 )
@@ -29,7 +30,15 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	principal := query_context.Principal{UserID: "user-1", CredentialID: "credential-1", CredentialVersion: 1}
-	store.Observe(dns_handler.Result{Admitted: true, Principal: principal, ClientAddr: netip.MustParseAddr("192.0.2.10"), QuestionName: "example.test.", QuestionType: dns.TypeA, Rcode: dns.RcodeSuccess, Duration: 8 * time.Millisecond, CacheHit: true, Protocol: "doh", AnswerIPs: []string{"192.0.2.11"}, EDNS: dns_handler.EDNSInfo{Present: true, UDPSize: 1232, DNSSECOK: true, OptionCodes: []uint16{8}}, ResponseSource: query_context.ResponseSourceCache, ResponseSourceID: "cache_wan", UpstreamID: "remote/0"})
+	store.Observe(dns_handler.Result{
+		Admitted: true, Principal: principal, ClientAddr: netip.MustParseAddr("192.0.2.10"),
+		QuestionName: "example.test.", QuestionType: dns.TypeA, Rcode: dns.RcodeSuccess,
+		Duration: 8 * time.Millisecond, CacheHit: true, Protocol: "doh", AnswerIPs: []string{"192.0.2.11"},
+		EDNS:             dns_handler.EDNSInfo{Present: true, UDPSize: 1232, DNSSECOK: true, OptionCodes: []uint16{8}},
+		EDNSTraceVersion: 1, UpstreamStageStatus: "not_linked",
+		ResponseEDNS:   &dnsutils.EDNSSnapshot{Present: false, OptionCodes: []uint16{}},
+		ResponseSource: query_context.ResponseSourceCache, ResponseSourceID: "cache_wan",
+	})
 	store.ObserveUpstream(query_context.UpstreamAttempt{Principal: principal, UpstreamID: "remote", Duration: 4 * time.Millisecond})
 	if err := store.Flush(ctx); err != nil {
 		t.Fatal(err)
@@ -45,11 +54,11 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(queries.Items) != 1 || queries.Items[0].ClientIP != "192.0.2.10" || len(queries.Items[0].AnswerIPs) != 1 || !queries.Items[0].EDNS.DNSSECOK || queries.Items[0].ResponseSource != query_context.ResponseSourceCache || queries.Items[0].UpstreamID != "remote/0" {
+	if len(queries.Items) != 1 || queries.Items[0].ClientIP != "192.0.2.10" || len(queries.Items[0].AnswerIPs) != 1 || !queries.Items[0].EDNS.DNSSECOK || queries.Items[0].ResponseSource != query_context.ResponseSourceCache || queries.Items[0].UpstreamID != "" || queries.Items[0].EDNSTraceVersion != 1 || queries.Items[0].UpstreamStageStatus != "not_linked" || queries.Items[0].UpstreamRequestEDNS != nil || queries.Items[0].ResponseEDNS == nil || queries.Items[0].ResponseEDNS.Present {
 		t.Fatalf("queries=%+v", queries)
 	}
 	cacheHit := true
-	filtered, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{Name: "EXAMPLE.TEST", QType: "a", Rcode: "noerror", CredentialID: "credential-1", Protocol: "DOH", Address: "192.0.2.11", ResponseSource: "CACHE", UpstreamID: "remote/0", CacheHit: &cacheHit}, Page{})
+	filtered, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{Name: "EXAMPLE.TEST", QType: "a", Rcode: "noerror", CredentialID: "credential-1", Protocol: "DOH", Address: "192.0.2.11", ResponseSource: "CACHE", CacheHit: &cacheHit}, Page{})
 	if err != nil || len(filtered.Items) != 1 {
 		t.Fatalf("filtered queries=%+v err=%v", filtered, err)
 	}

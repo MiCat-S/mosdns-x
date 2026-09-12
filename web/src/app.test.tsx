@@ -499,6 +499,8 @@ describe("前端访问与秘密处理", () => {
               cache_hit: false,
               protocol: "h3",
               answer_ips: ["192.0.2.1", "2001:db8::1"],
+              edns_trace_version: 1,
+              upstream_stage_status: "selected",
               response_source: "upstream",
               response_source_id: "forward_remote",
               upstream_id: "forward_remote/0",
@@ -515,6 +517,39 @@ describe("前端访问与秘密处理", () => {
                   source_prefix: 24,
                   scope_prefix: 0,
                 },
+              },
+              upstream_request_edns: {
+                present: true,
+                version: 0,
+                udp_size: 1232,
+                dnssec_ok: true,
+                option_codes: [8],
+                ecs: {
+                  address: "198.51.100.0",
+                  family: 1,
+                  source_prefix: 24,
+                  scope_prefix: 0,
+                },
+              },
+              upstream_response_edns: {
+                present: true,
+                version: 0,
+                udp_size: 1232,
+                dnssec_ok: false,
+                option_codes: [8],
+                ecs: {
+                  address: "198.51.100.0",
+                  family: 1,
+                  source_prefix: 24,
+                  scope_prefix: 0,
+                },
+              },
+              response_edns: {
+                present: false,
+                version: 0,
+                udp_size: 0,
+                dnssec_ok: false,
+                option_codes: [],
               },
             },
             {
@@ -547,12 +582,23 @@ describe("前端访问与秘密处理", () => {
     const first = screen.getByRole("dialog");
     expect(within(first).getByText("192.0.2.1")).toBeInTheDocument();
     expect(within(first).getByText("2001:db8::1")).toBeInTheDocument();
+    expect(within(first).getByText("四阶段 v1")).toBeInTheDocument();
+    expect(within(first).getAllByText("EDNS v0")).toHaveLength(3);
     expect(
-      within(first).getByText("v0 · UDP 1232 bytes · DNSSEC OK"),
-    ).toBeInTheDocument();
+      within(first).getAllByText("已设置（请求 DNSSEC 数据）"),
+    ).toHaveLength(2);
     expect(within(first).getByText("8 (ECS), 10 (COOKIE)")).toBeInTheDocument();
     expect(
-      within(first).getByText("192.0.2.0/24 · family 1 · scope 0"),
+      within(first).getByText("192.0.2.0/24 · IPv4 · Scope Prefix 0"),
+    ).toBeInTheDocument();
+    expect(
+      within(first).getByText("上游请求中的 ECS 与客户端请求不同"),
+    ).toBeInTheDocument();
+    expect(
+      within(first).getByText("上游响应携带 ECS，客户端逻辑响应中已不存在"),
+    ).toBeInTheDocument();
+    expect(
+      within(first).getByText("已观察报文：没有 EDNS"),
     ).toBeInTheDocument();
     expect(within(first).getByText("上游")).toBeInTheDocument();
     expect(within(first).getByText("forward_remote/0")).toBeInTheDocument();
@@ -563,8 +609,77 @@ describe("前端访问与秘密处理", () => {
       screen.getByRole("button", { name: "查看 empty.example. 详情" }),
     );
     const legacy = screen.getByRole("dialog");
-    expect(within(legacy).getByText("未携带")).toBeInTheDocument();
+    expect(within(legacy).getByText("历史记录")).toBeInTheDocument();
+    expect(
+      within(legacy).getByText("历史记录未采集客户端请求快照"),
+    ).toBeInTheDocument();
+    expect(
+      within(legacy).getAllByText("历史记录未采集该上游阶段"),
+    ).toHaveLength(2);
+    expect(
+      within(legacy).getByText("历史记录未采集客户端响应快照"),
+    ).toBeInTheDocument();
     expect(within(legacy).getByText("无地址记录")).toBeInTheDocument();
+  });
+  it("查询明细不会把缓存命中的空上游快照解释为未调用上游", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          items: [
+            {
+              id: "cached-query",
+              time: "2026-09-11T12:00:00Z",
+              user_id: "u1",
+              credential_id: "c1",
+              client_ip: "192.0.2.44",
+              name: "cached.example.",
+              qtype: "A",
+              rcode: "NOERROR",
+              duration_ms: 0.8,
+              cache_hit: true,
+              protocol: "h2",
+              answer_ips: ["192.0.2.1"],
+              response_source: "cache",
+              response_source_id: "cache_wan",
+              edns_trace_version: 1,
+              upstream_stage_status: "not_linked",
+              edns: {
+                present: false,
+                version: 0,
+                udp_size: 0,
+                dnssec_ok: false,
+                option_codes: [],
+              },
+              upstream_request_edns: null,
+              upstream_response_edns: null,
+              response_edns: {
+                present: false,
+                version: 0,
+                udp_size: 0,
+                dnssec_ok: false,
+                option_codes: [],
+              },
+            },
+          ],
+        }),
+      ),
+    );
+    render(<QueryDetails path="/me/queries" enabled />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 cached.example. 详情",
+      }),
+    );
+    const detail = screen.getByRole("dialog");
+    expect(
+      within(detail).getAllByText("本次响应来自缓存，无对应上游快照"),
+    ).toHaveLength(2);
+    expect(within(detail).getAllByText("已观察报文：没有 EDNS")).toHaveLength(
+      2,
+    );
+    expect(within(detail).getByText("最终响应无对应上游")).toBeInTheDocument();
+    expect(within(detail).queryByText("未调用上游")).not.toBeInTheDocument();
   });
   it("查询日志将筛选条件发送到后端", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ items: [] }));

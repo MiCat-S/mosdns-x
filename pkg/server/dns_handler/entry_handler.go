@@ -30,6 +30,7 @@ import (
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/query_access"
@@ -99,42 +100,34 @@ type EntryHandlerOpts struct {
 
 // Result is an immutable snapshot of a completed entry request.
 type Result struct {
-	Principal           query_context.Principal
-	Protocol            string
-	ClientAddr          netip.Addr
-	AnswerIPs           []string
-	EDNS                EDNSInfo
-	QuestionName        string
-	QuestionType        uint16
-	Duration            time.Duration
-	Rcode               int
-	ExecError           bool
-	Admitted            bool
-	Rejected            bool
-	AccessKind          query_access.Kind
-	CacheHit            bool
-	ResponseSource      string
-	ResponseSourceID    string
-	UpstreamID          string
-	MatchedRuleID       string
-	MatchedPublicListID string
+	Principal            query_context.Principal
+	Protocol             string
+	ClientAddr           netip.Addr
+	AnswerIPs            []string
+	EDNS                 EDNSInfo
+	QuestionName         string
+	QuestionType         uint16
+	Duration             time.Duration
+	Rcode                int
+	ExecError            bool
+	Admitted             bool
+	Rejected             bool
+	AccessKind           query_access.Kind
+	CacheHit             bool
+	ResponseSource       string
+	ResponseSourceID     string
+	UpstreamID           string
+	MatchedRuleID        string
+	MatchedPublicListID  string
+	EDNSTraceVersion     uint8
+	UpstreamStageStatus  string
+	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot
+	UpstreamResponseEDNS *dnsutils.EDNSSnapshot
+	ResponseEDNS         *dnsutils.EDNSSnapshot
 }
 
-type EDNSInfo struct {
-	Present     bool     `json:"present"`
-	Version     uint8    `json:"version"`
-	UDPSize     uint16   `json:"udp_size"`
-	DNSSECOK    bool     `json:"dnssec_ok"`
-	OptionCodes []uint16 `json:"option_codes"`
-	ECS         *ECSInfo `json:"ecs,omitempty"`
-}
-
-type ECSInfo struct {
-	Address      string `json:"address"`
-	Family       uint16 `json:"family"`
-	SourcePrefix uint8  `json:"source_prefix"`
-	ScopePrefix  uint8  `json:"scope_prefix"`
-}
+type EDNSInfo = dnsutils.EDNSSnapshot
+type ECSInfo = dnsutils.ECSSnapshot
 
 func (opts *EntryHandlerOpts) Init() error {
 	if opts.Logger == nil {
@@ -167,6 +160,8 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	if h.opts.CaptureQueryDetails {
 		result.AnswerIPs = []string{}
 		result.EDNS = snapshotEDNS(req)
+		result.EDNSTraceVersion = dnsutils.EDNSTraceVersion
+		result.UpstreamStageStatus = query_context.UpstreamStageUnavailable
 	}
 	if meta != nil {
 		result.Principal = meta.GetPrincipal()
@@ -191,7 +186,10 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	if len(req.Question) == 0 {
 		h.opts.Logger.Warn("zero question")
 		result.Rcode = dns.RcodeFormatError
-		return h.responseFormErr(req), nil
+		response := h.responseFormErr(req)
+		result.UpstreamStageStatus = query_context.UpstreamStageNotLinked
+		h.captureFinalResponse(&result, response)
+		return response, nil
 	}
 	result.QuestionName = req.Question[0].Name
 	result.QuestionType = req.Question[0].Qtype
@@ -200,7 +198,10 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		if !ok {
 			h.opts.Logger.Warn(fmt.Sprintf("invalid question name: %s", question.Name))
 			result.Rcode = dns.RcodeFormatError
-			return h.responseFormErr(req), nil
+			response := h.responseFormErr(req)
+			result.UpstreamStageStatus = query_context.UpstreamStageNotLinked
+			h.captureFinalResponse(&result, response)
+			return response, nil
 		}
 	}
 	if h.opts.Admit != nil {
@@ -217,6 +218,7 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	var qCtx *query_context.Context
 	if h.opts.BeforeExec != nil || h.opts.BeforeExecWithTrace != nil {
 		qCtx = query_context.NewContext(req.Copy(), meta)
+		qCtx.SetCaptureQueryDetails(h.opts.CaptureQueryDetails)
 		workingReq = qCtx.Q()
 	}
 
@@ -236,19 +238,27 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	if err == nil && respMsg == nil {
 		if qCtx == nil {
 			qCtx = query_context.NewContext(workingReq, meta)
+			qCtx.SetCaptureQueryDetails(h.opts.CaptureQueryDetails)
 		}
 		err = h.opts.Entry.Exec(ctx, qCtx, nil)
 		respMsg = qCtx.R()
 	}
 	if err == nil && respMsg != nil && h.opts.AfterExecWithTrace != nil {
+		previousResponse := respMsg
 		var trace query_context.ResponseTrace
 		respMsg, trace, err = h.opts.AfterExecWithTrace(ctx, result.Principal, workingReq, respMsg)
-		if err == nil && respMsg != nil && trace != (query_context.ResponseTrace{}) {
-			trace = inheritResponseTrace(trace, qCtx.ResponseTrace())
+		if err == nil && respMsg != nil && !trace.IsZero() {
+			trace = mergeAfterResponseTrace(trace, qCtx.ResponseTrace())
 			qCtx.SetResponseWithTrace(respMsg, trace)
+		} else if err == nil && respMsg != nil && respMsg != previousResponse {
+			qCtx.SetResponseWithTrace(respMsg, replacementTrace(qCtx.ResponseTrace()))
 		}
 	} else if err == nil && respMsg != nil && h.opts.AfterExec != nil {
+		previousResponse := respMsg
 		respMsg, err = h.opts.AfterExec(ctx, result.Principal, workingReq, respMsg)
+		if err == nil && respMsg != nil && respMsg != previousResponse {
+			qCtx.SetResponseWithTrace(respMsg, replacementTrace(qCtx.ResponseTrace()))
+		}
 	}
 	if err != nil {
 		result.ExecError = true
@@ -271,6 +281,17 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	}
 
 	if respMsg == nil || err != nil {
+		if h.opts.CaptureQueryDetails && qCtx != nil {
+			trace := qCtx.ResponseTrace()
+			if trace.UpstreamStageStatus == "" {
+				result.UpstreamStageStatus = query_context.UpstreamStageNotLinked
+			} else {
+				result.UpstreamStageStatus = trace.UpstreamStageStatus
+			}
+			if result.UpstreamStageStatus == query_context.UpstreamStageSelected || trace.UpstreamID != "" {
+				result.UpstreamStageStatus = query_context.UpstreamStageDiscarded
+			}
+		}
 		respMsg = new(dns.Msg)
 		respMsg.SetReply(req)
 		respMsg.Rcode = dns.RcodeServerFailure
@@ -284,6 +305,7 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	result.Rcode = respMsg.Rcode
 	if h.opts.CaptureQueryDetails {
 		result.AnswerIPs = answerIPs(respMsg)
+		h.captureFinalResponse(&result, respMsg)
 	}
 	if err == nil && qCtx != nil && result.ResponseSource != query_context.ResponseSourceServfail {
 		result.CacheHit = qCtx.CacheHit()
@@ -293,6 +315,14 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		result.UpstreamID = trace.UpstreamID
 		result.MatchedRuleID = trace.MatchedRuleID
 		result.MatchedPublicListID = trace.MatchedPublicListID
+		if h.opts.CaptureQueryDetails {
+			result.UpstreamStageStatus = trace.UpstreamStageStatus
+			result.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(trace.UpstreamRequestEDNS)
+			result.UpstreamResponseEDNS = dnsutils.CloneEDNSSnapshot(trace.UpstreamResponseEDNS)
+			if result.UpstreamStageStatus == "" {
+				result.UpstreamStageStatus = query_context.UpstreamStageNotLinked
+			}
+		}
 		if result.ResponseSource == "" {
 			result.ResponseSource = query_context.ResponseSourceSequence
 		}
@@ -300,9 +330,24 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	return respMsg, nil
 }
 
+func (h *EntryHandler) captureFinalResponse(result *Result, response *dns.Msg) {
+	if !h.opts.CaptureQueryDetails || response == nil {
+		return
+	}
+	snapshot := dnsutils.SnapshotEDNS(response)
+	result.ResponseEDNS = &snapshot
+}
+
 func inheritResponseTrace(trace, earlier query_context.ResponseTrace) query_context.ResponseTrace {
-	if trace.UpstreamID == "" {
-		trace.UpstreamID = earlier.UpstreamID
+	if trace.UpstreamStageStatus == "" {
+		if trace.UpstreamID == "" {
+			trace.UpstreamID = earlier.UpstreamID
+		}
+		if earlier.UpstreamStageStatus != "" {
+			trace.UpstreamStageStatus = earlier.UpstreamStageStatus
+			trace.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(earlier.UpstreamRequestEDNS)
+			trace.UpstreamResponseEDNS = dnsutils.CloneEDNSSnapshot(earlier.UpstreamResponseEDNS)
+		}
 	}
 	if trace.MatchedRuleID == "" {
 		trace.MatchedRuleID = earlier.MatchedRuleID
@@ -310,6 +355,39 @@ func inheritResponseTrace(trace, earlier query_context.ResponseTrace) query_cont
 	if trace.MatchedPublicListID == "" {
 		trace.MatchedPublicListID = earlier.MatchedPublicListID
 	}
+	return trace
+}
+
+func mergeAfterResponseTrace(trace, earlier query_context.ResponseTrace) query_context.ResponseTrace {
+	if (earlier.UpstreamStageStatus == query_context.UpstreamStageSelected ||
+		earlier.UpstreamStageStatus == query_context.UpstreamStageUnavailable && earlier.UpstreamID != "") &&
+		trace.Source != "" && trace.Source != earlier.Source {
+		trace.UpstreamID = ""
+		trace.UpstreamStageStatus = query_context.UpstreamStageDiscarded
+		trace.UpstreamRequestEDNS = nil
+		trace.UpstreamResponseEDNS = nil
+	} else {
+		trace = inheritResponseTrace(trace, earlier)
+	}
+	if trace.MatchedRuleID == "" {
+		trace.MatchedRuleID = earlier.MatchedRuleID
+	}
+	if trace.MatchedPublicListID == "" {
+		trace.MatchedPublicListID = earlier.MatchedPublicListID
+	}
+	return trace
+}
+
+func replacementTrace(earlier query_context.ResponseTrace) query_context.ResponseTrace {
+	trace := query_context.ResponseTrace{Source: query_context.ResponseSourceSequence}
+	if earlier.UpstreamStageStatus == query_context.UpstreamStageSelected ||
+		earlier.UpstreamStageStatus == query_context.UpstreamStageUnavailable && earlier.UpstreamID != "" {
+		trace.UpstreamStageStatus = query_context.UpstreamStageDiscarded
+	} else {
+		trace.UpstreamStageStatus = earlier.UpstreamStageStatus
+	}
+	trace.MatchedRuleID = earlier.MatchedRuleID
+	trace.MatchedPublicListID = earlier.MatchedPublicListID
 	return trace
 }
 
@@ -343,50 +421,7 @@ func answerIPs(msg *dns.Msg) []string {
 }
 
 func snapshotEDNS(msg *dns.Msg) EDNSInfo {
-	result := EDNSInfo{OptionCodes: []uint16{}}
-	opt := msg.IsEdns0()
-	if opt == nil {
-		return result
-	}
-	result.Present = true
-	result.Version = opt.Version()
-	result.UDPSize = opt.UDPSize()
-	result.DNSSECOK = opt.Do()
-	for _, option := range opt.Option {
-		if option == nil {
-			continue
-		}
-		result.OptionCodes = append(result.OptionCodes, option.Option())
-		if result.ECS == nil {
-			if ecs, ok := option.(*dns.EDNS0_SUBNET); ok {
-				result.ECS = snapshotECS(ecs)
-			}
-		}
-	}
-	return result
-}
-
-func snapshotECS(ecs *dns.EDNS0_SUBNET) *ECSInfo {
-	result := &ECSInfo{Family: ecs.Family, SourcePrefix: ecs.SourceNetmask, ScopePrefix: ecs.SourceScope}
-	var addr netip.Addr
-	var ok bool
-	var maxBits int
-	switch ecs.Family {
-	case 1:
-		if ip := ecs.Address.To4(); ip != nil {
-			addr, ok = netip.AddrFromSlice(ip)
-			maxBits = 32
-		}
-	case 2:
-		if ecs.Address.To4() == nil {
-			addr, ok = netip.AddrFromSlice(ecs.Address.To16())
-			maxBits = 128
-		}
-	}
-	if ok && int(ecs.SourceNetmask) <= maxBits {
-		result.Address = netip.PrefixFrom(addr, int(ecs.SourceNetmask)).Masked().Addr().String()
-	}
-	return result
+	return dnsutils.SnapshotEDNS(msg)
 }
 
 func (h *EntryHandler) responseFormErr(req *dns.Msg) *dns.Msg {

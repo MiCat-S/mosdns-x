@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/pmkol/mosdns-x/pkg/dnsutils"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 
 	"github.com/miekg/dns"
 )
@@ -71,6 +72,33 @@ func (u *udpmeUpstream) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, err
 	}
 	dnsutils.RemoveEDNS0(r)
 	return r, nil
+}
+
+func (u *udpmeUpstream) ExchangeDetailed(ctx context.Context, m *dns.Msg) (upstreamtrace.Result, error) {
+	ddl, ok := ctx.Deadline()
+	if !ok {
+		ddl = time.Now().Add(time.Second * 3)
+	}
+
+	if m.IsEdns0() != nil {
+		requestSnapshot := dnsutils.SnapshotEDNS(m)
+		r, err := u.exchangeOPTM(m, ddl)
+		if err != nil {
+			return upstreamtrace.Result{}, err
+		}
+		return upstreamtrace.NewResult(r, requestSnapshot), nil
+	}
+	mc := m.Copy()
+	mc.SetEdns0(512, false)
+	requestSnapshot := dnsutils.SnapshotEDNS(mc)
+	r, err := u.exchangeOPTM(mc, ddl)
+	if err != nil {
+		return upstreamtrace.Result{}, err
+	}
+	result := upstreamtrace.NewResult(r, requestSnapshot)
+	dnsutils.RemoveEDNS0(r)
+	result.Response = r
+	return result, nil
 }
 
 func (u *udpmeUpstream) exchangeOPTM(m *dns.Msg, ddl time.Time) (*dns.Msg, error) {

@@ -320,20 +320,39 @@ export interface QueryRecord {
   protocol: string;
   answer_ips: string[];
   edns?: EDNSInfo;
+  edns_trace_version?: number;
+  upstream_stage_status?: UpstreamStageStatus;
+  upstream_request_edns?: EDNSInfo | null;
+  upstream_response_edns?: EDNSInfo | null;
+  response_edns?: EDNSInfo | null;
   response_source?: string;
   response_source_id?: string;
   upstream_id?: string;
   matched_rule_id?: string;
   matched_public_list_id?: string;
 }
+export type UpstreamStageStatus =
+  | "selected"
+  | "attempted_no_selection"
+  | "discarded"
+  | "not_linked"
+  | "unavailable";
 export interface EDNSInfo {
   present: boolean;
   version: number;
   udp_size: number;
   dnssec_ok: boolean;
   option_codes: number[];
+  option_codes_truncated?: boolean;
   ecs?: ECSInfo;
+  anomalies?: EDNSAnomaly[];
 }
+export type EDNSAnomaly =
+  | "multiple_opt"
+  | "multiple_ecs"
+  | "invalid_ecs_family"
+  | "invalid_ecs_prefix"
+  | "invalid_ecs_address";
 export interface ECSInfo {
   address: string;
   family: number;

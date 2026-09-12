@@ -10,6 +10,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/query_access"
@@ -179,15 +180,134 @@ func TestSnapshotEDNSMalformedECS(t *testing.T) {
 	for _, ecs := range []*dns.EDNS0_SUBNET{
 		{Code: dns.EDNS0SUBNET, Family: 999, SourceNetmask: 24, Address: net.ParseIP("192.0.2.1")},
 		{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 64, Address: net.ParseIP("192.0.2.1")},
+		{Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, SourceScope: 64, Address: net.ParseIP("192.0.2.1")},
 		{Code: dns.EDNS0SUBNET, Family: 2, SourceNetmask: 64, Address: net.ParseIP("192.0.2.1")},
 	} {
 		q := validQuery()
 		q.SetEdns0(512, false)
 		q.IsEdns0().Option = append(q.IsEdns0().Option, ecs)
 		got := snapshotEDNS(q)
-		if got.ECS == nil || got.ECS.Address != "" {
+		if got.ECS != nil || len(got.Anomalies) == 0 {
 			t.Fatalf("malformed ECS %#v produced %+v", ecs, got.ECS)
 		}
+	}
+}
+
+func TestResultIncludesFourStageEDNSSnapshots(t *testing.T) {
+	request := validQuery()
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		if !qCtx.CaptureQueryDetails() {
+			t.Fatal("detailed capture choice not propagated")
+		}
+		upstreamRequest := qCtx.Q().Copy()
+		upstreamRequest.SetEdns0(1232, false)
+		requestSnapshot := dnsutils.SnapshotEDNS(upstreamRequest)
+		upstreamResponse := new(dns.Msg)
+		upstreamResponse.SetReply(upstreamRequest)
+		upstreamResponse.SetEdns0(1232, false)
+		responseSnapshot := dnsutils.SnapshotEDNS(upstreamResponse)
+		finalResponse := upstreamResponse.Copy()
+		dnsutils.RemoveEDNS0(finalResponse)
+		qCtx.SetResponseWithTrace(finalResponse, query_context.ResponseTrace{
+			Source: query_context.ResponseSourceUpstream, UpstreamID: "forward/0",
+			UpstreamStageStatus: query_context.UpstreamStageSelected,
+			UpstreamRequestEDNS: &requestSnapshot, UpstreamResponseEDNS: &responseSnapshot,
+		})
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), request, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.EDNS.Present || got.UpstreamRequestEDNS == nil || !got.UpstreamRequestEDNS.Present ||
+		got.UpstreamResponseEDNS == nil || !got.UpstreamResponseEDNS.Present ||
+		got.ResponseEDNS == nil || got.ResponseEDNS.Present || got.UpstreamStageStatus != query_context.UpstreamStageSelected {
+		t.Fatalf("four-stage result = %+v", got)
+	}
+}
+
+func TestFinalLocalReplacementDiscardsSelectedUpstreamSnapshots(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		response := new(dns.Msg)
+		response.SetReply(qCtx.Q())
+		snapshot := dnsutils.SnapshotEDNS(qCtx.Q())
+		qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
+			Source: query_context.ResponseSourceUpstream, UpstreamID: "forward/0",
+			UpstreamStageStatus: query_context.UpstreamStageSelected,
+			UpstreamRequestEDNS: &snapshot, UpstreamResponseEDNS: &snapshot,
+		})
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{
+		Entry: exec, CaptureQueryDetails: true,
+		AfterExecWithTrace: func(_ context.Context, _ query_context.Principal, request, _ *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
+			response := new(dns.Msg)
+			response.SetRcode(request, dns.RcodeNameError)
+			return response, query_context.ResponseTrace{Source: query_context.ResponseSourceCustomBlock}, nil
+		},
+		Observe: func(result Result) { got = result },
+	})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.UpstreamStageStatus != query_context.UpstreamStageDiscarded || got.UpstreamID != "" || got.UpstreamRequestEDNS != nil || got.UpstreamResponseEDNS != nil {
+		t.Fatalf("replacement inherited discarded upstream: %+v", got)
+	}
+}
+
+func TestLocalSERVFAILKeepsNoSelectedUpstreamStatus(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		qCtx.SetResponseTrace(query_context.ResponseTrace{UpstreamStageStatus: query_context.UpstreamStageAttemptedNoSelection})
+		return errors.New("all upstreams failed")
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result }})
+	response, err := h.ServeDNS(context.Background(), validQuery(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Rcode != dns.RcodeServerFailure || got.UpstreamStageStatus != query_context.UpstreamStageAttemptedNoSelection || got.UpstreamRequestEDNS != nil || got.UpstreamResponseEDNS != nil || got.ResponseEDNS == nil {
+		t.Fatalf("SERVFAIL result = %+v", got)
+	}
+}
+
+func TestLocalSERVFAILWithoutUpstreamTraceIsNotLinked(t *testing.T) {
+	var got Result
+	h, _ := NewEntryHandler(EntryHandlerOpts{
+		Entry: &testExecutable{err: errors.New("execution failed")}, CaptureQueryDetails: true,
+		Observe: func(result Result) { got = result },
+	})
+	response, err := h.ServeDNS(context.Background(), validQuery(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Rcode != dns.RcodeServerFailure || got.UpstreamStageStatus != query_context.UpstreamStageNotLinked || got.ResponseEDNS == nil {
+		t.Fatalf("SERVFAIL result = %+v", got)
+	}
+}
+
+func TestLocalSERVFAILDiscardsSelectedUpstreamWithUnavailableSnapshots(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		response := new(dns.Msg)
+		response.SetReply(qCtx.Q())
+		qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
+			Source: query_context.ResponseSourceUpstream, UpstreamID: "legacy-upstream/0",
+			UpstreamStageStatus: query_context.UpstreamStageUnavailable,
+		})
+		return errors.New("post-forward execution failed")
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{
+		Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result },
+	})
+	response, err := h.ServeDNS(context.Background(), validQuery(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Rcode != dns.RcodeServerFailure || got.UpstreamStageStatus != query_context.UpstreamStageDiscarded || got.UpstreamID != "" || got.ResponseEDNS == nil {
+		t.Fatalf("SERVFAIL result = %+v", got)
 	}
 }
 

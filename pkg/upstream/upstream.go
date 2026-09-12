@@ -44,6 +44,7 @@ import (
 	"github.com/pmkol/mosdns-x/pkg/upstream/doh"
 	"github.com/pmkol/mosdns-x/pkg/upstream/doh3"
 	mQUIC "github.com/pmkol/mosdns-x/pkg/upstream/quic"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 	"github.com/pmkol/mosdns-x/pkg/upstream/transport"
 	"github.com/pmkol/mosdns-x/pkg/upstream/udp"
 )
@@ -55,6 +56,11 @@ type Upstream interface {
 	ExchangeContext(ctx context.Context, m *dns.Msg) (*dns.Msg, error)
 
 	io.Closer
+}
+
+// DetailedUpstream captures EDNS only when a caller explicitly opts in.
+type DetailedUpstream interface {
+	ExchangeContextDetailed(ctx context.Context, m *dns.Msg) (upstreamtrace.Result, error)
 }
 
 type Opt struct {
@@ -362,6 +368,21 @@ func (u *udpWithFallback) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns
 		return u.t.ExchangeContext(ctx, q)
 	}
 	return m, nil
+}
+
+func (u *udpWithFallback) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	requestSnapshot := dnsutils.SnapshotEDNS(q)
+	m, err := u.u.ExchangeContext(ctx, q)
+	if err != nil {
+		return upstreamtrace.Result{}, err
+	}
+	if m.Truncated {
+		m, err = u.t.ExchangeContext(ctx, q)
+		if err != nil {
+			return upstreamtrace.Result{}, err
+		}
+	}
+	return upstreamtrace.NewResult(m, requestSnapshot), nil
 }
 
 func (u *udpWithFallback) Close() error {

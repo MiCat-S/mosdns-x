@@ -32,7 +32,9 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	C "github.com/pmkol/mosdns-x/constant"
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/pool"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 )
 
 const dnsContentType = "application/dns-message"
@@ -49,49 +51,65 @@ func NewUpstream(url *url.URL, transport *http3.Transport) *Upstream {
 }
 
 func (u *Upstream) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	result, err := u.exchangeContext(ctx, q, false)
+	return result.Response, err
+}
+
+func (u *Upstream) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	return u.exchangeContext(ctx, q, true)
+}
+
+func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool) (upstreamtrace.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	q.Id = 0
+	var requestSnapshot dnsutils.EDNSSnapshot
+	if capture {
+		requestSnapshot = dnsutils.SnapshotEDNS(q)
+	}
 	wire, buf, err := pool.PackBuffer(q)
 	if err != nil {
-		return nil, err
+		return upstreamtrace.Result{}, err
 	}
 	defer buf.Release()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.url.String(), bytes.NewReader(wire))
 	if err != nil {
-		return nil, err
+		return upstreamtrace.Result{}, err
 	}
 	req.Header.Set("Content-Type", dnsContentType)
 	req.Header.Set("Accept", dnsContentType)
 	req.Header.Set("User-Agent", fmt.Sprintf("mosdns-x/%s", C.Version))
 	res, err := u.transport.RoundTrip(req)
 	if err != nil {
-		return nil, err
+		return upstreamtrace.Result{}, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return nil, fmt.Errorf("unexpected status %v: %s", res.StatusCode, res.Status)
+		return upstreamtrace.Result{}, fmt.Errorf("unexpected status %v: %s", res.StatusCode, res.Status)
 	}
 	if contentType := res.Header.Get("Content-Type"); contentType != dnsContentType {
-		return nil, fmt.Errorf("unexpected content type: %s", contentType)
+		return upstreamtrace.Result{}, fmt.Errorf("unexpected content type: %s", contentType)
 	}
 	if contentLength := res.Header.Get("Content-Length"); contentLength != "" {
 		if length, err := strconv.Atoi(contentLength); err == nil && length == 0 {
-			return nil, fmt.Errorf("empty response")
+			return upstreamtrace.Result{}, fmt.Errorf("empty response")
 		}
 	}
 	bb := bufPool.Get()
 	defer bufPool.Release(bb)
 	_, err = bb.ReadFrom(res.Body)
 	if err != nil {
-		return nil, err
+		return upstreamtrace.Result{}, err
 	}
 	r := new(dns.Msg)
 	err = r.Unpack(bb.Bytes())
 	if err != nil {
-		return nil, err
+		return upstreamtrace.Result{}, err
 	}
-	return r, nil
+	if capture {
+		return upstreamtrace.NewResult(r, requestSnapshot), nil
+	}
+	return upstreamtrace.Result{Response: r}, nil
 }
 
 func (u *Upstream) Close() error {

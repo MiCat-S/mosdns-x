@@ -30,6 +30,8 @@ import (
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 
+	"github.com/pmkol/mosdns-x/pkg/dnsutils"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 	"github.com/pmkol/mosdns-x/pkg/utils"
 )
 
@@ -157,6 +159,15 @@ func (t *Transport) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, 
 	}
 
 	return t.exchangeWithReusableConn(ctx, q)
+}
+
+func (t *Transport) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
+	requestSnapshot := dnsutils.SnapshotEDNS(q)
+	r, err := t.ExchangeContext(ctx, q)
+	if err != nil {
+		return upstreamtrace.Result{}, err
+	}
+	return upstreamtrace.NewResult(r, requestSnapshot), nil
 }
 
 // Close closes the Transport and all its active connections.

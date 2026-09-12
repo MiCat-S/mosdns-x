@@ -213,11 +213,27 @@ func migrateTelemetryQueries(ctx context.Context, source *bolt.Tx, target *sql.T
 		if err != nil {
 			return err
 		}
+		upstreamRequestEDNSJSON, err := marshalOptionalEDNSSnapshot(record.UpstreamRequestEDNS)
+		if err != nil {
+			return err
+		}
+		upstreamResponseEDNSJSON, err := marshalOptionalEDNSSnapshot(record.UpstreamResponseEDNS)
+		if err != nil {
+			return err
+		}
+		responseEDNSJSON, err := marshalOptionalEDNSSnapshot(record.ResponseEDNS)
+		if err != nil {
+			return err
+		}
 		_, err = target.ExecContext(ctx, `INSERT INTO mosdns_query_logs
-			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json, response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, string(id), record.Time.UnixNano(), record.UserID,
+			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
+			 edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
+			 response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, string(id), record.Time.UnixNano(), record.UserID,
 			record.CredentialID, record.ClientIP, record.Name, record.QType, record.Rcode, record.DurationMS,
-			record.CacheHit, record.Protocol, answerJSON, ednsJSON, record.ResponseSource, record.ResponseSourceID,
+			record.CacheHit, record.Protocol, answerJSON, ednsJSON, record.EDNSTraceVersion,
+			normalizedUpstreamStageStatus(record.UpstreamStageStatus), upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON,
+			record.ResponseSource, record.ResponseSourceID,
 			record.UpstreamID, record.MatchedRuleID, record.MatchedPublicListID)
 		if err == nil {
 			report.Queries++

@@ -631,6 +631,86 @@ tbody tr:last-child td {
   color: var(--muted);
   font-size: 0.72rem;
 }
+.transport-summary {
+  margin-bottom: 0.75rem !important;
+}
+.edns-stage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+.edns-stage {
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid #dce8e8;
+  border-radius: 0.72rem;
+  background: #fbfdfd;
+}
+.edns-stage > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+  margin-bottom: 0.65rem;
+}
+.log-detail .edns-stage h4 {
+  margin: 0;
+  color: #1d414a;
+  font-size: 0.84rem;
+}
+.edns-stage header small,
+.edns-differences small {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+.log-detail .edns-stage dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.log-detail .edns-stage dl > div {
+  padding: 0.48rem 0.52rem;
+}
+.log-detail .edns-stage-wide {
+  grid-column: 1 / -1;
+}
+.edns-stage-missing,
+.edns-stage-empty {
+  min-height: 2.9rem;
+  margin: 0;
+  padding: 0.7rem;
+  border-radius: 0.52rem;
+  background: #f3f7f7;
+  color: #617880;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.edns-stage-empty {
+  color: #435f68;
+}
+.edns-anomalies {
+  color: #8a5f18 !important;
+}
+.edns-differences {
+  margin-top: 0.75rem;
+  padding: 0.78rem 0.9rem;
+  border: 1px solid #d8e6e5;
+  border-radius: 0.65rem;
+  background: #f5faf9;
+  color: #36565f;
+  font-size: 0.78rem;
+}
+.edns-differences strong {
+  color: #1d494e;
+}
+.edns-differences ul {
+  margin: 0.45rem 0 0;
+  padding-left: 1.1rem;
+}
+.edns-differences li + li {
+  margin-top: 0.2rem;
+}
 .answer-list {
   display: flex;
   flex-wrap: wrap;
@@ -755,6 +835,9 @@ select:hover {
   border: 1px solid #d4e1e1;
   border-radius: 1rem;
   box-shadow: 0 24px 80px rgb(1 29 35 / 36%);
+}
+.query-log-modal {
+  width: min(960px, calc(100% - 1.5rem));
 }
 .modal::backdrop {
   background: rgb(3 24 29 / 62%);
@@ -1134,6 +1217,15 @@ pre {
   }
   .log-detail dl {
     grid-template-columns: 1fr;
+  }
+  .edns-stage-grid {
+    grid-template-columns: 1fr;
+  }
+  .log-detail .edns-stage dl {
+    grid-template-columns: 1fr;
+  }
+  .log-detail .edns-stage-wide {
+    grid-column: auto;
   }
   .log-detail dl > div:nth-child(odd) {
     background: #f5f9f9;

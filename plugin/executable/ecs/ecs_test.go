@@ -33,6 +33,23 @@ import (
 	C "github.com/pmkol/mosdns-x/pkg/query_context"
 )
 
+type traceCaptureExecutable struct{}
+
+func (*traceCaptureExecutable) Exec(_ context.Context, qCtx *C.Context, _ executable_seq.ExecutableChainNode) error {
+	requestSnapshot := dnsutils.SnapshotEDNS(qCtx.Q())
+	response := qCtx.Q().Copy()
+	response.Response = true
+	responseSnapshot := dnsutils.SnapshotEDNS(response)
+	qCtx.SetResponseWithTrace(response, C.ResponseTrace{
+		Source:               C.ResponseSourceUpstream,
+		UpstreamID:           "forward/0",
+		UpstreamStageStatus:  C.UpstreamStageSelected,
+		UpstreamRequestEDNS:  &requestSnapshot,
+		UpstreamResponseEDNS: &responseSnapshot,
+	})
+	return nil
+}
+
 func Test_ecsPlugin(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -121,5 +138,46 @@ func Test_ecsPlugin(t *testing.T) {
 				t.Fatalf("want rWantEDNS0 %v, got %v", tt.rWantEDNS0, res)
 			}
 		})
+	}
+}
+
+func TestECSCleanupDoesNotMutateCapturedUpstreamSnapshots(t *testing.T) {
+	p, err := newPlugin(coremain.NewBP("ecs", PluginType, nil, nil), &Args{Auto: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := C.NewRequestMeta(netip.MustParseAddr("192.0.2.129"))
+	qCtx := C.NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), meta)
+	qCtx.SetCaptureQueryDetails(true)
+	if err := p.Exec(context.Background(), qCtx, executable_seq.WrapExecutable(new(traceCaptureExecutable))); err != nil {
+		t.Fatal(err)
+	}
+	if qCtx.R() == nil || qCtx.R().IsEdns0() != nil {
+		t.Fatalf("ECS plugin did not clean its response OPT: %v", qCtx.R())
+	}
+	trace := qCtx.ResponseTrace()
+	if trace.UpstreamRequestEDNS == nil || trace.UpstreamRequestEDNS.ECS == nil || trace.UpstreamRequestEDNS.ECS.Address != "192.0.2.0" {
+		t.Fatalf("upstream request snapshot = %+v", trace.UpstreamRequestEDNS)
+	}
+	if trace.UpstreamResponseEDNS == nil || trace.UpstreamResponseEDNS.ECS == nil || trace.UpstreamResponseEDNS.ECS.Address != "192.0.2.0" {
+		t.Fatalf("upstream response snapshot = %+v", trace.UpstreamResponseEDNS)
+	}
+}
+
+func TestNoECSCapturesOPTWithoutECSAtUpstreamBoundary(t *testing.T) {
+	request := new(dns.Msg).SetQuestion("example.org.", dns.TypeA)
+	request.SetEdns0(1232, false)
+	request.IsEdns0().Option = append(request.IsEdns0().Option, &dns.EDNS0_SUBNET{
+		Code: dns.EDNS0SUBNET, Family: 1, SourceNetmask: 24, Address: net.ParseIP("192.0.2.129"),
+	})
+	qCtx := C.NewContext(request, nil)
+	qCtx.SetCaptureQueryDetails(true)
+	plugin := &noECS{BP: coremain.NewBP("no_ecs", PluginType, nil, nil)}
+	if err := plugin.Exec(context.Background(), qCtx, executable_seq.WrapExecutable(new(traceCaptureExecutable))); err != nil {
+		t.Fatal(err)
+	}
+	trace := qCtx.ResponseTrace()
+	if trace.UpstreamRequestEDNS == nil || !trace.UpstreamRequestEDNS.Present || trace.UpstreamRequestEDNS.ECS != nil || len(trace.UpstreamRequestEDNS.OptionCodes) != 0 {
+		t.Fatalf("no_ecs request snapshot = %+v", trace.UpstreamRequestEDNS)
 	}
 }
