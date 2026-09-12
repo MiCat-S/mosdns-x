@@ -201,6 +201,8 @@ type PublicListFormat string
 
 type PublicListRefreshStatus string
 
+type PublicListSnapshotStatus string
+
 const (
 	PublicListFormatMosDNS PublicListFormat = "mosdns"
 	PublicListFormatHosts  PublicListFormat = "hosts"
@@ -208,23 +210,32 @@ const (
 	PublicListRefreshNever   PublicListRefreshStatus = "never"
 	PublicListRefreshSuccess PublicListRefreshStatus = "success"
 	PublicListRefreshError   PublicListRefreshStatus = "error"
+
+	PublicListSnapshotMissing PublicListSnapshotStatus = "missing"
+	PublicListSnapshotCurrent PublicListSnapshotStatus = "current"
+	PublicListSnapshotStale   PublicListSnapshotStatus = "stale"
 )
 
 type PublicList struct {
-	ID                string                  `json:"id"`
-	Name              string                  `json:"name"`
-	Category          string                  `json:"category"`
-	URL               string                  `json:"url"`
-	Format            PublicListFormat        `json:"format"`
-	Enabled           bool                    `json:"enabled"`
-	SHA256            string                  `json:"sha256,omitempty"`
-	RefreshSeconds    uint32                  `json:"refresh_seconds"`
-	EntryCount        uint64                  `json:"entry_count"`
-	LastRefreshStatus PublicListRefreshStatus `json:"last_refresh_status"`
-	LastRefreshedAt   *time.Time              `json:"last_refreshed_at"`
-	LastRefreshError  string                  `json:"last_refresh_error,omitempty"`
-	CreatedAt         time.Time               `json:"created_at"`
-	UpdatedAt         time.Time               `json:"updated_at"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	Category          string                   `json:"category"`
+	URL               string                   `json:"url"`
+	Format            PublicListFormat         `json:"format"`
+	Enabled           bool                     `json:"enabled"` // Legacy alias of DefaultEnabled.
+	DefaultEnabled    bool                     `json:"default_enabled"`
+	Published         bool                     `json:"published"`
+	SHA256            string                   `json:"sha256,omitempty"`
+	RefreshSeconds    uint32                   `json:"refresh_seconds"`
+	EntryCount        uint64                   `json:"entry_count"`
+	LastRefreshStatus PublicListRefreshStatus  `json:"last_refresh_status"`
+	LastRefreshedAt   *time.Time               `json:"last_refreshed_at"`
+	LastRefreshError  string                   `json:"last_refresh_error,omitempty"`
+	SnapshotStatus    PublicListSnapshotStatus `json:"snapshot_status"`
+	SnapshotSHA256    string                   `json:"snapshot_sha256,omitempty"`
+	LastSuccessfulAt  *time.Time               `json:"last_successful_at"`
+	CreatedAt         time.Time                `json:"created_at"`
+	UpdatedAt         time.Time                `json:"updated_at"`
 }
 
 type PublicListSpec struct {
@@ -232,7 +243,9 @@ type PublicListSpec struct {
 	Category       string           `json:"category"`
 	URL            string           `json:"url"`
 	Format         PublicListFormat `json:"format"`
-	Enabled        bool             `json:"enabled"`
+	Enabled        bool             `json:"enabled"` // Legacy alias of DefaultEnabled.
+	DefaultEnabled *bool            `json:"default_enabled,omitempty"`
+	Published      *bool            `json:"published,omitempty"`
 	SHA256         string           `json:"sha256,omitempty"`
 	RefreshSeconds uint32           `json:"refresh_seconds"`
 }
@@ -242,16 +255,47 @@ type PublicListPatch struct {
 	Category       *string           `json:"category,omitempty"`
 	URL            *string           `json:"url,omitempty"`
 	Format         *PublicListFormat `json:"format,omitempty"`
-	Enabled        *bool             `json:"enabled,omitempty"`
+	Enabled        *bool             `json:"enabled,omitempty"` // Legacy alias of DefaultEnabled.
+	DefaultEnabled *bool             `json:"default_enabled,omitempty"`
+	Published      *bool             `json:"published,omitempty"`
 	SHA256         *string           `json:"sha256,omitempty"`
 	RefreshSeconds *uint32           `json:"refresh_seconds,omitempty"`
 }
 
 type PublicListRefreshResult struct {
-	Status      PublicListRefreshStatus
-	EntryCount  uint64
-	RefreshedAt time.Time
-	Error       string
+	Status          PublicListRefreshStatus
+	EntryCount      uint64
+	SHA256          string
+	RefreshedAt     time.Time
+	Error           string
+	SnapshotMissing bool
+}
+
+type PublicListInvalidEntry struct {
+	Line   uint64 `json:"line"`
+	Reason string `json:"reason"`
+}
+
+type PublicListValidation struct {
+	Valid             bool                     `json:"valid"`
+	ValidationToken   string                   `json:"validation_token"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+	Format            PublicListFormat         `json:"format"`
+	EntryCount        uint64                   `json:"entry_count"`
+	InvalidEntryCount uint64                   `json:"invalid_entry_count"`
+	InvalidEntries    []PublicListInvalidEntry `json:"invalid_entries"`
+	Samples           []string                 `json:"samples"`
+	SHA256            string                   `json:"sha256"`
+	Spec              PublicListSpec           `json:"spec"`
+}
+
+type PublicListRefreshItem struct {
+	ID    string `json:"id"`
+	Error string `json:"error,omitempty"`
+}
+
+type PublicListRefreshAllResult struct {
+	Items []PublicListRefreshItem `json:"items"`
 }
 
 type UserPublicList struct {
@@ -301,6 +345,7 @@ type Service interface {
 	ListDNSPolicyRules(ctx context.Context, userID string, page Page) (PageResult[DNSPolicyRule], error)
 	CreatePublicList(ctx context.Context, actorID string, spec PublicListSpec) (PublicList, error)
 	UpdatePublicList(ctx context.Context, actorID, listID string, patch PublicListPatch) (PublicList, error)
+	CommitPublicListSnapshot(ctx context.Context, actorID, listID string, expectedUpdatedAt time.Time, spec PublicListSpec, refresh PublicListRefreshResult) (PublicList, error)
 	DeletePublicList(ctx context.Context, actorID, listID string) error
 	GetPublicList(ctx context.Context, listID string) (PublicList, error)
 	ListPublicLists(ctx context.Context, page Page) (PageResult[PublicList], error)

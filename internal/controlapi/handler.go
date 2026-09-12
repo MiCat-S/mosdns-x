@@ -19,6 +19,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
+	"github.com/pmkol/mosdns-x/internal/publiclist"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
@@ -36,8 +37,54 @@ type Telemetry interface {
 
 type PublicLists interface {
 	Refresh(context.Context, string) error
+	RefreshAllDetailed(context.Context) (control.PublicListRefreshAllResult, error)
+	Validate(context.Context, string, control.PublicListSpec) (control.PublicListValidation, error)
+	Publish(context.Context, string, string, string) (control.PublicList, error)
+	Update(context.Context, string, string, control.PublicListPatch) (control.PublicList, error)
 	Invalidate(string)
-	Delete(string) error
+	Delete(context.Context, string, string) error
+}
+
+// userPublicListView deliberately excludes administrator-only source details.
+// Public-list URLs can contain signed query parameters, and refresh errors can
+// expose upstream infrastructure details.
+type userPublicListView struct {
+	List       userPublicListSummary `json:"list"`
+	Enabled    bool                  `json:"enabled"`
+	Overridden bool                  `json:"overridden"`
+}
+
+type userPublicListSummary struct {
+	ID                string                           `json:"id"`
+	Name              string                           `json:"name"`
+	Category          string                           `json:"category"`
+	Format            control.PublicListFormat         `json:"format"`
+	Enabled           bool                             `json:"enabled"`
+	DefaultEnabled    bool                             `json:"default_enabled"`
+	Published         bool                             `json:"published"`
+	RefreshSeconds    uint32                           `json:"refresh_seconds"`
+	EntryCount        uint64                           `json:"entry_count"`
+	LastRefreshStatus control.PublicListRefreshStatus  `json:"last_refresh_status"`
+	LastRefreshedAt   *time.Time                       `json:"last_refreshed_at"`
+	SnapshotStatus    control.PublicListSnapshotStatus `json:"snapshot_status"`
+	LastSuccessfulAt  *time.Time                       `json:"last_successful_at"`
+	CreatedAt         time.Time                        `json:"created_at"`
+	UpdatedAt         time.Time                        `json:"updated_at"`
+}
+
+func newUserPublicListView(item control.UserPublicList) userPublicListView {
+	list := item.List
+	return userPublicListView{
+		List: userPublicListSummary{
+			ID: list.ID, Name: list.Name, Category: list.Category, Format: list.Format,
+			Enabled: list.Enabled, DefaultEnabled: list.DefaultEnabled, Published: list.Published,
+			RefreshSeconds: list.RefreshSeconds, EntryCount: list.EntryCount,
+			LastRefreshStatus: list.LastRefreshStatus, LastRefreshedAt: list.LastRefreshedAt,
+			SnapshotStatus: list.SnapshotStatus, LastSuccessfulAt: list.LastSuccessfulAt,
+			CreatedAt: list.CreatedAt, UpdatedAt: list.UpdatedAt,
+		},
+		Enabled: item.Enabled, Overridden: item.Overridden,
+	}
 }
 
 type SystemInfo struct {
@@ -69,6 +116,7 @@ type Options struct {
 	Lookup            func(context.Context, string, string, uint16) (*dns.Msg, error)
 	InvalidatePolicy  func(string)
 	PublicLists       PublicLists
+	RuntimeInspector  runtimeconfig.Inspector
 	RuntimeConfig     runtimeconfig.Manager
 	Assets            fs.FS
 	Legacy            http.Handler
@@ -528,6 +576,10 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 		h.adminRuntime(w, r, session.ID, strings.TrimPrefix(p, "/runtime"))
 		return
 	}
+	if p == "/data-providers" {
+		h.adminDataProviders(w, r)
+		return
+	}
 	if p == "/public-lists" {
 		h.adminPublicLists(w, r, admin.ID, "")
 		return
@@ -731,17 +783,21 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 }
 
 func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID, path string) {
-	if h.opts.RuntimeConfig == nil {
-		writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
-		return
-	}
 	switch path {
 	case "/config":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
 			return
 		}
-		state, err := h.opts.RuntimeConfig.Get(r.Context())
+		inspector := h.opts.RuntimeInspector
+		if inspector == nil && h.opts.RuntimeConfig != nil {
+			inspector = h.opts.RuntimeConfig
+		}
+		if inspector == nil {
+			writeError(w, http.StatusServiceUnavailable, "runtime_inspector_unavailable")
+			return
+		}
+		state, err := inspector.Get(r.Context())
 		if err != nil {
 			h.runtimeError(w, err, false)
 			return
@@ -750,6 +806,10 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 	case "/config/validate":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
+			return
+		}
+		if h.opts.RuntimeConfig == nil {
+			writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
 			return
 		}
 		var request struct {
@@ -768,6 +828,10 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 	case "/config/apply":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
+			return
+		}
+		if h.opts.RuntimeConfig == nil {
+			writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
 			return
 		}
 		var request struct {
@@ -791,6 +855,10 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 			methodNotAllowed(w)
 			return
 		}
+		if h.opts.RuntimeConfig == nil {
+			writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
+			return
+		}
 		result, err := h.opts.RuntimeConfig.Reload(r.Context())
 		if err != nil {
 			h.runtimeError(w, err, false)
@@ -805,6 +873,10 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 			methodNotAllowed(w)
 			return
 		}
+		if h.opts.RuntimeConfig == nil {
+			writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
+			return
+		}
 		history, err := h.opts.RuntimeConfig.History(r.Context())
 		if err != nil {
 			h.runtimeError(w, err, false)
@@ -817,6 +889,10 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 	case "/rollback":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w)
+			return
+		}
+		if h.opts.RuntimeConfig == nil {
+			writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
 			return
 		}
 		var request struct {
@@ -847,6 +923,10 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 			writeError(w, http.StatusBadRequest, "invalid_input")
 			return
 		}
+		if h.opts.RuntimeConfig == nil {
+			writeError(w, http.StatusServiceUnavailable, "managed_config_disabled")
+			return
+		}
 		results, err := h.opts.RuntimeConfig.Probe(r.Context(), tag)
 		if err != nil {
 			h.runtimeError(w, err, true)
@@ -857,6 +937,30 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": results})
 	}
+}
+
+func (h *Handler) adminDataProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	inspector := h.opts.RuntimeInspector
+	if inspector == nil && h.opts.RuntimeConfig != nil {
+		inspector = h.opts.RuntimeConfig
+	}
+	if inspector == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime_inspector_unavailable")
+		return
+	}
+	items, err := inspector.DataProviders(r.Context())
+	if err != nil {
+		h.runtimeError(w, err, false)
+		return
+	}
+	if items == nil {
+		items = []runtimeconfig.DataProviderSummary{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadRequest bool) {
@@ -900,6 +1004,8 @@ func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actor
 			if decodeJSON(w, r, &spec) != nil {
 				return
 			}
+			published := false
+			spec.Published = &published
 			list, err := h.opts.Control.CreatePublicList(r.Context(), actorID, spec)
 			if err != nil {
 				h.serviceError(w, err)
@@ -914,6 +1020,44 @@ func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actor
 		}
 		return
 	}
+	if rest == "validate" && r.Method == http.MethodPost {
+		if h.opts.PublicLists == nil {
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		var request struct {
+			control.PublicListSpec
+			ListID string `json:"list_id"`
+		}
+		if decodeJSON(w, r, &request) != nil {
+			return
+		}
+		validation, err := h.opts.PublicLists.Validate(r.Context(), request.ListID, request.PublicListSpec)
+		if err != nil {
+			h.publicListError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, validation)
+		return
+	}
+	if rest == "publish" && r.Method == http.MethodPost {
+		h.publishPublicList(w, r, actorID, "")
+		return
+	}
+	if rest == "refresh-all" && r.Method == http.MethodPost {
+		if h.opts.PublicLists == nil {
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		result, err := h.opts.PublicLists.RefreshAllDetailed(r.Context())
+		if err != nil {
+			h.publicListError(w, err)
+			return
+		}
+		h.opts.PublicLists.Invalidate("")
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	parts := strings.Split(rest, "/")
 	id := parts[0]
 	if id == "" || len(parts) > 2 {
@@ -921,6 +1065,10 @@ func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actor
 		return
 	}
 	if len(parts) == 2 {
+		if parts[1] == "publish" && r.Method == http.MethodPost {
+			h.publishPublicList(w, r, actorID, id)
+			return
+		}
 		if parts[1] != "refresh" || r.Method != http.MethodPost {
 			writeError(w, http.StatusNotFound, "not_found")
 			return
@@ -930,13 +1078,13 @@ func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actor
 			return
 		}
 		if err := h.opts.PublicLists.Refresh(r.Context(), id); err != nil {
-			h.serviceError(w, err)
+			h.publicListError(w, err)
 			return
 		}
 		h.opts.PublicLists.Invalidate("")
 		list, err := h.opts.Control.GetPublicList(r.Context(), id)
 		if err != nil {
-			h.serviceError(w, err)
+			h.publicListError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, list)
@@ -955,29 +1103,88 @@ func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actor
 		if decodeJSON(w, r, &patch) != nil {
 			return
 		}
-		list, err := h.opts.Control.UpdatePublicList(r.Context(), actorID, id, patch)
-		if err != nil {
-			h.serviceError(w, err)
+		if patch.Published != nil && *patch.Published {
+			writeError(w, http.StatusBadRequest, "validation_required")
 			return
 		}
+		var list control.PublicList
+		var err error
 		if h.opts.PublicLists != nil {
-			h.opts.PublicLists.Invalidate("")
+			list, err = h.opts.PublicLists.Update(r.Context(), actorID, id, patch)
+		} else {
+			list, err = h.opts.Control.UpdatePublicList(r.Context(), actorID, id, patch)
+		}
+		if err != nil {
+			h.publicListError(w, err)
+			return
 		}
 		writeJSON(w, http.StatusOK, list)
 	case http.MethodDelete:
-		if err := h.opts.Control.DeletePublicList(r.Context(), actorID, id); err != nil {
-			h.serviceError(w, err)
-			return
-		}
 		if h.opts.PublicLists != nil {
-			if err := h.opts.PublicLists.Delete(id); err != nil {
-				h.serviceError(w, err)
+			if err := h.opts.PublicLists.Delete(r.Context(), actorID, id); err != nil {
+				h.publicListError(w, err)
 				return
 			}
+		} else if err := h.opts.Control.DeletePublicList(r.Context(), actorID, id); err != nil {
+			h.serviceError(w, err)
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
+	}
+}
+
+func (h *Handler) publishPublicList(w http.ResponseWriter, r *http.Request, actorID, listID string) {
+	if h.opts.PublicLists == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	var request struct {
+		ValidationToken string `json:"validation_token"`
+	}
+	if decodeJSON(w, r, &request) != nil {
+		return
+	}
+	if request.ValidationToken == "" {
+		writeError(w, http.StatusBadRequest, "invalid_input")
+		return
+	}
+	list, err := h.opts.PublicLists.Publish(r.Context(), actorID, listID, request.ValidationToken)
+	if err != nil {
+		h.publicListError(w, err)
+		return
+	}
+	h.opts.PublicLists.Invalidate("")
+	status := http.StatusOK
+	if listID == "" {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, list)
+}
+
+func (h *Handler) publicListError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, publiclist.ErrValidationTokenInvalid):
+		writeError(w, http.StatusConflict, "validation_token_invalid")
+	case errors.Is(err, publiclist.ErrValidationTokenExpired):
+		writeError(w, http.StatusConflict, "validation_token_expired")
+	case errors.Is(err, publiclist.ErrInvalidSource):
+		writeError(w, http.StatusBadRequest, "public_list_source_invalid")
+	case errors.Is(err, publiclist.ErrContentTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "public_list_too_large")
+	case errors.Is(err, publiclist.ErrContentRejected):
+		writeError(w, http.StatusUnprocessableEntity, "public_list_content_invalid")
+	case errors.Is(err, publiclist.ErrNotPublished):
+		writeError(w, http.StatusConflict, "public_list_not_published")
+	case errors.Is(err, publiclist.ErrTooManyPending):
+		writeError(w, http.StatusTooManyRequests, "public_list_validation_busy")
+	case errors.Is(err, publiclist.ErrSnapshotCleanup):
+		writeError(w, http.StatusInternalServerError, "public_list_cleanup_pending")
+	case errors.Is(err, control.ErrConflict):
+		writeError(w, http.StatusConflict, "public_list_conflict")
+	default:
+		h.serviceError(w, err)
 	}
 }
 
@@ -996,10 +1203,11 @@ func (h *Handler) userPublicLists(w http.ResponseWriter, r *http.Request, userID
 			h.serviceError(w, err)
 			return
 		}
-		if lists.Items == nil {
-			lists.Items = []control.UserPublicList{}
+		items := make([]userPublicListView, 0, len(lists.Items))
+		for _, item := range lists.Items {
+			items = append(items, newUserPublicListView(item))
 		}
-		writeJSON(w, http.StatusOK, lists)
+		writeJSON(w, http.StatusOK, control.PageResult[userPublicListView]{Items: items, NextCursor: lists.NextCursor})
 		return
 	}
 	if strings.Contains(listID, "/") || r.Method != http.MethodPatch {

@@ -287,7 +287,7 @@ func validateSchema(tx *bbolt.Tx) error {
 			}
 		}
 		return nil
-	case schemaVersion:
+	case publicListSchemaVersion, schemaVersion:
 		for _, name := range [][]byte{bCredentialTokens, bDNSPolicySettings, bDNSPolicyRules, bUserDNSPolicyRules, bPublicLists, bPublicListNames, bUserPublicLists} {
 			if tx.Bucket(name) == nil {
 				return fmt.Errorf("missing bucket %q", name)

@@ -27,7 +27,8 @@ const (
 	credentialSchemaVersion         = 2
 	policySchemaVersion             = 3
 	policySwitchSchemaVersion       = 4
-	schemaVersion                   = 5
+	publicListSchemaVersion         = 5
+	schemaVersion                   = 6
 	defaultPage                     = 100
 	maxPage                         = 1000
 	maxUsageRange                   = 31 * 24 * time.Hour
@@ -138,7 +139,7 @@ func Open(path string, opts Options) (*Store, error) {
 				return fmt.Errorf("unsupported schema version")
 			}
 			previousVersion = binary.BigEndian.Uint64(v)
-			if previousVersion != legacySchemaVersion && previousVersion != credentialSchemaVersion && previousVersion != policySchemaVersion && previousVersion != policySwitchSchemaVersion && previousVersion != schemaVersion {
+			if previousVersion != legacySchemaVersion && previousVersion != credentialSchemaVersion && previousVersion != policySchemaVersion && previousVersion != policySwitchSchemaVersion && previousVersion != publicListSchemaVersion && previousVersion != schemaVersion {
 				return fmt.Errorf("unsupported schema version")
 			}
 		}
@@ -151,6 +152,9 @@ func Open(path string, opts Options) (*Store, error) {
 			return err
 		}
 		if err := initializeDNSPolicyData(tx, previousVersion); err != nil {
+			return err
+		}
+		if err := migratePublicListPublicationState(tx, previousVersion); err != nil {
 			return err
 		}
 		var buf [8]byte

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,27 @@ func mysqlTestUserRow(now time.Time, used uint64, tokens float64, rateAt int64) 
 
 func mysqlTestCredentialRow(now time.Time, tokenHash []byte) *sqlmock.Rows {
 	return sqlmock.NewRows(mysqlCredentialTestColumns).AddRow("credential-1", "user-1", "phone", nil, nil, now.Add(-time.Hour).UnixNano(), now.Add(-time.Hour).UnixNano(), nil, tokenHash, 1)
+}
+
+func expectMySQLPublicListV5Upgrade(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(regexp.QuoteMeta(mysqlControlV5PublicListColumnsQuery)).WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlControlV5PublicListAlter(nil))).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_public_lists SET default_enabled=enabled, published=TRUE, snapshot_status=IF(last_refresh_status='success','current',IF(entry_count>0,'stale','missing')), snapshot_sha256='', last_successful_at_ns=IF(last_refresh_status='success',last_refreshed_at_ns,NULL)`)).WillReturnResult(sqlmock.NewResult(0, 0))
+}
+
+func TestMySQLControlV5PublicListAlterIsIdempotent(t *testing.T) {
+	existing := make(map[string]struct{}, len(mysqlControlV5PublicListColumns))
+	for _, column := range mysqlControlV5PublicListColumns {
+		existing[column.name] = struct{}{}
+	}
+	if got := mysqlControlV5PublicListAlter(existing); got != "" {
+		t.Fatalf("complete schema alter=%q", got)
+	}
+	delete(existing, "published")
+	got := mysqlControlV5PublicListAlter(existing)
+	if !strings.Contains(got, "ADD COLUMN published BOOLEAN NOT NULL DEFAULT TRUE") || strings.Count(got, "ADD COLUMN") != 1 {
+		t.Fatalf("partial schema alter=%q", got)
+	}
 }
 
 func TestMySQLAuthenticateCredential(t *testing.T) {
@@ -59,6 +81,7 @@ func TestInitializeMySQLControlUpgradesV1Schema(t *testing.T) {
 	for _, statement := range mysqlControlMigrations[1:] {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	expectMySQLPublicListV5Upgrade(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -83,6 +106,7 @@ func TestInitializeMySQLControlUpgradesV2PolicySettings(t *testing.T) {
 	for _, statement := range mysqlControlMigrations[1:] {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	expectMySQLPublicListV5Upgrade(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -105,6 +129,7 @@ func TestInitializeMySQLControlUpgradesV3PublicLists(t *testing.T) {
 	for _, statement := range mysqlControlMigrations[1:] {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	expectMySQLPublicListV5Upgrade(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -132,7 +157,31 @@ func TestInitializeMySQLControlResumesV3UpgradeAfterAlter(t *testing.T) {
 	for _, statement := range mysqlControlMigrations[1:] {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
+	expectMySQLPublicListV5Upgrade(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := initializeMySQLControl(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitializeMySQLControlConvergesSchemaWhenVersionRowIsMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT GET_LOCK('mosdns_x_control_schema', 10)`)).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(1))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlControlMigrations[0])).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT version FROM mosdns_schema_migrations WHERE component = 'control'`)).WillReturnRows(sqlmock.NewRows([]string{"version"}))
+	for _, statement := range mysqlControlMigrations[1:] {
+		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
+	}
+	expectMySQLPublicListV5Upgrade(mock)
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_schema_migrations (component, version) VALUES ('control', ?)`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
 		t.Fatal(err)

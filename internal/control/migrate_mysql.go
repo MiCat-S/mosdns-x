@@ -145,11 +145,13 @@ func migratePublicLists(ctx context.Context, source *bbolt.Tx, target *sql.Tx, r
 	if lists == nil {
 		return nil
 	}
+	sourceVersion := binary.BigEndian.Uint64(source.Bucket(bMeta).Get(kSchema))
 	if err := lists.ForEach(func(_, value []byte) error {
 		var list PublicList
 		if err := json.Unmarshal(value, &list); err != nil {
 			return err
 		}
+		preparePublicListForMySQLMigration(sourceVersion, &list)
 		if err := insertMySQLPublicList(ctx, target, list); err != nil {
 			return err
 		}
@@ -173,6 +175,12 @@ func migratePublicLists(ctx context.Context, source *bbolt.Tx, target *sql.Tx, r
 		}
 		return err
 	})
+}
+
+func preparePublicListForMySQLMigration(sourceVersion uint64, list *PublicList) {
+	if sourceVersion == publicListSchemaVersion {
+		migrateLegacyPublicListState(list)
+	}
 }
 
 func migrateDNSPolicies(ctx context.Context, source *bbolt.Tx, target *sql.Tx, report *MySQLMigrationReport) error {

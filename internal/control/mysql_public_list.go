@@ -8,22 +8,27 @@ import (
 	"time"
 )
 
-const mysqlPublicListColumns = `id, name, category, url, format, enabled, sha256, refresh_seconds, entry_count, last_refresh_status, last_refreshed_at_ns, last_refresh_error, created_at_ns, updated_at_ns`
-const mysqlPublicListQualifiedColumns = `l.id, l.name, l.category, l.url, l.format, l.enabled, l.sha256, l.refresh_seconds, l.entry_count, l.last_refresh_status, l.last_refreshed_at_ns, l.last_refresh_error, l.created_at_ns, l.updated_at_ns`
+const mysqlPublicListColumns = `id, name, category, url, format, enabled, default_enabled, published, sha256, refresh_seconds, entry_count, last_refresh_status, last_refreshed_at_ns, last_refresh_error, snapshot_status, snapshot_sha256, last_successful_at_ns, created_at_ns, updated_at_ns`
+const mysqlPublicListQualifiedColumns = `l.id, l.name, l.category, l.url, l.format, l.enabled, l.default_enabled, l.published, l.sha256, l.refresh_seconds, l.entry_count, l.last_refresh_status, l.last_refreshed_at_ns, l.last_refresh_error, l.snapshot_status, l.snapshot_sha256, l.last_successful_at_ns, l.created_at_ns, l.updated_at_ns`
 
 func scanMySQLPublicList(row sqlScanner) (PublicList, error) {
 	var out PublicList
-	var format, refreshStatus string
+	var format, refreshStatus, snapshotStatus string
 	var created, updated int64
-	var refreshedAt sql.NullInt64
-	if err := row.Scan(&out.ID, &out.Name, &out.Category, &out.URL, &format, &out.Enabled, &out.SHA256, &out.RefreshSeconds, &out.EntryCount, &refreshStatus, &refreshedAt, &out.LastRefreshError, &created, &updated); err != nil {
+	var refreshedAt, successfulAt sql.NullInt64
+	if err := row.Scan(&out.ID, &out.Name, &out.Category, &out.URL, &format, &out.Enabled, &out.DefaultEnabled, &out.Published, &out.SHA256, &out.RefreshSeconds, &out.EntryCount, &refreshStatus, &refreshedAt, &out.LastRefreshError, &snapshotStatus, &out.SnapshotSHA256, &successfulAt, &created, &updated); err != nil {
 		return out, err
 	}
 	out.Format = PublicListFormat(format)
 	out.LastRefreshStatus = PublicListRefreshStatus(refreshStatus)
+	out.SnapshotStatus = PublicListSnapshotStatus(snapshotStatus)
 	if refreshedAt.Valid {
 		value := time.Unix(0, refreshedAt.Int64).UTC()
 		out.LastRefreshedAt = &value
+	}
+	if successfulAt.Valid {
+		value := time.Unix(0, successfulAt.Int64).UTC()
+		out.LastSuccessfulAt = &value
 	}
 	out.CreatedAt, out.UpdatedAt = time.Unix(0, created).UTC(), time.Unix(0, updated).UTC()
 	normalizeStoredPublicList(&out)
@@ -46,7 +51,7 @@ func mysqlPublicList(ctx context.Context, q interface {
 
 func insertMySQLPublicList(ctx context.Context, tx *sql.Tx, list PublicList) error {
 	normalizeStoredPublicList(&list)
-	_, err := tx.ExecContext(ctx, `INSERT INTO mosdns_public_lists (id, name, name_normalized, category, url, format, enabled, sha256, refresh_seconds, entry_count, last_refresh_status, last_refreshed_at_ns, last_refresh_error, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, list.ID, list.Name, strings.ToLower(list.Name), list.Category, list.URL, string(list.Format), list.Enabled, list.SHA256, list.RefreshSeconds, list.EntryCount, string(list.LastRefreshStatus), mysqlPublicListTimeValue(list.LastRefreshedAt), list.LastRefreshError, list.CreatedAt.UnixNano(), list.UpdatedAt.UnixNano())
+	_, err := tx.ExecContext(ctx, `INSERT INTO mosdns_public_lists (id, name, name_normalized, category, url, format, enabled, default_enabled, published, sha256, refresh_seconds, entry_count, last_refresh_status, last_refreshed_at_ns, last_refresh_error, snapshot_status, snapshot_sha256, last_successful_at_ns, created_at_ns, updated_at_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, list.ID, list.Name, strings.ToLower(list.Name), list.Category, list.URL, string(list.Format), list.DefaultEnabled, list.DefaultEnabled, list.Published, list.SHA256, list.RefreshSeconds, list.EntryCount, string(list.LastRefreshStatus), mysqlPublicListTimeValue(list.LastRefreshedAt), list.LastRefreshError, string(list.SnapshotStatus), list.SnapshotSHA256, mysqlPublicListTimeValue(list.LastSuccessfulAt), list.CreatedAt.UnixNano(), list.UpdatedAt.UnixNano())
 	return err
 }
 
@@ -67,7 +72,7 @@ func (s *MySQLStore) CreatePublicList(ctx context.Context, actor string, spec Pu
 		return PublicList{}, err
 	}
 	now := s.clock.Now().UTC()
-	out := PublicList{ID: id, Name: spec.Name, Category: spec.Category, URL: spec.URL, Format: spec.Format, Enabled: spec.Enabled, SHA256: spec.SHA256, RefreshSeconds: spec.RefreshSeconds, LastRefreshStatus: PublicListRefreshNever, CreatedAt: now, UpdatedAt: now}
+	out := PublicList{ID: id, Name: spec.Name, Category: spec.Category, URL: spec.URL, Format: spec.Format, Enabled: spec.Enabled, DefaultEnabled: *spec.DefaultEnabled, Published: *spec.Published, SHA256: spec.SHA256, RefreshSeconds: spec.RefreshSeconds, LastRefreshStatus: PublicListRefreshNever, SnapshotStatus: PublicListSnapshotMissing, CreatedAt: now, UpdatedAt: now}
 	err = s.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if err := requireMySQLAdmin(ctx, tx, actor); err != nil {
 			return err
@@ -98,12 +103,76 @@ func (s *MySQLStore) UpdatePublicList(ctx context.Context, actor, id string, pat
 		if err != nil {
 			return err
 		}
-		out.UpdatedAt = now
-		_, err = tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET name=?, name_normalized=?, category=?, url=?, format=?, enabled=?, sha256=?, refresh_seconds=?, updated_at_ns=? WHERE id=?`, out.Name, strings.ToLower(out.Name), out.Category, out.URL, string(out.Format), out.Enabled, out.SHA256, out.RefreshSeconds, now.UnixNano(), id)
+		out.UpdatedAt = nextPublicListUpdatedAt(current.UpdatedAt, now)
+		_, err = tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET name=?, name_normalized=?, category=?, url=?, format=?, enabled=?, default_enabled=?, published=?, sha256=?, refresh_seconds=?, updated_at_ns=? WHERE id=?`, out.Name, strings.ToLower(out.Name), out.Category, out.URL, string(out.Format), out.DefaultEnabled, out.DefaultEnabled, out.Published, out.SHA256, out.RefreshSeconds, out.UpdatedAt.UnixNano(), id)
 		if err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "update_public_list", "public_list", id, map[string]any{"before": current, "after": out}, now)
+	})
+	return out, err
+}
+
+func (s *MySQLStore) CommitPublicListSnapshot(ctx context.Context, actor, id string, expectedUpdatedAt time.Time, spec PublicListSpec, refresh PublicListRefreshResult) (PublicList, error) {
+	spec, err := normalizePublicListSpec(spec)
+	if err != nil {
+		return PublicList{}, err
+	}
+	if refresh.Status != PublicListRefreshSuccess || refresh.SHA256 == "" {
+		return PublicList{}, ErrInvalidInput
+	}
+	if id == "" {
+		id, err = randomText(16)
+		if err != nil {
+			return PublicList{}, err
+		}
+	}
+	now := s.clock.Now().UTC()
+	var out PublicList
+	err = s.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if err := requireMySQLAdmin(ctx, tx, actor); err != nil {
+			return err
+		}
+		current, currentErr := mysqlPublicList(ctx, tx, id, true)
+		if currentErr != nil && !errors.Is(currentErr, ErrNotFound) {
+			return currentErr
+		}
+		if currentErr == nil {
+			if expectedUpdatedAt.IsZero() || !current.UpdatedAt.Equal(expectedUpdatedAt) {
+				return ErrConflict
+			}
+			published := true
+			defaultEnabled := *spec.DefaultEnabled
+			out, err = applyPublicListPatch(current, PublicListPatch{
+				Name: &spec.Name, Category: &spec.Category, URL: &spec.URL, Format: &spec.Format,
+				DefaultEnabled: &defaultEnabled, Published: &published, SHA256: &spec.SHA256,
+				RefreshSeconds: &spec.RefreshSeconds,
+			})
+			if err != nil {
+				return err
+			}
+			out.Published = true
+			out.UpdatedAt = nextPublicListUpdatedAt(current.UpdatedAt, now)
+			if err := applyPublicListRefresh(&out, refresh); err != nil {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET name=?, name_normalized=?, category=?, url=?, format=?, enabled=?, default_enabled=?, published=?, sha256=?, refresh_seconds=?, entry_count=?, last_refresh_status=?, last_refreshed_at_ns=?, last_refresh_error='', snapshot_status=?, snapshot_sha256=?, last_successful_at_ns=?, updated_at_ns=? WHERE id=?`, out.Name, strings.ToLower(out.Name), out.Category, out.URL, string(out.Format), out.DefaultEnabled, out.DefaultEnabled, out.Published, out.SHA256, out.RefreshSeconds, out.EntryCount, string(out.LastRefreshStatus), mysqlPublicListTimeValue(out.LastRefreshedAt), string(out.SnapshotStatus), out.SnapshotSHA256, mysqlPublicListTimeValue(out.LastSuccessfulAt), out.UpdatedAt.UnixNano(), id)
+			if err != nil {
+				return err
+			}
+		} else {
+			if !expectedUpdatedAt.IsZero() {
+				return ErrConflict
+			}
+			out = PublicList{ID: id, Name: spec.Name, Category: spec.Category, URL: spec.URL, Format: spec.Format, Enabled: *spec.DefaultEnabled, DefaultEnabled: *spec.DefaultEnabled, Published: true, SHA256: spec.SHA256, RefreshSeconds: spec.RefreshSeconds, CreatedAt: now, UpdatedAt: now}
+			if err := applyPublicListRefresh(&out, refresh); err != nil {
+				return err
+			}
+			if err := insertMySQLPublicList(ctx, tx, out); err != nil {
+				return err
+			}
+		}
+		return mysqlAudit(ctx, tx, actor, "publish_public_list", "public_list", id, map[string]any{"before": current, "after": out}, now)
 	})
 	return out, err
 }
@@ -117,10 +186,14 @@ func (s *MySQLStore) RecordPublicListRefresh(ctx context.Context, listID string,
 			return err
 		}
 		if result.Status == PublicListRefreshSuccess {
-			_, err := tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET entry_count=?, last_refresh_status=?, last_refreshed_at_ns=?, last_refresh_error='' WHERE id=?`, result.EntryCount, string(result.Status), result.RefreshedAt.UTC().UnixNano(), listID)
+			_, err := tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET entry_count=?, last_refresh_status=?, last_refreshed_at_ns=?, last_refresh_error='', snapshot_status='current', snapshot_sha256=?, last_successful_at_ns=? WHERE id=?`, result.EntryCount, string(result.Status), result.RefreshedAt.UTC().UnixNano(), strings.ToLower(result.SHA256), result.RefreshedAt.UTC().UnixNano(), listID)
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET last_refresh_status=?, last_refreshed_at_ns=?, last_refresh_error=? WHERE id=?`, string(result.Status), result.RefreshedAt.UTC().UnixNano(), safePublicListRefreshError(result.Error), listID)
+		if result.SnapshotMissing {
+			_, err := tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET entry_count=0, last_refresh_status=?, last_refreshed_at_ns=?, last_refresh_error=?, snapshot_status='missing', snapshot_sha256='' WHERE id=?`, string(result.Status), result.RefreshedAt.UTC().UnixNano(), safePublicListRefreshError(result.Error), listID)
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE mosdns_public_lists SET last_refresh_status=?, last_refreshed_at_ns=?, last_refresh_error=?, snapshot_status=IF(snapshot_status IN ('current','stale'),'stale','missing') WHERE id=?`, string(result.Status), result.RefreshedAt.UTC().UnixNano(), safePublicListRefreshError(result.Error), listID)
 		return err
 	})
 }
@@ -203,8 +276,12 @@ func (s *MySQLStore) SetUserPublicList(ctx context.Context, actor, userID, listI
 		if err := authorizeMySQLCredentialOwner(ctx, tx, actor, userID, now); err != nil {
 			return err
 		}
-		if _, err := mysqlPublicList(ctx, tx, listID, true); err != nil {
+		list, err := mysqlPublicList(ctx, tx, listID, true)
+		if err != nil {
 			return err
+		}
+		if !list.Published {
+			return ErrNotFound
 		}
 		if enabled == nil {
 			_, err := tx.ExecContext(ctx, `DELETE FROM mosdns_user_public_lists WHERE user_id=? AND list_id=?`, userID, listID)
@@ -238,25 +315,30 @@ func (s *MySQLStore) ListUserPublicLists(ctx context.Context, userID string, pag
 	if _, err := mysqlUser(op, s.db, userID, false); err != nil {
 		return out, mysqlStoreError(err)
 	}
-	rows, err := s.db.QueryContext(op, `SELECT `+mysqlPublicListQualifiedColumns+`, o.enabled FROM mosdns_public_lists l LEFT JOIN mosdns_user_public_lists o ON o.list_id=l.id AND o.user_id=? WHERE l.id>? ORDER BY l.id LIMIT ?`, userID, page.Cursor, limit+1)
+	rows, err := s.db.QueryContext(op, `SELECT `+mysqlPublicListQualifiedColumns+`, o.enabled FROM mosdns_public_lists l LEFT JOIN mosdns_user_public_lists o ON o.list_id=l.id AND o.user_id=? WHERE l.published=TRUE AND l.id>? ORDER BY l.id LIMIT ?`, userID, page.Cursor, limit+1)
 	if err != nil {
 		return out, mysqlStoreError(err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var list PublicList
-		var format, refreshStatus string
+		var format, refreshStatus, snapshotStatus string
 		var created, updated int64
-		var refreshedAt sql.NullInt64
+		var refreshedAt, successfulAt sql.NullInt64
 		var override sql.NullBool
-		if err := rows.Scan(&list.ID, &list.Name, &list.Category, &list.URL, &format, &list.Enabled, &list.SHA256, &list.RefreshSeconds, &list.EntryCount, &refreshStatus, &refreshedAt, &list.LastRefreshError, &created, &updated, &override); err != nil {
+		if err := rows.Scan(&list.ID, &list.Name, &list.Category, &list.URL, &format, &list.Enabled, &list.DefaultEnabled, &list.Published, &list.SHA256, &list.RefreshSeconds, &list.EntryCount, &refreshStatus, &refreshedAt, &list.LastRefreshError, &snapshotStatus, &list.SnapshotSHA256, &successfulAt, &created, &updated, &override); err != nil {
 			return out, mysqlStoreError(err)
 		}
 		list.Format = PublicListFormat(format)
 		list.LastRefreshStatus = PublicListRefreshStatus(refreshStatus)
+		list.SnapshotStatus = PublicListSnapshotStatus(snapshotStatus)
 		if refreshedAt.Valid {
 			value := time.Unix(0, refreshedAt.Int64).UTC()
 			list.LastRefreshedAt = &value
+		}
+		if successfulAt.Valid {
+			value := time.Unix(0, successfulAt.Int64).UTC()
+			list.LastSuccessfulAt = &value
 		}
 		list.CreatedAt, list.UpdatedAt = time.Unix(0, created).UTC(), time.Unix(0, updated).UTC()
 		normalizeStoredPublicList(&list)

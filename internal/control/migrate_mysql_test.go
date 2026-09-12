@@ -161,3 +161,17 @@ func expectExecutions(mock sqlmock.Sqlmock, query string, count int) {
 		mock.ExpectExec(regexp.QuoteMeta(query)).WillReturnResult(sqlmock.NewResult(1, 1))
 	}
 }
+
+func TestPreparePublicListForMySQLMigrationPreservesVersionSemantics(t *testing.T) {
+	legacy := PublicList{Enabled: true, LastRefreshStatus: PublicListRefreshSuccess, EntryCount: 12}
+	preparePublicListForMySQLMigration(publicListSchemaVersion, &legacy)
+	if !legacy.Published || !legacy.DefaultEnabled || legacy.SnapshotStatus != PublicListSnapshotStale {
+		t.Fatalf("legacy=%+v", legacy)
+	}
+
+	current := PublicList{DefaultEnabled: false, Published: false, SnapshotStatus: PublicListSnapshotMissing}
+	preparePublicListForMySQLMigration(schemaVersion, &current)
+	if current.Published || current.DefaultEnabled {
+		t.Fatalf("current record was treated as legacy: %+v", current)
+	}
+}

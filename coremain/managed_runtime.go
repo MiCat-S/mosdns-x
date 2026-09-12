@@ -73,12 +73,19 @@ type ManagedRuntimeService struct {
 }
 
 func prepareManagedRuntimeConfig(cfg *Config) (*Config, *Config, *runtimeconfig.Store, runtimeconfig.Config, string, error) {
-	if cfg.Control == nil || strings.TrimSpace(cfg.Control.ManagedConfig) == "" {
+	if cfg.Control == nil {
 		return cfg, nil, nil, runtimeconfig.Config{}, "", nil
 	}
 	base, err := cloneConfig(cfg)
 	if err != nil {
 		return nil, nil, nil, runtimeconfig.Config{}, "", err
+	}
+	if strings.TrimSpace(cfg.Control.ManagedConfig) == "" {
+		view, err := inspectManagedConfig(cfg)
+		if err != nil {
+			return nil, nil, nil, runtimeconfig.Config{}, "", err
+		}
+		return cfg, base, nil, view, "", nil
 	}
 	store, err := runtimeconfig.NewStore(cfg.Control.ManagedConfig, managedHistoryLimit)
 	if err != nil {
@@ -104,7 +111,7 @@ func prepareManagedRuntimeConfig(cfg *Config) (*Config, *Config, *runtimeconfig.
 }
 
 func newManagedRuntimeService(host *Mosdns, store *runtimeconfig.Store, base, effective *Config, view runtimeconfig.Config, revision string) *ManagedRuntimeService {
-	if store == nil {
+	if host == nil || base == nil || effective == nil {
 		return nil
 	}
 	return &ManagedRuntimeService{
@@ -115,20 +122,25 @@ func newManagedRuntimeService(host *Mosdns, store *runtimeconfig.Store, base, ef
 }
 
 func (s *ManagedRuntimeService) Get(context.Context) (ManagedRuntimeState, error) {
-	if s == nil {
+	if s == nil || s.base == nil || s.effective == nil {
 		return ManagedRuntimeState{}, ErrManagedRuntimeDisabled
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	view, err := cloneManagedConfig(s.view)
-	if err != nil {
-		return ManagedRuntimeState{}, err
+	return s.stateLocked()
+}
+
+func (s *ManagedRuntimeService) DataProviders(context.Context) ([]runtimeconfig.DataProviderSummary, error) {
+	if s == nil || s.effective == nil {
+		return nil, ErrManagedRuntimeDisabled
 	}
-	return ManagedRuntimeState{Revision: s.revision, Config: view}, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return inspectDataProviders(s.effective), nil
 }
 
 func (s *ManagedRuntimeService) Validate(ctx context.Context, sessionID, expectedRevision string, desired runtimeconfig.Config) (ManagedRuntimeValidation, error) {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return ManagedRuntimeValidation{}, ErrManagedRuntimeDisabled
 	}
 	if strings.TrimSpace(sessionID) == "" {
@@ -169,7 +181,7 @@ func (s *ManagedRuntimeService) Validate(ctx context.Context, sessionID, expecte
 }
 
 func (s *ManagedRuntimeService) Apply(ctx context.Context, sessionID, token string) (ManagedRuntimeApplyResult, error) {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return ManagedRuntimeApplyResult{}, ErrManagedRuntimeDisabled
 	}
 	if strings.TrimSpace(sessionID) == "" {
@@ -192,14 +204,14 @@ func (s *ManagedRuntimeService) Apply(ctx context.Context, sessionID, token stri
 }
 
 func (s *ManagedRuntimeService) History(context.Context) ([]runtimeconfig.Revision, error) {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return nil, ErrManagedRuntimeDisabled
 	}
 	return s.store.History()
 }
 
 func (s *ManagedRuntimeService) Rollback(ctx context.Context, expectedRevision, targetRevision string) (ManagedRuntimeApplyResult, error) {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return ManagedRuntimeApplyResult{}, ErrManagedRuntimeDisabled
 	}
 	s.mu.Lock()
@@ -215,7 +227,7 @@ func (s *ManagedRuntimeService) Rollback(ctx context.Context, expectedRevision, 
 }
 
 func (s *ManagedRuntimeService) Reload(ctx context.Context) (ManagedRuntimeReloadResult, error) {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return ManagedRuntimeReloadResult{}, ErrManagedRuntimeDisabled
 	}
 	s.mu.Lock()
@@ -281,7 +293,7 @@ func (s *ManagedRuntimeService) Reload(ctx context.Context) (ManagedRuntimeReloa
 }
 
 func (s *ManagedRuntimeService) Probe(ctx context.Context, tag string) ([]RuntimeProbe, error) {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return nil, ErrManagedRuntimeDisabled
 	}
 	s.mu.Lock()
@@ -505,7 +517,97 @@ func (s *ManagedRuntimeService) stateLocked() (ManagedRuntimeState, error) {
 	if err != nil {
 		return ManagedRuntimeState{}, err
 	}
-	return ManagedRuntimeState{Revision: s.revision, Config: view}, nil
+	baseView, err := inspectManagedConfig(s.base)
+	if err != nil {
+		return ManagedRuntimeState{}, err
+	}
+	managed := s.store != nil
+	runningProviders := inspectDataProviders(s.effective)
+	baseProviders := inspectDataProviders(s.base)
+	clearsCaches := hasManagedMemoryCache(view)
+	running, err := runtimeconfig.Snapshot("running_generation", view, pluginSources(s.effective.Plugins), runningProviders, managed, clearsCaches)
+	if err != nil {
+		return ManagedRuntimeState{}, err
+	}
+	base, err := runtimeconfig.Snapshot("loaded_base", baseView, pluginSources(s.base.Plugins), baseProviders, managed, hasManagedMemoryCache(baseView))
+	if err != nil {
+		return ManagedRuntimeState{}, err
+	}
+	base.Status = "last_loaded"
+	mode := "read_only"
+	setup := runtimeconfig.Setup{
+		ManagedConfigConfigured: managed,
+		ConfigSourceAvailable:   s.base.sourcePath != "",
+		Reason:                  "managed_config_not_configured",
+	}
+	capabilities := runtimeconfig.Capabilities{View: true}
+	if managed {
+		mode = "managed"
+		setup.Reason = ""
+		capabilities.Edit = true
+		capabilities.Validate = true
+		capabilities.Apply = true
+		capabilities.Reload = setup.ConfigSourceAvailable
+		capabilities.History = true
+		capabilities.Rollback = true
+		capabilities.Probe = hasSafeManagedForward(view)
+	}
+	return ManagedRuntimeState{
+		Revision: s.revision, Config: view, Mode: mode, Setup: setup, Capabilities: capabilities,
+		Sources: runtimeconfig.Sources{
+			Running: running,
+			Base:    base,
+			Candidate: runtimeconfig.CandidateSnapshot{
+				Kind: "validated_candidate", Status: "unavailable", Reason: "session_scoped_not_exposed",
+			},
+		},
+	}, nil
+}
+
+func hasManagedMemoryCache(config runtimeconfig.Config) bool {
+	for _, plugin := range config.Plugins {
+		if plugin.Type == "cache" && plugin.Editable && plugin.Cache != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSafeManagedForward(config runtimeconfig.Config) bool {
+	for _, plugin := range config.Plugins {
+		if plugin.Type == "fast_forward" && plugin.Editable && plugin.FastForward != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func inspectDataProviders(config *Config) []runtimeconfig.DataProviderSummary {
+	if config == nil || len(config.DataProviders) == 0 {
+		return []runtimeconfig.DataProviderSummary{}
+	}
+	result := make([]runtimeconfig.DataProviderSummary, 0, len(config.DataProviders))
+	for _, provider := range config.DataProviders {
+		item := runtimeconfig.DataProviderSummary{
+			Tag: provider.Tag, File: provider.File, AutoReload: provider.AutoReload, Declared: true,
+			Capability: runtimeconfig.ComponentCapability{
+				Name: provider.Tag, View: true, RestartRequired: true, Reason: "configured_in_main_config",
+			},
+			FileState: runtimeconfig.DataProviderFileState{Status: "unavailable"},
+			RuntimeState: runtimeconfig.DataProviderRuntimeState{
+				Status: "unsupported", Reason: "runtime_load_metrics_unavailable",
+			},
+		}
+		if info, err := os.Stat(provider.File); err == nil && info.Mode().IsRegular() {
+			size := info.Size()
+			modified := info.ModTime().UTC()
+			item.FileState = runtimeconfig.DataProviderFileState{Status: "available", SizeBytes: &size, ModifiedAt: &modified}
+		} else if errors.Is(err, os.ErrNotExist) {
+			item.FileState.Status = "missing"
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 func (s *ManagedRuntimeService) pruneValidationsLocked(now time.Time) {

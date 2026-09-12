@@ -5,7 +5,11 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import {
+  createMemoryRouter,
+  MemoryRouter,
+  RouterProvider,
+} from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import {
@@ -44,13 +48,20 @@ const response = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 function mount(path: string) {
-  return render(
-    <MemoryRouter initialEntries={[path]}>
-      <SessionProvider>
-        <App />
-      </SessionProvider>
-    </MemoryRouter>,
+  const router = createMemoryRouter(
+    [
+      {
+        path: "*",
+        element: (
+          <SessionProvider>
+            <App />
+          </SessionProvider>
+        ),
+      },
+    ],
+    { initialEntries: [path] },
   );
+  return render(<RouterProvider router={router} />);
 }
 beforeEach(() => vi.restoreAllMocks());
 describe("前端访问与秘密处理", () => {
@@ -239,8 +250,14 @@ describe("前端访问与秘密处理", () => {
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(String(init.body))).toEqual({ enabled: false });
     expect(screen.getByText(/已覆盖管理员默认设置/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "恢复管理员默认值" }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+    expect(
+      JSON.parse(String((fetcher.mock.calls[2][1] as RequestInit).body)),
+    ).toEqual({ enabled: null });
+    expect(screen.getByText(/继承管理员默认设置/)).toBeInTheDocument();
   });
-  it("管理员可以新增并刷新公共列表", async () => {
+  it("管理员可以预览、发布并刷新公共列表", async () => {
     const list = {
       id: "list-1",
       name: "广告拦截",
@@ -260,7 +277,20 @@ describe("前端访问与秘密处理", () => {
       .mockImplementation((url: string, init?: RequestInit) => {
         if (init?.method === "POST" && url.endsWith("/refresh"))
           return Promise.resolve(response({}, 204));
-        if (init?.method === "POST")
+        if (init?.method === "POST" && url.endsWith("/validate"))
+          return Promise.resolve(
+            response({
+              valid: true,
+              validation_token: "candidate-token",
+              format: "mosdns",
+              entry_count: 42,
+              invalid_entry_count: 1,
+              invalid_entries: [{ line: 3, reason: "不是有效域名" }],
+              samples: ["ads.example"],
+              sha256: "a".repeat(64),
+            }),
+          );
+        if (init?.method === "POST" && url.endsWith("/publish"))
           return Promise.resolve(response(list, 201));
         return Promise.resolve(response({ items: [list] }));
       });
@@ -277,6 +307,7 @@ describe("前端访问与秘密处理", () => {
         ),
       ).toBe(true),
     );
+    fireEvent.click(screen.getAllByRole("button", { name: "新建订阅" })[0]);
     fireEvent.change(screen.getByLabelText("名称"), {
       target: { value: "隐私规则" },
     });
@@ -286,29 +317,168 @@ describe("前端访问与秘密处理", () => {
     fireEvent.change(screen.getByLabelText("HTTPS URL"), {
       target: { value: "https://lists.example/privacy.txt" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "添加公共列表" }));
+    fireEvent.click(screen.getByRole("button", { name: "验证并预览" }));
+    expect(
+      await screen.findByText("验证通过，可以确认发布"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("42")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认发布" }));
     await waitFor(() =>
       expect(
         fetcher.mock.calls.some(
           ([url, init]) =>
-            String(url).endsWith("/admin/public-lists") &&
+            String(url).endsWith("/admin/public-lists/publish") &&
             (init as RequestInit).method === "POST",
         ),
       ).toBe(true),
     );
     const post = fetcher.mock.calls.find(
       ([url, init]) =>
-        String(url).endsWith("/admin/public-lists") &&
+        String(url).endsWith("/admin/public-lists/publish") &&
         (init as RequestInit).method === "POST",
     );
-    expect(JSON.parse(String((post?.[1] as RequestInit).body))).toMatchObject({
-      name: "隐私规则",
-      category: "隐私增强",
-      url: "https://lists.example/privacy.txt",
+    expect(JSON.parse(String((post?.[1] as RequestInit).body))).toEqual({
+      validation_token: "candidate-token",
+    });
+  });
+  it("管理员公共列表区分空目录与加载失败，创建表单只在弹窗出现", async () => {
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValue(response({ items: [] }));
+    vi.stubGlobal("fetch", fetcher);
+    const { unmount } = render(<AdminPublicListsPage />);
+    expect(
+      await screen.findByText(
+        "加载失败不代表列表为空。重试后再进行发布或下架操作。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("名称")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(
+      await screen.findByText("尚未创建用户拦截订阅。"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "新建订阅" })[0]);
+    const dialog = screen.getByRole("dialog", {
+      name: "新建用户拦截订阅",
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/域名命中后返回 NXDOMAIN/),
+    ).toBeInTheDocument();
+    unmount();
+  });
+  it("公共列表验证结果只绑定发起验证时的表单内容", async () => {
+    let resolveValidation: ((value: Response) => void) | undefined;
+    const fetcher = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) => {
+        if (init?.method === "POST" && url.endsWith("/validate")) {
+          return new Promise<Response>((resolve) => {
+            resolveValidation = resolve;
+          });
+        }
+        return Promise.resolve(response({ items: [] }));
+      });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AdminPublicListsPage />);
+    await screen.findByText("尚未创建用户拦截订阅。");
+    fireEvent.click(screen.getAllByRole("button", { name: "新建订阅" })[0]);
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "广告规则" },
+    });
+    const url = screen.getByLabelText("HTTPS URL");
+    fireEvent.change(url, {
+      target: { value: "https://lists.example/old.txt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "验证并预览" }));
+    fireEvent.change(url, {
+      target: { value: "https://lists.example/new.txt" },
+    });
+    resolveValidation?.(
+      response({
+        valid: true,
+        validation_token: "old-token",
+        format: "mosdns",
+        entry_count: 1,
+      }),
+    );
+    expect(
+      await screen.findByText("表单内容已变化，请重新验证当前内容。"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认发布" })).toBeDisabled();
+  });
+  it("编辑已发布列表的普通元数据不会由前端主动下架", async () => {
+    const list = {
+      id: "list-1",
+      name: "广告拦截",
+      category: "",
+      url: "https://lists.example/ads.txt",
       format: "mosdns",
       enabled: true,
+      default_enabled: true,
+      published: true,
       refresh_seconds: 3600,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    };
+    const fetcher = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) =>
+        init?.method === "PATCH"
+          ? Promise.resolve(response({ ...list, name: "新名称" }))
+          : Promise.resolve(response({ items: [list] })),
+      );
+    vi.stubGlobal("fetch", fetcher);
+    render(<AdminPublicListsPage />);
+    await screen.findByText("广告拦截");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "新名称" },
     });
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.some(([, init]) => init?.method === "PATCH"),
+      ).toBe(true),
+    );
+    const patchCall = fetcher.mock.calls.find(
+      ([, init]) => init?.method === "PATCH",
+    );
+    expect(
+      JSON.parse(String((patchCall?.[1] as RequestInit).body)),
+    ).not.toHaveProperty("published");
+  });
+  it("用户页只展示已发布列表并说明显式覆盖和下架行为", async () => {
+    const unpublished = {
+      id: "draft-1",
+      name: "待发布规则",
+      category: "草稿",
+      url: "https://lists.example/draft.txt",
+      format: "mosdns",
+      enabled: true,
+      published: false,
+      default_enabled: true,
+      refresh_seconds: 3600,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          items: [{ list: unpublished, enabled: true, overridden: true }],
+        }),
+      ),
+    );
+    render(
+      <MemoryRouter>
+        <PublicListsPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("暂无可订阅列表")).toBeInTheDocument();
+    expect(screen.queryByText("待发布规则")).not.toBeInTheDocument();
+    expect(screen.getByText(/管理员下架列表后/)).toBeInTheDocument();
   });
   it("查询明细显示客户端、Answer IP、EDNS 和 ECS，并兼容空字段", async () => {
     vi.stubGlobal(
@@ -619,6 +789,61 @@ describe("前端访问与秘密处理", () => {
       "href",
       "/admin/runtime",
     );
+  });
+  it("运行配置有草稿时取消退出不会注销会话", async () => {
+    const fetcher = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) => {
+        if (url.endsWith("/session")) {
+          if (init?.method === "DELETE")
+            return Promise.resolve(response({}, 204));
+          return Promise.resolve(
+            response({
+              user: { ...user, role: "admin" },
+              csrf_token: "c",
+              expires_at: "2027-01-01T00:00:00Z",
+            }),
+          );
+        }
+        if (url.endsWith("/admin/runtime/history"))
+          return Promise.resolve(response({ items: [] }));
+        if (url.endsWith("/admin/runtime/config"))
+          return Promise.resolve(
+            response({
+              revision: "runtime-revision",
+              config: {
+                version: 1,
+                query_log: false,
+                telemetry: {
+                  aggregate_retention_days: 7,
+                  query_retention_hours: 24,
+                  max_query_records: 100000,
+                },
+                plugins: [],
+              },
+            }),
+          );
+        return Promise.resolve(response({ items: [] }));
+      });
+    vi.stubGlobal("fetch", fetcher);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    mount("/admin/runtime");
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "记录查询明细" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(confirm).toHaveBeenCalledWith(
+      "运行配置还有未保存的修改，确定退出登录吗？",
+    );
+    expect(
+      fetcher.mock.calls.some(
+        ([url, init]) =>
+          String(url).endsWith("/session") && init?.method === "DELETE",
+      ),
+    ).toBe(false);
+    expect(
+      screen.getByRole("heading", { name: "运行配置" }),
+    ).toBeInTheDocument();
   });
   it("本地时间往返保持同一时刻", () => {
     const value = "2026-07-04T16:30:00.000Z";

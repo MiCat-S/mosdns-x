@@ -104,15 +104,22 @@ export interface PublicList {
   id: string;
   name: string;
   category?: string;
-  url: string;
+  url?: string;
   format: PublicListFormat;
   enabled: boolean;
+  /** Legacy `enabled` is used when these v2 fields are absent. */
+  published?: boolean;
+  default_enabled?: boolean;
   sha256?: string;
   refresh_seconds: number;
   entry_count?: number;
   last_refresh_status?: string;
   last_refreshed_at?: string;
   last_refresh_error?: string;
+  last_successful_at?: string;
+  snapshot_available?: boolean;
+  snapshot_status?: "missing" | "current" | "stale";
+  snapshot_sha256?: string;
   created_at: string;
   updated_at: string;
 }
@@ -120,6 +127,58 @@ export interface UserPublicList {
   list: PublicList;
   enabled: boolean;
   overridden: boolean;
+}
+export interface PublicListValidation {
+  valid: boolean;
+  validation_token: string;
+  expires_at?: string;
+  format: PublicListFormat;
+  entry_count: number;
+  invalid_entry_count?: number;
+  invalid_entries?: Array<{ line?: number; reason: string }>;
+  samples?: string[];
+  sha256?: string;
+}
+export interface RuntimeDataProvider {
+  tag: string;
+  file?: string;
+  auto_reload?: boolean;
+  declared?: boolean;
+  capability?: RuntimeCapability;
+  file_state?: {
+    status: string;
+    size_bytes?: number | null;
+    modified_at?: string | null;
+  };
+  runtime_state?: {
+    status: string;
+    entry_count?: number | null;
+    loaded_at?: string | null;
+    reason?: string;
+  };
+}
+export interface RuntimeCapability {
+  name?: string;
+  view: boolean;
+  edit: boolean;
+  hot_reload: boolean;
+  restart_required: boolean;
+  clears_memory_caches: boolean;
+  reason?: string;
+}
+export interface RuntimePluginSummary {
+  tag: string;
+  type: string;
+  safe_args?: Record<string, unknown>;
+  capability: RuntimeCapability;
+}
+export interface RuntimeSource {
+  kind: string;
+  status: string;
+  config?: RuntimeConfig;
+  plugins?: RuntimePluginSummary[];
+  data_providers?: RuntimeDataProvider[];
+  components?: RuntimeCapability[];
 }
 export interface RuntimeTelemetry {
   aggregate_retention_days: number;
@@ -166,6 +225,27 @@ export interface RuntimeConfig {
 export interface RuntimeState {
   revision: string;
   config: RuntimeConfig;
+  mode?: "managed" | "read_only";
+  setup?: {
+    managed_config_configured: boolean;
+    config_source_available: boolean;
+    reason?: string;
+  };
+  capabilities?: {
+    view: boolean;
+    edit: boolean;
+    validate: boolean;
+    apply: boolean;
+    reload: boolean;
+    history: boolean;
+    rollback: boolean;
+    probe: boolean;
+  };
+  sources?: {
+    running: RuntimeSource;
+    base: RuntimeSource;
+    candidate: RuntimeSource;
+  };
 }
 export interface RuntimeValidation {
   token: string;

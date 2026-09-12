@@ -13,7 +13,7 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
-import { allPages, json, message, request } from "./api";
+import { allPages, APIError, json, message, request } from "./api";
 import {
   Alert,
   Card,
@@ -40,6 +40,8 @@ import type {
   Page,
   PublicList,
   PublicListFormat,
+  PublicListValidation,
+  RuntimeDataProvider,
   QueryRecord,
   Stats,
   SystemInfo,
@@ -2845,17 +2847,22 @@ export function HelpPage() {
 }
 
 export function PublicListsPage() {
+  const [version, setVersion] = useState(0);
   const load = useCallback(
     (signal: AbortSignal) =>
       allPages<UserPublicList>("/me/public-lists", signal),
-    [],
+    [version],
   );
   const { data, error: loadError, loading, setData } = useLoad(load, [load]);
   const [error, setError] = useState("");
   const [updating, setUpdating] = useState<Set<string>>(new Set());
+  const publishedItems = useMemo(
+    () => (data ?? []).filter((item) => publicListPublished(item.list)),
+    [data],
+  );
   const groups = useMemo(() => {
     const grouped = new Map<string, UserPublicList[]>();
-    for (const item of data ?? []) {
+    for (const item of publishedItems) {
       const category = item.list.category?.trim() || "未分类";
       const items = grouped.get(category) ?? [];
       items.push(item);
@@ -2864,14 +2871,17 @@ export function PublicListsPage() {
     return [...grouped.entries()].sort(([left], [right]) =>
       left.localeCompare(right, "zh-CN"),
     );
-  }, [data]);
-  async function update(item: UserPublicList, enabled: boolean) {
+  }, [publishedItems]);
+  async function update(item: UserPublicList, enabled: boolean | null) {
     const id = item.list.id;
+    const nextEnabled = enabled ?? publicListDefaultEnabled(item.list);
     setUpdating((current) => new Set(current).add(id));
     setError("");
     setData((current) =>
       current?.map((entry) =>
-        entry.list.id === id ? { ...entry, enabled, overridden: true } : entry,
+        entry.list.id === id
+          ? { ...entry, enabled: nextEnabled, overridden: enabled !== null }
+          : entry,
       ),
     );
     try {
@@ -2879,6 +2889,9 @@ export function PublicListsPage() {
         `/me/public-lists/${encodeURIComponent(id)}`,
         json("PATCH", { enabled }),
       );
+      if (enabled === null) {
+        setVersion((current) => current + 1);
+      }
     } catch (reason) {
       setData((current) =>
         current?.map((entry) => (entry.list.id === id ? item : entry)),
@@ -2896,12 +2909,45 @@ export function PublicListsPage() {
     <>
       <PageTitle
         title="订阅的公共列表"
-        description="选择适用于当前账户的公共 DNS 规则源。"
+        description="选择命中后返回 NXDOMAIN 的拦截订阅。节点分流数据源不在此处配置。"
       />
-      <Alert error={loadError || error} />
+      <div aria-live="polite">
+        <Alert error={loadError || error} />
+      </div>
       {loading ? <Spinner /> : null}
-      {!loading && data?.length === 0 ? (
-        <Empty>管理员尚未发布公共列表。</Empty>
+      {!loading && loadError ? (
+        <Card title="公共列表加载失败">
+          <p className="caption">无法确认当前可订阅列表，请稍后重试。</p>
+          <div className="actions empty-actions">
+            <button onClick={() => setVersion((current) => current + 1)}>
+              重试
+            </button>
+            <Link className="button-link" to="/app/help">
+              查看说明
+            </Link>
+          </div>
+        </Card>
+      ) : null}
+      {!loading && !loadError && publishedItems.length === 0 ? (
+        <Card title="暂无可订阅列表">
+          <Empty>管理员尚未发布用户拦截订阅。</Empty>
+          <p className="caption public-list-explainer">
+            管理员下架列表后，服务端会停止应用该列表，但会保留你已保存的选择，以便再次发布时恢复。
+          </p>
+          <div className="actions empty-actions">
+            <button onClick={() => setVersion((current) => current + 1)}>
+              重新检查
+            </button>
+            <Link className="button-link" to="/app/help">
+              阅读格式与订阅说明
+            </Link>
+          </div>
+        </Card>
+      ) : null}
+      {publishedItems.length ? (
+        <div className="notice public-list-explainer">
+          未单独设置时继承管理员默认值；你的显式选择优先于后续默认值调整。管理员下架后列表停止生效，个人选择仍会保留。
+        </div>
       ) : null}
       {groups.map(([category, items]) => (
         <Card
@@ -2923,16 +2969,28 @@ export function PublicListsPage() {
                   {publicListRuntimeSummary(item.list)}
                 </small>
               </div>
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  checked={item.enabled}
-                  disabled={updating.has(item.list.id)}
-                  aria-label={`启用 ${item.list.name}`}
-                  onChange={(event) => update(item, event.target.checked)}
-                />
-                <span aria-hidden />
-              </label>
+              <div className="public-list-choice-actions">
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={item.enabled}
+                    disabled={updating.has(item.list.id)}
+                    aria-label={`启用 ${item.list.name}`}
+                    onChange={(event) => update(item, event.target.checked)}
+                  />
+                  <span aria-hidden />
+                </label>
+                {item.overridden ? (
+                  <button
+                    type="button"
+                    className="link-button"
+                    disabled={updating.has(item.list.id)}
+                    onClick={() => void update(item, null)}
+                  >
+                    恢复管理员默认值
+                  </button>
+                ) : null}
+              </div>
             </div>
           ))}
         </Card>
@@ -2946,8 +3004,9 @@ function publicListRuntimeSummary(list: PublicList) {
     list.entry_count === undefined
       ? "条目数待刷新"
       : `${fmt.num(list.entry_count)} 条目`;
-  const refreshed = list.last_refreshed_at
-    ? `上次刷新 ${fmt.date(list.last_refreshed_at)}`
+  const successfulAt = list.last_successful_at ?? list.last_refreshed_at;
+  const refreshed = successfulAt
+    ? `上次成功 ${fmt.date(successfulAt)}`
     : "尚未刷新";
   const status =
     list.last_refresh_status === "success"
@@ -2957,9 +3016,48 @@ function publicListRuntimeSummary(list: PublicList) {
         : list.last_refresh_status === "never"
           ? "从未刷新"
           : list.last_refresh_status;
+  const snapshot =
+    list.snapshot_status === "missing" || list.snapshot_available === false
+      ? "无可用快照"
+      : list.snapshot_status === "stale"
+        ? "继续使用上次成功快照"
+        : list.snapshot_status === "current"
+          ? "当前快照有效"
+          : successfulAt || list.entry_count
+            ? "已有有效快照"
+            : "尚无可用快照";
   return list.last_refresh_error
-    ? `${entries} · 刷新失败：${list.last_refresh_error} · ${refreshed}`
+    ? `${entries} · 最新刷新失败：${list.last_refresh_error} · ${refreshed} · ${snapshot}`
     : `${entries} · ${status ? status + " · " : ""}${refreshed}`;
+}
+
+function publicListRefreshLabel(status?: string) {
+  return (
+    {
+      success: "刷新成功",
+      error: "刷新失败",
+      never: "从未刷新",
+    }[status ?? ""] ?? "未知状态"
+  );
+}
+
+function dataProviderFileStateLabel(status?: string) {
+  return (
+    {
+      available: "文件可读取",
+      missing: "文件不存在",
+      unavailable: "暂不可用",
+      unsupported: "不支持检测",
+    }[status ?? ""] ?? "暂不可用"
+  );
+}
+
+function publicListPublished(list: PublicList) {
+  return list.published ?? true;
+}
+
+function publicListDefaultEnabled(list: PublicList) {
+  return list.default_enabled ?? list.enabled;
 }
 
 function publicListPayload(form: HTMLFormElement) {
@@ -2969,7 +3067,8 @@ function publicListPayload(form: HTMLFormElement) {
     category: String(fields.get("category")).trim(),
     url: String(fields.get("url")).trim(),
     format: String(fields.get("format")) as PublicListFormat,
-    enabled: fields.get("enabled") === "on",
+    default_enabled: fields.get("default_enabled") === "on",
+    enabled: fields.get("default_enabled") === "on",
     sha256: String(fields.get("sha256")).trim(),
     refresh_seconds: Number(fields.get("refresh_seconds")),
   };
@@ -2994,16 +3093,14 @@ function PublicListForm({
 }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
+  const [validation, setValidation] = useState<PublicListValidation>();
+  const [validationFingerprint, setValidationFingerprint] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
+  const validationRequest = useRef(0);
+  function validatePayload(form: HTMLFormElement) {
     const payload = publicListPayload(form);
-    if (
-      !payload.name ||
-      !payload.category ||
-      !validPublicListURL(payload.url)
-    ) {
-      setError("请填写名称、分类和 HTTPS 地址。");
+    if (!payload.name || !validPublicListURL(payload.url)) {
+      setError("请填写名称和有效的 HTTPS 地址。");
       return;
     }
     if (
@@ -3014,31 +3111,131 @@ function PublicListForm({
       setError("刷新秒数必须是 300 到 86400 的整数。");
       return;
     }
+    if (payload.sha256 && !/^[a-f\d]{64}$/i.test(payload.sha256)) {
+      setError("SHA-256 必须是 64 位十六进制值。");
+      return;
+    }
+    return payload;
+  }
+  async function validateSource() {
+    const form = formRef.current;
+    if (!form) return;
+    const payload = validatePayload(form);
+    if (!payload) return;
+    const fingerprint = JSON.stringify(payload);
+    const requestID = ++validationRequest.current;
     setBusy(true);
     setError("");
     try {
-      await request<PublicList>(
-        list
-          ? `/admin/public-lists/${encodeURIComponent(list.id)}`
-          : "/admin/public-lists",
-        json(list ? "PATCH" : "POST", payload),
+      const result = await request<PublicListValidation>(
+        "/admin/public-lists/validate",
+        json("POST", list ? { ...payload, list_id: list.id } : payload),
       );
-      if (!list) form.reset();
-      onDone();
+      if (
+        requestID !== validationRequest.current ||
+        !formRef.current ||
+        JSON.stringify(publicListPayload(formRef.current)) !== fingerprint
+      ) {
+        setError("表单内容已变化，请重新验证当前内容。");
+        return;
+      }
+      setValidation(result);
+      setValidationFingerprint(fingerprint);
+      if (!result.valid) {
+        setError("来源中没有可发布的有效域名条目，请检查格式与无效条目说明。");
+        return;
+      }
     } catch (reason) {
       setError(message(reason));
     } finally {
       setBusy(false);
     }
   }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = validatePayload(form);
+    if (!payload) return;
+    const submitter = (event.nativeEvent as SubmitEvent)
+      .submitter as HTMLButtonElement | null;
+    const intent = submitter?.value === "draft" ? "draft" : "publish";
+    const fingerprint = JSON.stringify(payload);
+    if (
+      intent === "publish" &&
+      (!validation?.valid || validationFingerprint !== fingerprint)
+    ) {
+      setError("请先验证来源并预览内容，再确认发布。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      if (intent === "publish" && validation) {
+        await request<PublicList>(
+          list
+            ? `/admin/public-lists/${encodeURIComponent(list.id)}/publish`
+            : "/admin/public-lists/publish",
+          json("POST", { validation_token: validation.validation_token }),
+        );
+      } else {
+        await request<PublicList>(
+          list
+            ? `/admin/public-lists/${encodeURIComponent(list.id)}`
+            : "/admin/public-lists",
+          json(
+            list ? "PATCH" : "POST",
+            list ? payload : { ...payload, published: false },
+          ),
+        );
+      }
+      if (!list) form.reset();
+      onDone();
+    } catch (reason) {
+      if (
+        reason instanceof APIError &&
+        (reason.code === "validation_token_invalid" ||
+          reason.code === "validation_token_expired")
+      ) {
+        setValidation(undefined);
+        setValidationFingerprint("");
+      }
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
-    <form className="public-list-form" onSubmit={submit}>
-      <Alert error={error} />
+    <form
+      ref={formRef}
+      className="public-list-form"
+      onSubmit={submit}
+      onInput={() => {
+        validationRequest.current++;
+        setValidation(undefined);
+        setValidationFingerprint("");
+        setError("");
+      }}
+    >
+      <div aria-live="polite">
+        <Alert error={error} />
+      </div>
+      <p className="notice">
+        这是用户拦截订阅：域名命中后返回 NXDOMAIN。请勿将普通分流列表或 IP
+        列表当作拦截规则发布。
+      </p>
+      {list && publicListPublished(list) ? (
+        <p className="caption">
+          修改名称、分类、刷新周期或默认订阅值会保持发布；修改 URL、格式或固定
+          SHA-256 后会自动下架，必须重新验证并发布。
+        </p>
+      ) : null}
       <div className="form-grid">
         <Field label="名称">
           <input
             name="name"
             defaultValue={list?.name}
+            autoComplete="off"
+            placeholder="例如 广告拦截"
             maxLength={128}
             required
           />
@@ -3049,7 +3246,7 @@ function PublicListForm({
             defaultValue={list?.category}
             placeholder="例如 广告与追踪"
             maxLength={64}
-            required
+            autoComplete="off"
           />
         </Field>
       </div>
@@ -3060,6 +3257,7 @@ function PublicListForm({
           defaultValue={list?.url}
           placeholder="https://example.com/list.txt"
           maxLength={2048}
+          autoComplete="url"
           required
         />
       </Field>
@@ -3089,20 +3287,86 @@ function PublicListForm({
       </Field>
       <label className="check">
         <input
-          name="enabled"
+          name="default_enabled"
           type="checkbox"
-          defaultChecked={list?.enabled ?? true}
+          defaultChecked={list ? publicListDefaultEnabled(list) : true}
         />
-        默认启用此列表
+        用户未明确选择时默认订阅
       </label>
+      {validation ? (
+        <section className="public-list-preview" aria-live="polite">
+          <strong>
+            {validation.valid
+              ? "验证通过，可以确认发布"
+              : "验证未通过，当前内容不能发布"}
+          </strong>
+          <dl>
+            <div>
+              <dt>识别格式</dt>
+              <dd>{validation.format}</dd>
+            </div>
+            <div>
+              <dt>有效条目</dt>
+              <dd>{fmt.num(validation.entry_count)}</dd>
+            </div>
+            <div>
+              <dt>无效条目</dt>
+              <dd>{fmt.num(validation.invalid_entry_count ?? 0)}</dd>
+            </div>
+            {validation.sha256 ? (
+              <div>
+                <dt>SHA-256</dt>
+                <dd>
+                  <code>{validation.sha256}</code>
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+          {validation.samples?.length ? (
+            <details>
+              <summary>查看内容样例</summary>
+              <pre>{validation.samples.join("\n")}</pre>
+            </details>
+          ) : null}
+          {validation.invalid_entries?.length ? (
+            <details>
+              <summary>查看无效条目</summary>
+              <pre>
+                {validation.invalid_entries
+                  .map(
+                    (item) =>
+                      `${item.line ? `第 ${item.line} 行：` : ""}${item.reason}`,
+                  )
+                  .join("\n")}
+              </pre>
+            </details>
+          ) : null}
+        </section>
+      ) : null}
       <div className="actions">
         {onCancel ? (
           <button type="button" onClick={onCancel}>
             取消
           </button>
         ) : null}
-        <button className="primary" disabled={busy}>
-          {busy ? "正在保存…" : list ? "保存列表" : "添加公共列表"}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void validateSource()}
+        >
+          {busy ? "正在处理…" : "验证并预览"}
+        </button>
+        <button type="submit" name="intent" value="draft" disabled={busy}>
+          {list ? "保存修改" : "保存草稿"}
+        </button>
+        <button
+          className="primary"
+          type="submit"
+          name="intent"
+          value="publish"
+          disabled={busy || !validation?.valid}
+        >
+          {busy ? "正在发布…" : list ? "确认保存并发布" : "确认发布"}
         </button>
       </div>
     </form>
@@ -3111,20 +3375,33 @@ function PublicListForm({
 
 export function AdminPublicListsPage() {
   const [version, setVersion] = useState(0);
+  const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<PublicList | null>(null);
+  const [showProviders, setShowProviders] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
-  const {
-    items,
-    cursor,
-    loading,
-    error: loadError,
-    more,
-  } = usePaged<PublicList>("/admin/public-lists", version);
+  const [refreshingAll, setRefreshingAll] = useState(false);
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      allPages<PublicList>("/admin/public-lists", signal),
+    [version],
+  );
+  const { data, loading, error: loadError } = useLoad(load, [load]);
+  const items = data ?? [];
   const reload = () => setVersion((current) => current + 1);
+  const publishedCount = items.filter(publicListPublished).length;
+  const failedCount = items.filter(
+    (list) => list.last_refresh_status === "error" || list.last_refresh_error,
+  ).length;
+  const totalEntries = items.reduce(
+    (total, list) => total + (list.entry_count ?? 0),
+    0,
+  );
   async function refresh(list: PublicList) {
     setRefreshing((current) => new Set(current).add(list.id));
     setError("");
+    setNotice("");
     try {
       await request(
         `/admin/public-lists/${encodeURIComponent(list.id)}/refresh`,
@@ -3132,10 +3409,11 @@ export function AdminPublicListsPage() {
           method: "POST",
         },
       );
-      reload();
+      setNotice(`“${list.name}”刷新完成，已重新读取实际快照状态。`);
     } catch (reason) {
       setError(message(reason));
     } finally {
+      reload();
       setRefreshing((current) => {
         const next = new Set(current);
         next.delete(list.id);
@@ -3146,10 +3424,47 @@ export function AdminPublicListsPage() {
   async function remove(list: PublicList) {
     if (!confirm(`删除公共列表“${list.name}”？`)) return;
     setError("");
+    setNotice("");
     try {
       await request(`/admin/public-lists/${encodeURIComponent(list.id)}`, {
         method: "DELETE",
       });
+      reload();
+    } catch (reason) {
+      setError(message(reason));
+      reload();
+    }
+  }
+  async function refreshAll() {
+    setRefreshingAll(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await request<{
+        items: Array<{ id: string; error?: string }>;
+      }>("/admin/public-lists/refresh-all", { method: "POST" });
+      const failures = result.items.filter((item) => item.error).length;
+      setNotice(
+        failures
+          ? `刷新完成：${result.items.length - failures} 个成功，${failures} 个失败。已有有效快照会继续使用。`
+          : `刷新完成：${result.items.length} 个列表均成功。`,
+      );
+      reload();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setRefreshingAll(false);
+    }
+  }
+  async function unpublish(list: PublicList) {
+    setError("");
+    setNotice("");
+    try {
+      await request<PublicList>(
+        `/admin/public-lists/${encodeURIComponent(list.id)}`,
+        json("PATCH", { published: false }),
+      );
+      setNotice(`“${list.name}”已下架。用户偏好会保留，服务端不再应用此列表。`);
       reload();
     } catch (reason) {
       setError(message(reason));
@@ -3159,16 +3474,85 @@ export function AdminPublicListsPage() {
     <>
       <PageTitle
         title="公共列表"
-        description="发布可由用户订阅的远程 DNS 规则列表。"
+        description="维护命中后返回 NXDOMAIN 的用户拦截订阅；节点分流数据源保持独立。"
+        action={
+          <div className="page-actions">
+            <button type="button" onClick={() => setShowProviders(true)}>
+              查看节点数据源
+            </button>
+            <button
+              type="button"
+              disabled={refreshingAll || publishedCount === 0}
+              onClick={() => void refreshAll()}
+            >
+              {refreshingAll ? "刷新中…" : "刷新全部"}
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => setCreating(true)}
+            >
+              新建订阅
+            </button>
+          </div>
+        }
       />
-      <Alert error={loadError || error} />
-      <Card title="添加公共列表">
-        <PublicListForm onDone={reload} />
-      </Card>
-      <Card title="已发布列表">
+      <div aria-live="polite">
+        <Alert error={error} />
+        {notice ? <div className="notice">{notice}</div> : null}
+      </div>
+      <div className="metrics public-list-metrics">
+        <Metric
+          label="列表总数"
+          value={loading || loadError ? "—" : fmt.num(items.length)}
+        />
+        <Metric
+          label="已发布"
+          value={loading || loadError ? "—" : fmt.num(publishedCount)}
+        />
+        <Metric
+          label="刷新失败"
+          value={loading || loadError ? "—" : fmt.num(failedCount)}
+        />
+        <Metric
+          label="有效条目"
+          value={loading || loadError ? "—" : fmt.num(totalEntries)}
+        />
+      </div>
+      <Card title="拦截订阅">
         {loading ? <Spinner /> : null}
-        {!loading && items.length === 0 ? (
-          <Empty>尚未发布公共列表。</Empty>
+        {!loading && loadError ? (
+          <div className="empty-panel">
+            <Alert error={loadError} />
+            <p className="caption">
+              加载失败不代表列表为空。重试后再进行发布或下架操作。
+            </p>
+            <div className="actions empty-actions">
+              <button onClick={reload}>重试</button>
+              <button onClick={() => setShowProviders(true)}>
+                查看节点数据源
+              </button>
+              <button onClick={() => setCreating(true)}>新建订阅</button>
+            </div>
+          </div>
+        ) : null}
+        {!loading && !loadError && items.length === 0 ? (
+          <div className="empty-panel">
+            <Empty>尚未创建用户拦截订阅。</Empty>
+            <p className="caption">
+              节点配置中的 data_providers
+              用于现有分流，不会自动导入或按名称推断为拦截规则。
+            </p>
+            <div className="actions empty-actions">
+              <button className="primary" onClick={() => setCreating(true)}>
+                新建订阅
+              </button>
+              <button onClick={() => setShowProviders(true)}>
+                查看节点数据源
+              </button>
+              <button onClick={() => setShowProviders(true)}>格式说明</button>
+            </div>
+          </div>
         ) : null}
         {items.length ? (
           <div className="table-wrap">
@@ -3178,7 +3562,7 @@ export function AdminPublicListsPage() {
                   <th>名称与分类</th>
                   <th>来源</th>
                   <th>刷新状态</th>
-                  <th>默认</th>
+                  <th>发布与默认</th>
                   <th aria-label="操作" />
                 </tr>
               </thead>
@@ -3199,26 +3583,44 @@ export function AdminPublicListsPage() {
                     </td>
                     <td>
                       <span
-                        className={`badge ${list.last_refresh_error ? "off" : "ok"}`}
+                        className={`badge ${list.last_refresh_error ? "error" : list.snapshot_status === "missing" ? "off" : "ok"}`}
                       >
-                        {list.last_refresh_status ||
-                          (list.last_refresh_error ? "失败" : "未刷新")}
+                        {publicListRefreshLabel(list.last_refresh_status)}
                       </span>
                       <small>{publicListRuntimeSummary(list)}</small>
                     </td>
                     <td>
-                      <span className={`badge ${list.enabled ? "ok" : "off"}`}>
-                        {list.enabled ? "启用" : "停用"}
+                      <span
+                        className={`badge ${publicListPublished(list) ? "ok" : "off"}`}
+                      >
+                        {publicListPublished(list) ? "已发布" : "草稿 / 已下架"}
                       </span>
+                      <small>
+                        {publicListDefaultEnabled(list)
+                          ? "用户未选择时默认订阅"
+                          : "用户未选择时默认停用"}
+                      </small>
                     </td>
                     <td className="table-actions">
                       <button
-                        disabled={refreshing.has(list.id)}
+                        disabled={
+                          refreshing.has(list.id) || !publicListPublished(list)
+                        }
+                        title={
+                          publicListPublished(list)
+                            ? "刷新远程来源"
+                            : "草稿或已下架列表不能刷新"
+                        }
                         onClick={() => refresh(list)}
                       >
                         {refreshing.has(list.id) ? "刷新中…" : "刷新"}
                       </button>
                       <button onClick={() => setEditing(list)}>编辑</button>
+                      {publicListPublished(list) ? (
+                        <button onClick={() => void unpublish(list)}>
+                          下架
+                        </button>
+                      ) : null}
                       <button className="danger" onClick={() => remove(list)}>
                         删除
                       </button>
@@ -3229,12 +3631,18 @@ export function AdminPublicListsPage() {
             </table>
           </div>
         ) : null}
-        {cursor ? (
-          <button onClick={more} disabled={loading}>
-            加载更多
-          </button>
-        ) : null}
       </Card>
+      {creating ? (
+        <Modal title="新建用户拦截订阅" onClose={() => setCreating(false)}>
+          <PublicListForm
+            onDone={() => {
+              setCreating(false);
+              reload();
+            }}
+            onCancel={() => setCreating(false)}
+          />
+        </Modal>
+      ) : null}
       {editing ? (
         <Modal title="编辑公共列表" onClose={() => setEditing(null)}>
           <PublicListForm
@@ -3247,7 +3655,87 @@ export function AdminPublicListsPage() {
           />
         </Modal>
       ) : null}
+      {showProviders ? (
+        <Modal
+          title="节点数据源与格式说明"
+          onClose={() => setShowProviders(false)}
+        >
+          <DataProvidersPanel />
+        </Modal>
+      ) : null}
     </>
+  );
+}
+
+function DataProvidersPanel() {
+  const [version, setVersion] = useState(0);
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      request<{ items: RuntimeDataProvider[] }>("/admin/data-providers", {
+        signal,
+      }),
+    [version],
+  );
+  const { data, error, loading } = useLoad(load, [load]);
+  return (
+    <div className="data-provider-panel">
+      <p className="notice">
+        节点数据源来自主配置并服务于分流与匹配。格式可以解析不代表适合拦截；这里仅只读展示，不会改写
+        EasyMosdns 配置。
+      </p>
+      {loading ? <Spinner /> : null}
+      {error ? (
+        <div aria-live="polite">
+          <Alert error={error} />
+          <button onClick={() => setVersion((current) => current + 1)}>
+            重试
+          </button>
+        </div>
+      ) : null}
+      {!loading && !error && !data?.items.length ? (
+        <Empty>主配置未声明节点数据源。</Empty>
+      ) : null}
+      {data?.items.length ? (
+        <div className="rows data-provider-list">
+          {data.items.map((provider) => (
+            <div key={provider.tag}>
+              <span>
+                <strong>{provider.tag}</strong>
+                <small>{provider.file || "来源路径暂不可用"}</small>
+              </span>
+              <span>
+                {provider.auto_reload ? "自动重载" : "不自动重载"}
+                <small>
+                  文件：
+                  {dataProviderFileStateLabel(provider.file_state?.status)} ·
+                  运行条目：
+                  {provider.runtime_state?.entry_count == null
+                    ? "暂不可用"
+                    : fmt.num(provider.runtime_state.entry_count)}
+                </small>
+                <small>
+                  文件大小：
+                  {provider.file_state?.size_bytes == null
+                    ? "暂不可用"
+                    : `${fmt.num(provider.file_state.size_bytes)} B`}{" "}
+                  · 最近修改：
+                  {provider.file_state?.modified_at
+                    ? fmt.date(provider.file_state.modified_at)
+                    : "暂不可用"}
+                </small>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <details className="format-help">
+        <summary>支持格式与使用边界</summary>
+        <p className="caption">
+          用户拦截订阅支持 mosdns 域名规则和 hosts 域名映射。IP
+          列表、普通分流表及用途不明确的内容不应发布为 NXDOMAIN 拦截订阅。
+        </p>
+      </details>
+    </div>
   );
 }
 

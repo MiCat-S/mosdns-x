@@ -45,7 +45,7 @@
 | POST | `/me/rules` | `DNSPolicyRuleSpec` → 新规则 |
 | PATCH | `/me/rules/{id}` | `DNSPolicyRulePatch` → 更新后的规则 |
 | DELETE | `/me/rules/{id}` | 删除规则 |
-| GET | `/me/public-lists` | `PageResult<UserPublicList>`，包含继承或覆盖后的启用状态 |
+| GET | `/me/public-lists` | 用户安全视图，包含列表展示字段及继承或覆盖后的启用状态 |
 | PATCH | `/me/public-lists/{id}` | `{enabled:true|false|null}`；`null` 恢复管理员默认值 |
 | POST | `/me/lookup` | `{name,qtype}` → 当前执行链的结构化 DNS 结果 |
 
@@ -55,7 +55,9 @@
 
 DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因此被用户规则或公共列表拦截的有效请求仍计入额度。处理顺序为安全 QTYPE 限制、第一条匹配的自定义规则、公共列表、sequence、私有地址应答检查；自定义 `allow` 会跳过公共列表。ECS 从请求副本中移除，原始请求快照仍可用于查询明细。暂停期间这些请求与响应策略全部绕过，到期后无需后台任务即可恢复。ECS、私有地址和 QTYPE 设置默认关闭，三个自定义规则总开关默认开启；升级会保持已有规则继续生效。
 
-管理员用 `GET/POST /admin/public-lists` 和 `GET/PATCH/DELETE /admin/public-lists/{id}` 管理 HTTPS 列表目录，用 `POST /admin/public-lists/{id}/refresh` 手动刷新。格式为 `mosdns` 或 `hosts`，列表项包含默认启用状态、刷新周期、可选 SHA-256、条目数和刷新状态。下载失败时继续使用上一份有效快照。
+用户公共列表响应不会返回来源 URL、配置 SHA-256、快照 SHA-256 或原始刷新错误；这些字段只对管理员接口可见，避免签名 URL 和上游细节泄漏。用户仍可看到名称、分类、格式、条目数、发布与快照状态、刷新时间，以及自己的显式或继承选择。
+
+管理员用 `GET/POST /admin/public-lists` 和 `GET/PATCH/DELETE /admin/public-lists/{id}` 管理 HTTPS 列表目录。直接 POST 保存草稿；`POST /admin/public-lists/validate` 返回内容预览和绑定候选快照的令牌，随后用 `POST /admin/public-lists/publish` 或 `POST /admin/public-lists/{id}/publish` 发布该快照。`POST /admin/public-lists/{id}/refresh` 刷新一项，`POST /admin/public-lists/refresh-all` 刷新全部已发布项。列表项分别包含 `published`、`default_enabled`、刷新结果及快照状态；下载失败时继续使用上一份有效快照。`GET /admin/data-providers` 只读返回主配置中的节点数据源，不会把它们导入为用户拦截规则。
 
 Lookup 只接受 A、AAAA、CNAME、NS、MX、TXT，使用当前实例的同一入口 sequence 和用户策略，返回 `question`、`rcode`、`duration_ms`、`answers`、`authority`、`additional`、`edns`。它只供面板诊断，不扣周期额度，也不写查询统计；已到期用户不能调用。服务默认限制每个客户端地址每分钟 60 次、全局同时 8 次，避免把面板接口当作免费解析入口。
 
@@ -88,17 +90,18 @@ Lookup 只接受 A、AAAA、CNAME、NS、MX、TXT，使用当前实例的同一�
 
 ## 托管运行配置
 
-配置 `control.managed_config` 后，管理员可使用以下接口；未配置时返回 `managed_config_disabled`：
+`GET /admin/runtime/config` 始终尝试返回服务端脱敏的运行摘要与能力信息。配置 `control.managed_config` 后才开放写入、历史和探测接口；未配置时这些管理接口返回 `managed_config_disabled`：
 
 | 方法 | 路径 | 请求 / 响应 |
 |---|---|---|
-| GET | `/admin/runtime/config` | 当前安全配置视图及 `revision` |
+| GET | `/admin/runtime/config` | `running`、最近加载的 `base`、候选状态、能力及兼容字段 `config/revision` |
 | POST | `/admin/runtime/config/validate` | `{revision,config}` → 五分钟一次性验证令牌及缓存清空提示 |
 | POST | `/admin/runtime/config/apply` | `{token}` → 新状态；令牌绑定管理员会话与修订 |
 | POST | `/admin/runtime/config/reload` | 重读主配置；不可热更新项通过 `restart_required` 返回 |
 | GET | `/admin/runtime/history` | 最近 10 个可回滚旧修订 |
 | POST | `/admin/runtime/rollback` | `{revision,target_revision}` → 回滚后的新状态 |
 | POST | `/admin/runtime/upstreams/{tag}/probe` | 每个上游的安全标识、耗时、RCODE 和成功状态 |
+| GET | `/admin/data-providers` | 主配置数据源声明、文件状态和可用的运行状态；未知值为 `null` 或 `unsupported` |
 
 安全视图只包含不含敏感参数的 `fast_forward`、非 Redis 内存缓存、`query_log` 和统计保留策略。应用前完整构建候选运行代；失败时当前运行代保持不变。成功后所有入口一次切换，旧运行代等待在途请求和后台上游工作完成再关闭。修改任何需要重建运行代的配置且当前存在内存缓存时，验证结果会提示缓存清空。
 

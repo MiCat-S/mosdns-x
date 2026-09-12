@@ -22,7 +22,8 @@ const (
 	legacyMySQLControlSchemaVersion = 1
 	policyMySQLControlSchemaVersion = 2
 	policySwitchMySQLSchemaVersion  = 3
-	mysqlControlSchemaVersion       = 4
+	publicListMySQLSchemaVersion    = 4
+	mysqlControlSchemaVersion       = 5
 )
 
 type MySQLOptions struct {
@@ -169,12 +170,17 @@ var mysqlControlMigrations = []string{
 		url VARCHAR(2048) NOT NULL,
 		format VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
 		enabled BOOLEAN NOT NULL,
+		default_enabled BOOLEAN NOT NULL,
+		published BOOLEAN NOT NULL,
 		sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
 		refresh_seconds BIGINT UNSIGNED NOT NULL,
 		entry_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
 		last_refresh_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'never',
 		last_refreshed_at_ns BIGINT NULL,
 		last_refresh_error VARCHAR(512) NOT NULL DEFAULT '',
+		snapshot_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'missing',
+		snapshot_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+		last_successful_at_ns BIGINT NULL,
 		created_at_ns BIGINT NOT NULL,
 		updated_at_ns BIGINT NOT NULL,
 		UNIQUE KEY uq_mosdns_public_lists_name (name_normalized)
@@ -199,6 +205,21 @@ var mysqlControlV3Columns = []struct {
 	{"custom_rewrite_enabled", "custom_rewrite_enabled BOOLEAN NOT NULL DEFAULT TRUE"},
 	{"policy_paused_until_ns", "policy_paused_until_ns BIGINT NULL"},
 }
+
+var mysqlControlV5PublicListColumns = []struct {
+	name       string
+	definition string
+}{
+	{"default_enabled", "default_enabled BOOLEAN NOT NULL DEFAULT FALSE"},
+	{"published", "published BOOLEAN NOT NULL DEFAULT TRUE"},
+	{"snapshot_status", "snapshot_status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'missing'"},
+	{"snapshot_sha256", "snapshot_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT ''"},
+	{"last_successful_at_ns", "last_successful_at_ns BIGINT NULL"},
+}
+
+const mysqlControlV5PublicListColumnsQuery = `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mosdns_public_lists'
+	AND COLUMN_NAME IN ('default_enabled', 'published', 'snapshot_status', 'snapshot_sha256', 'last_successful_at_ns')`
 
 const mysqlControlV3ColumnsQuery = `SELECT COLUMN_NAME FROM information_schema.COLUMNS
 	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mosdns_dns_policy_settings'
@@ -296,6 +317,14 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 			return mysqlStoreError(err)
 		}
 	}
+	if errors.Is(err, sql.ErrNoRows) || version < mysqlControlSchemaVersion {
+		if migrationErr := ensureMySQLControlV5PublicListColumns(ctx, conn); migrationErr != nil {
+			return mysqlStoreError(migrationErr)
+		}
+		if _, migrationErr := conn.ExecContext(ctx, `UPDATE mosdns_public_lists SET default_enabled=enabled, published=TRUE, snapshot_status=IF(last_refresh_status='success','current',IF(entry_count>0,'stale','missing')), snapshot_sha256='', last_successful_at_ns=IF(last_refresh_status='success',last_refreshed_at_ns,NULL)`); migrationErr != nil {
+			return mysqlStoreError(migrationErr)
+		}
+	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = conn.ExecContext(ctx, `INSERT INTO mosdns_schema_migrations (component, version) VALUES ('control', ?)`, mysqlControlSchemaVersion)
@@ -306,6 +335,47 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 	default:
 		return nil
 	}
+}
+
+func ensureMySQLControlV5PublicListColumns(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, mysqlControlV5PublicListColumnsQuery)
+	if err != nil {
+		return err
+	}
+	existing := make(map[string]struct{}, len(mysqlControlV5PublicListColumns))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	migration := mysqlControlV5PublicListAlter(existing)
+	if migration == "" {
+		return nil
+	}
+	_, err = conn.ExecContext(ctx, migration)
+	return err
+}
+
+func mysqlControlV5PublicListAlter(existing map[string]struct{}) string {
+	missing := make([]string, 0, len(mysqlControlV5PublicListColumns))
+	for _, column := range mysqlControlV5PublicListColumns {
+		if _, ok := existing[column.name]; !ok {
+			missing = append(missing, "ADD COLUMN "+column.definition)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return `ALTER TABLE mosdns_public_lists ` + strings.Join(missing, ", ")
 }
 
 func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn) error {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
+	"github.com/pmkol/mosdns-x/pkg/data_provider"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 )
 
@@ -105,6 +106,25 @@ func TestManagedRuntimeValidateApplyAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if state.Mode != "managed" || !state.Setup.ManagedConfigConfigured || !state.Capabilities.Edit || !state.Capabilities.Validate || !state.Capabilities.Apply || !state.Capabilities.History || !state.Capabilities.Rollback {
+		t.Fatalf("managed state capabilities = %+v", state)
+	}
+	if state.Sources.Running.Kind != "running_generation" || state.Sources.Base.Kind != "loaded_base" || state.Sources.Candidate.Kind != "validated_candidate" {
+		t.Fatalf("managed state source attribution = %+v", state.Sources)
+	}
+	capabilityByTag := make(map[string]runtimeconfig.ComponentCapability, len(state.Sources.Running.Plugins))
+	for _, plugin := range state.Sources.Running.Plugins {
+		capabilityByTag[plugin.Tag] = plugin.Capability
+	}
+	if forward := capabilityByTag["forward"]; !forward.View || !forward.Edit || !forward.HotReload || forward.RestartRequired || !forward.ClearsMemoryCaches {
+		t.Fatalf("managed forward capability = %+v", forward)
+	}
+	if cache := capabilityByTag["cache"]; !cache.Edit || !cache.HotReload || cache.RestartRequired || !cache.ClearsMemoryCaches {
+		t.Fatalf("managed cache capability = %+v", cache)
+	}
+	if answer := capabilityByTag["answer"]; answer.Edit || answer.HotReload || !answer.RestartRequired || answer.Reason != "unsupported_type" {
+		t.Fatalf("read-only plugin capability = %+v", answer)
+	}
 	desired := state.Config
 	desired.QueryLog = true
 	for i := range desired.Plugins {
@@ -152,6 +172,73 @@ func TestManagedRuntimeValidateApplyAndRollback(t *testing.T) {
 	}
 	if cacheSize != 256 || !rolledBack.CachesCleared {
 		t.Fatalf("rollback = %+v", rolledBack)
+	}
+}
+
+func TestReadOnlyRuntimeInspectorReportsSourcesCapabilitiesAndDataProviders(t *testing.T) {
+	config := managedRuntimeTestConfig(t)
+	config.Control.ManagedConfig = ""
+	providerFile := filepath.Join(t.TempDir(), "rules.txt")
+	contents := []byte("full:example.test\n")
+	if err := os.WriteFile(providerFile, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config.DataProviders = []data_provider.DataProviderConfig{{Tag: "rules", File: providerFile, AutoReload: true}}
+
+	effective, base, store, view, revision, err := prepareManagedRuntimeConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store != nil || base == nil || revision != "" {
+		t.Fatalf("read-only preparation = base:%v store:%v revision:%q", base != nil, store, revision)
+	}
+	host := &Mosdns{logger: zap.NewNop(), runtimeManager: NewRuntimeManager()}
+	stage, err := host.runtimeManager.Stage(context.Background(), func(ctx context.Context) (*RuntimeGeneration, error) {
+		return host.buildRuntimeGeneration(ctx, effective)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := host.runtimeManager.Swap(stage); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.runtimeManager.Drain(context.Background()) })
+	service := newManagedRuntimeService(host, nil, base, effective, view, revision)
+	if service == nil {
+		t.Fatal("read-only inspector was not constructed")
+	}
+
+	state, err := service.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Mode != "read_only" || state.Setup.ManagedConfigConfigured || !state.Capabilities.View || state.Capabilities.Edit || state.Capabilities.History {
+		t.Fatalf("read-only state = %+v", state)
+	}
+	if state.Sources.Running.Kind != "running_generation" || state.Sources.Running.Status != "available" || state.Sources.Base.Kind != "loaded_base" || state.Sources.Base.Status != "last_loaded" || state.Sources.Candidate.Status != "unavailable" {
+		t.Fatalf("source attribution = %+v", state.Sources)
+	}
+	if forward := state.Sources.Running.Plugins[0].Capability; !forward.View || forward.Edit || forward.HotReload || !forward.RestartRequired || forward.Reason != "managed_config_not_configured" {
+		t.Fatalf("read-only forward capability = %+v", forward)
+	}
+	if _, err := service.Validate(context.Background(), "admin", "", state.Config); !errors.Is(err, ErrManagedRuntimeDisabled) {
+		t.Fatalf("read-only Validate error = %v", err)
+	}
+	if _, err := service.History(context.Background()); !errors.Is(err, ErrManagedRuntimeDisabled) {
+		t.Fatalf("read-only History error = %v", err)
+	}
+	if _, err := service.Probe(context.Background(), "forward"); !errors.Is(err, ErrManagedRuntimeDisabled) {
+		t.Fatalf("read-only Probe error = %v", err)
+	}
+	providers, err := service.DataProviders(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 1 || providers[0].Tag != "rules" || providers[0].FileState.Status != "available" || providers[0].FileState.SizeBytes == nil || *providers[0].FileState.SizeBytes != int64(len(contents)) {
+		t.Fatalf("providers = %+v", providers)
+	}
+	if providers[0].RuntimeState.Status != "unsupported" || providers[0].RuntimeState.EntryCount != nil || providers[0].RuntimeState.LoadedAt != nil {
+		t.Fatalf("provider runtime state guessed unavailable metrics: %+v", providers[0].RuntimeState)
 	}
 }
 

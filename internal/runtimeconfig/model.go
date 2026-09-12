@@ -181,8 +181,8 @@ func Validate(config Config) error {
 				if strings.TrimSpace(upstream.Addr) == "" {
 					return fmt.Errorf("plugin %q upstream #%d requires addr", plugin.Tag, j)
 				}
-				if hasURLUserinfo(upstream.Addr) || hasURLUserinfo(upstream.DialAddr) || hasURLUserinfo(upstream.Bootstrap) {
-					return fmt.Errorf("plugin %q upstream #%d contains URL userinfo", plugin.Tag, j)
+				if hasURLCredentials(upstream.Addr) || hasURLCredentials(upstream.DialAddr) || hasURLCredentials(upstream.Bootstrap) {
+					return fmt.Errorf("plugin %q upstream #%d contains URL credentials or userinfo", plugin.Tag, j)
 				}
 				if upstream.IdleTimeout < 0 || upstream.MaxConns < 0 {
 					return fmt.Errorf("plugin %q upstream #%d has a negative limit", plugin.Tag, j)
@@ -348,7 +348,7 @@ func inspectFastForward(args any) (*FastForward, error) {
 	forward := &FastForward{Upstreams: make([]Upstream, 0, len(decoded.Upstream))}
 	for _, upstream := range decoded.Upstream {
 		if upstream.Socks5 != "" || upstream.S5Username != "" || upstream.S5Password != "" ||
-			hasURLUserinfo(upstream.Addr) || hasURLUserinfo(upstream.DialAddr) || hasURLUserinfo(upstream.Bootstrap) {
+			hasURLCredentials(upstream.Addr) || hasURLCredentials(upstream.DialAddr) || hasURLCredentials(upstream.Bootstrap) {
 			return nil, errSensitiveArgs
 		}
 		forward.Upstreams = append(forward.Upstreams, upstream.Upstream)
@@ -437,6 +437,21 @@ func hasURLUserinfo(value string) bool {
 	}
 	parsed, err := url.Parse(value)
 	return err != nil || parsed.User != nil
+}
+
+func hasURLCredentials(value string) bool {
+	if hasURLUserinfo(value) {
+		return true
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if !strings.Contains(value, "://") {
+		value = "udp://" + value
+	}
+	parsed, err := url.Parse(value)
+	return err != nil || parsed.RawQuery != "" || parsed.Fragment != ""
 }
 
 func readOnlyReason(err error) string {

@@ -1,15 +1,27 @@
 import {
+  createContext,
   lazy,
   Suspense,
+  useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
   type ReactNode,
 } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { message } from "./api";
 import { useSession } from "./session";
 const UsageChart = lazy(() => import("./usage-chart"));
+
+type UnsavedGuard = () => boolean;
+type RegisterUnsavedGuard = (guard: UnsavedGuard) => () => void;
+const UnsavedGuardContext = createContext<RegisterUnsavedGuard>(() => () => {});
+
+export function useUnsavedGuard(guard: UnsavedGuard) {
+  const register = useContext(UnsavedGuardContext);
+  useEffect(() => register(guard), [guard, register]);
+}
 
 export function Spinner() {
   return (
@@ -276,6 +288,14 @@ function NavIcon({ name }: { name: NavIconName }) {
 export function Shell() {
   const { session, logout } = useSession();
   const navigate = useNavigate();
+  const location = useLocation();
+  const unsavedGuard = useRef<UnsavedGuard | undefined>(undefined);
+  const registerUnsavedGuard = useCallback<RegisterUnsavedGuard>((guard) => {
+    unsavedGuard.current = guard;
+    return () => {
+      if (unsavedGuard.current === guard) unsavedGuard.current = undefined;
+    };
+  }, []);
   const [logoutError, setLogoutError] = useState("");
   const admin = session?.user.role === "admin";
   const links = admin
@@ -284,7 +304,12 @@ export function Shell() {
         { to: "/admin/password", label: "密码", icon: "password" as const },
       ]
     : userNav;
+  useEffect(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, [location.pathname]);
   async function exit() {
+    if (unsavedGuard.current && !unsavedGuard.current()) return;
     setLogoutError("");
     try {
       await logout();
@@ -341,7 +366,9 @@ export function Shell() {
           </header>
         ) : null}
         {logoutError ? <Alert error={logoutError} /> : null}
-        <Outlet />
+        <UnsavedGuardContext.Provider value={registerUnsavedGuard}>
+          <Outlet />
+        </UnsavedGuardContext.Provider>
       </main>
     </div>
   );

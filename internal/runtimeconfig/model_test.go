@@ -93,3 +93,78 @@ func TestValidateRejectsSensitiveAndOutOfRangeInput(t *testing.T) {
 		t.Fatalf("Validate error = %v, want record limit rejection", err)
 	}
 }
+
+func TestSnapshotRedactsSecretsWithoutChangingManagedConfig(t *testing.T) {
+	managed, err := Inspect(false, validTelemetry(), []PluginSource{{
+		Tag: "forward", Type: "fast_forward", Args: map[string]any{
+			"upstream": []any{map[string]any{"addr": "https://dns.example/dns-query"}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := Snapshot("running_generation", managed, []PluginSource{
+		{Tag: "forward", Type: "fast_forward", Args: map[string]any{
+			"upstream": []any{map[string]any{
+				"addr": "https://user:password@dns.example/dns-query?token=url-secret", "s5_username": "alice", "s5_password": "secret",
+			}},
+		}},
+		{Tag: "sequence", Type: "sequence", Args: map[string]any{
+			"exec": []any{"forward"}, "api_token": "secret-token",
+			"database": "mosdns:db-secret@tcp(localhost:3306)/mosdns",
+			"endpoint": "https://url-user:url-password@example.test/path",
+			"material": "-----BEGIN PRIVATE KEY-----\nprivate-key-secret",
+		}},
+	}, nil, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, secret := range []string{
+		"user:password@", `"s5_username":"alice"`, `"s5_password":"secret"`, "secret-token", "url-secret",
+		"db-secret", "url-user", "url-password", "private-key-secret",
+	} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("snapshot leaked %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, redactedValue) || !strings.Contains(text, `"exec":["forward"]`) {
+		t.Fatalf("snapshot did not preserve safe structure with redaction: %s", text)
+	}
+	if managed.Plugins[0].FastForward.Upstreams[0].Addr != "https://dns.example/dns-query" {
+		t.Fatalf("snapshot changed managed config: %+v", managed)
+	}
+}
+
+func TestInspectKeepsURLQueryCredentialsOutOfWritableConfig(t *testing.T) {
+	config, err := Inspect(false, validTelemetry(), []PluginSource{{
+		Tag: "forward", Type: "fast_forward", Args: map[string]any{
+			"upstream": []any{map[string]any{"addr": "https://dns.example/dns-query?token=secret-value"}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Plugins) != 1 || config.Plugins[0].Editable || config.Plugins[0].FastForward != nil || config.Plugins[0].ReadOnlyReason != "sensitive_parameters" {
+		t.Fatalf("query credential plugin = %+v", config.Plugins)
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "secret-value") {
+		t.Fatalf("writable config leaked URL query credential: %s", encoded)
+	}
+
+	desired := Config{Version: Version, Telemetry: validTelemetry(), Plugins: []Plugin{{
+		Tag: "forward", Type: "fast_forward", Editable: true,
+		FastForward: &FastForward{Upstreams: []Upstream{{Addr: "https://dns.example/dns-query?key=value"}}},
+	}}}
+	if err := Validate(desired); err == nil || !strings.Contains(err.Error(), "URL credentials") {
+		t.Fatalf("Validate error = %v", err)
+	}
+}

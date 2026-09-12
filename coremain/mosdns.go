@@ -45,6 +45,7 @@ import (
 	"github.com/pmkol/mosdns-x/internal/controlapi"
 	"github.com/pmkol/mosdns-x/internal/dnspolicy"
 	"github.com/pmkol/mosdns-x/internal/publiclist"
+	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/mlog"
 	"github.com/pmkol/mosdns-x/pkg/data_provider"
@@ -114,6 +115,10 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		sc:             safe_close.NewSafeClose(),
 	}
 	m.managedRuntime = newManagedRuntimeService(m, managedStore, baseCfg, cfg, managedView, managedRevision)
+	var runtimeConfigManager runtimeconfig.Manager
+	if managedStore != nil {
+		runtimeConfigManager = m.managedRuntime
+	}
 	defer func() { retErr = errors.Join(retErr, m.shutdown()) }()
 	_, trustedProxies, err := validateControlConfig(cfg)
 	if err != nil {
@@ -199,7 +204,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 			if lookupErr != nil {
 				return fmt.Errorf("failed to init panel lookup: %w", lookupErr)
 			}
-			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicLists: m.publicLists, RuntimeConfig: m.managedRuntime, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, Lookup: lookup, InvalidatePolicy: m.policy.Invalidate, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
+			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Telemetry: m.telemetry, PublicLists: m.publicLists, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, Lookup: lookup, InvalidatePolicy: m.policy.Invalidate, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
 				queryLogEnabled := cfg.Control.QueryLog
 				if m.managedRuntime != nil {
 					if state, stateErr := m.managedRuntime.Get(ctx); stateErr == nil {

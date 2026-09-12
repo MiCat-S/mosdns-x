@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,28 @@ func TestMySQLIntegrationControlLifecycle(t *testing.T) {
 	rules, err := store.ListDNSPolicyRules(ctx, user.ID, Page{})
 	if err != nil || len(rules.Items) != 1 || rules.Items[0].ID != rule.ID {
 		t.Fatalf("policy rules=%+v err=%v", rules, err)
+	}
+	defaultEnabled := true
+	publicList, err := store.CommitPublicListSnapshot(ctx, admin.ID, "mysql-public-list", time.Time{}, PublicListSpec{
+		Name: "Ads", URL: "https://example.com/ads.txt", Format: PublicListFormatMosDNS,
+		DefaultEnabled: &defaultEnabled, RefreshSeconds: 300,
+	}, PublicListRefreshResult{
+		Status: PublicListRefreshSuccess, EntryCount: 12, SHA256: strings.Repeat("a", 64), RefreshedAt: time.Now().UTC(),
+	})
+	if err != nil || !publicList.Published || !publicList.DefaultEnabled || publicList.SnapshotStatus != PublicListSnapshotCurrent {
+		t.Fatalf("public list=%+v err=%v", publicList, err)
+	}
+	userLists, err := store.ListUserPublicLists(ctx, user.ID, Page{})
+	if err != nil || len(userLists.Items) != 1 || !userLists.Items[0].Enabled || userLists.Items[0].Overridden {
+		t.Fatalf("user public lists=%+v err=%v", userLists, err)
+	}
+	disabled := false
+	if err := store.SetUserPublicList(ctx, user.ID, user.ID, publicList.ID, &disabled); err != nil {
+		t.Fatal(err)
+	}
+	userLists, err = store.ListUserPublicLists(ctx, user.ID, Page{})
+	if err != nil || len(userLists.Items) != 1 || userLists.Items[0].Enabled || !userLists.Items[0].Overridden {
+		t.Fatalf("overridden public list=%+v err=%v", userLists, err)
 	}
 	issued, err := store.CreateCredential(ctx, user.ID, user.ID, "phone", time.Time{})
 	if err != nil {
