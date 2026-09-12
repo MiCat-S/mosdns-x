@@ -277,7 +277,7 @@ func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) err
 		if err != nil {
 			return err
 		}
-		if !strings.EqualFold(columnType, column.columnType) || (nullable == "YES") != column.nullable || defaultVal != column.defaultVal {
+		if !compatibleMySQLColumnType(columnType, column.columnType) || (nullable == "YES") != column.nullable || defaultVal != column.defaultVal {
 			return fmt.Errorf("incompatible mosdns_query_logs column %s", column.name)
 		}
 	}
@@ -293,6 +293,15 @@ func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) err
 		}
 	}
 	return nil
+}
+
+func compatibleMySQLColumnType(actual, expected string) bool {
+	if strings.EqualFold(actual, expected) {
+		return true
+	}
+	// MySQL 5.7 reports the deprecated integer display width even when the
+	// declaration omits it. MySQL 8.4 reports the same column without it.
+	return strings.EqualFold(expected, "tinyint unsigned") && strings.EqualFold(actual, "tinyint(3) unsigned")
 }
 
 func (s *Store) mysqlContext(parent context.Context) (context.Context, context.CancelFunc) {

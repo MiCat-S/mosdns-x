@@ -111,6 +111,15 @@ func TestEnsureMySQLTelemetryQueryLogSchemaRejectsIncompatibleColumn(t *testing.
 	}
 }
 
+func TestCompatibleMySQLColumnTypeAcceptsMySQL57IntegerDisplayWidth(t *testing.T) {
+	if !compatibleMySQLColumnType("tinyint(3) unsigned", "tinyint unsigned") {
+		t.Fatal("MySQL 5.7 integer display width was rejected")
+	}
+	if compatibleMySQLColumnType("tinyint(4)", "tinyint unsigned") {
+		t.Fatal("incompatible signed tinyint was accepted")
+	}
+}
+
 func TestConvergeMySQLTelemetrySchemaSupportsKnownAndMissingVersions(t *testing.T) {
 	for _, version := range []int{-1, 1, 2, 3} {
 		name := "missing"
