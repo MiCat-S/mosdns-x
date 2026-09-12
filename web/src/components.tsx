@@ -289,6 +289,7 @@ export function Shell() {
   const { session, logout } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
+  const navRef = useRef<HTMLElement>(null);
   const unsavedGuard = useRef<UnsavedGuard | undefined>(undefined);
   const registerUnsavedGuard = useCallback<RegisterUnsavedGuard>((guard) => {
     unsavedGuard.current = guard;
@@ -307,6 +308,18 @@ export function Shell() {
   useEffect(() => {
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
+    if (window.matchMedia?.("(max-width: 840px)").matches) {
+      navRef.current
+        ?.querySelector<HTMLAnchorElement>("a.active")
+        ?.scrollIntoView({
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+            .matches
+            ? "auto"
+            : "smooth",
+          block: "nearest",
+          inline: "center",
+        });
+    }
   }, [location.pathname]);
   async function exit() {
     if (unsavedGuard.current && !unsavedGuard.current()) return;
@@ -320,6 +333,9 @@ export function Shell() {
   }
   return (
     <div className={admin ? "shell admin-shell" : "shell user-shell"}>
+      <a className="skip-link" href="#main-content">
+        跳到主要内容
+      </a>
       <aside>
         <NavLink className="brand" to={admin ? "/admin" : "/app"}>
           <span className="brandmark">M</span>
@@ -329,7 +345,7 @@ export function Shell() {
           </span>
         </NavLink>
         <span className="nav-caption">{admin ? "管理控制台" : "用户中心"}</span>
-        <nav aria-label="主导航">
+        <nav ref={navRef} aria-label="主导航">
           {links.map(({ to, label, icon }, i) => (
             <NavLink key={to} to={to} end={i === 0}>
               <i>
@@ -354,7 +370,7 @@ export function Shell() {
           </div>
         ) : null}
       </aside>
-      <main>
+      <main id="main-content" tabIndex={-1}>
         {!admin ? (
           <header className="topbar">
             <NavLink className="topbar-user" to="/app/account">

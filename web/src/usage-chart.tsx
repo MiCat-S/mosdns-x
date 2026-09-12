@@ -93,9 +93,26 @@ function line(
     smooth: false,
     connectNulls: false,
     showSymbol: showPointSymbols(series),
+    symbol: "circle",
     symbolSize: 8,
     data: toTimedData(series, field),
     color,
+    lineStyle: { width: 2.25, color },
+    itemStyle: {
+      color,
+      borderColor: "#ffffff",
+      borderWidth: 2,
+      shadowBlur: 8,
+      shadowColor: `${color}4d`,
+    },
+    areaStyle: {
+      opacity: 1,
+      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: `${color}22` },
+        { offset: 1, color: `${color}00` },
+      ]),
+    },
+    emphasis: { focus: "series" },
   };
 }
 
@@ -115,30 +132,70 @@ export default function UsageChart({
     if (!ref.current) return;
     const chart = echarts.init(ref.current);
     const resultSeries = [
-      line("已完成", "#0f9f92", series, "completed"),
-      line("失败", "#e05263", series, "failed"),
-      line("缓存命中", "#5974e8", series, "cache_hits"),
+      line("已完成", "#567f90", series, "completed"),
+      line("失败", "#b56770", series, "failed"),
+      line("缓存命中", "#7583a3", series, "cache_hits"),
     ];
     const bounds = timeAxisBounds(from, to);
+    const reduceMotion =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     chart.setOption({
-      tooltip: { trigger: "axis", formatter: tooltip },
-      legend: { bottom: 0 },
-      grid: { left: 48, right: 16, top: 16, bottom: 56 },
+      animation: !reduceMotion,
+      animationDuration: reduceMotion ? 0 : 460,
+      animationEasing: "cubicOut",
+      tooltip: {
+        trigger: "axis",
+        formatter: tooltip,
+        confine: true,
+        backgroundColor: "rgba(18, 27, 35, 0.95)",
+        borderColor: "rgba(183, 201, 210, 0.22)",
+        borderWidth: 1,
+        padding: [10, 12],
+        textStyle: { color: "#f2f5f6", fontSize: 12, lineHeight: 20 },
+        extraCssText:
+          "border-radius:10px;box-shadow:0 14px 38px rgba(12,22,30,.24);backdrop-filter:blur(10px)",
+        axisPointer: {
+          type: "line",
+          lineStyle: { color: "#8ca3ad", type: "dashed", width: 1 },
+        },
+      },
+      legend: {
+        bottom: 0,
+        icon: "circle",
+        itemWidth: 8,
+        itemHeight: 8,
+        itemGap: 22,
+        textStyle: { color: "#566b75", fontSize: 12 },
+      },
+      grid: { left: 52, right: 20, top: 22, bottom: 58 },
       xAxis: {
         type: "time",
         min: bounds.min,
         max: bounds.max,
+        axisLine: { lineStyle: { color: "#d8dee3" } },
+        axisTick: { show: false },
         axisLabel: {
           formatter: (value: number) => formatAxisMinute(value),
           hideOverlap: true,
           margin: 12,
+          color: "#536873",
+          fontSize: 11,
+          lineHeight: 16,
         },
+        splitLine: { show: false },
         silent: true,
       },
-      yAxis: { type: "value", minInterval: 1 },
+      yAxis: {
+        type: "value",
+        minInterval: 1,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: "#536873", fontSize: 11 },
+        splitLine: { lineStyle: { color: "#e7ecef", width: 1 } },
+      },
       series:
         kind === "usage"
-          ? [line("已受理", "#0f9f92", series, "completed")]
+          ? [line("已受理", "#567f90", series, "completed")]
           : resultSeries,
     });
     const resize = () => chart.resize();
