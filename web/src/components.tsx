@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ReactNode,
@@ -52,11 +53,11 @@ export function PageTitle({
 }) {
   return (
     <header className="page-title">
-      <div>
+      <div className="page-heading">
         <h1>{title}</h1>
         {description ? <p>{description}</p> : null}
       </div>
-      {action}
+      {action ? <div className="page-title-action">{action}</div> : null}
     </header>
   );
 }
@@ -71,9 +72,9 @@ export function Metric({
 }) {
   return (
     <article className="metric">
-      <span>{label}</span>
+      <span className="metric-label">{label}</span>
       <strong>{value}</strong>
-      {hint ? <small>{hint}</small> : null}
+      {hint ? <small className="metric-hint">{hint}</small> : null}
     </article>
   );
 }
@@ -161,7 +162,8 @@ type NavIconName =
   | "account"
   | "help"
   | "list"
-  | "lab";
+  | "lab"
+  | "runtime";
 type NavItem = { to: string; label: string; icon: NavIconName };
 
 const adminNav: NavItem[] = [
@@ -169,7 +171,7 @@ const adminNav: NavItem[] = [
   { to: "/admin/logs", label: "查询日志", icon: "logs" },
   { to: "/admin/users", label: "用户", icon: "users" },
   { to: "/admin/lists", label: "公共列表", icon: "list" },
-  { to: "/admin/runtime", label: "运行配置", icon: "system" },
+  { to: "/admin/runtime", label: "运行配置", icon: "runtime" },
   { to: "/admin/audit", label: "审计", icon: "audit" },
   { to: "/admin/system", label: "系统", icon: "system" },
 ];
@@ -278,6 +280,13 @@ function NavIcon({ name }: { name: NavIconName }) {
         <path d="M8 16h8" />
       </>
     ),
+    runtime: (
+      <>
+        <path d="M4 7h10M18 7h2M4 17h2M10 17h10" />
+        <circle cx="16" cy="7" r="2" />
+        <circle cx="8" cy="17" r="2" />
+      </>
+    ),
   };
   return (
     <svg aria-hidden viewBox="0 0 24 24">
@@ -336,12 +345,16 @@ export function Shell() {
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
-      <aside>
-        <NavLink className="brand" to={admin ? "/admin" : "/app"}>
+      <aside aria-label={admin ? "管理控制台" : "用户中心"}>
+        <NavLink
+          className="brand"
+          to={admin ? "/admin" : "/app"}
+          translate="no"
+        >
           <span className="brandmark">M</span>
           <span className="brand-copy">
-            <strong>MosDNS</strong>
-            <small>Control Center</small>
+            <strong>MosDNS X</strong>
+            <small>Network Console</small>
           </span>
         </NavLink>
         <span className="nav-caption">{admin ? "管理控制台" : "用户中心"}</span>
@@ -355,32 +368,35 @@ export function Shell() {
             </NavLink>
           ))}
         </nav>
-        {admin ? (
-          <div className="account">
-            <span className="account-avatar" aria-hidden>
-              {session?.user.username.slice(0, 1).toUpperCase()}
-            </span>
-            <span className="account-copy">
-              <strong>{session?.user.username}</strong>
-              <small>管理员</small>
-            </span>
-            <button className="link" onClick={exit}>
-              退出登录
-            </button>
-          </div>
-        ) : null}
+        <div className="account">
+          <span className="account-avatar" aria-hidden>
+            {session?.user.username.slice(0, 1).toUpperCase()}
+          </span>
+          <span className="account-copy">
+            <strong>{session?.user.username}</strong>
+            <small>{admin ? "管理员" : "用户账户"}</small>
+          </span>
+          <button className="link" onClick={exit} aria-label="退出登录">
+            退出
+          </button>
+        </div>
       </aside>
       <main id="main-content" tabIndex={-1}>
-        {!admin ? (
-          <header className="topbar">
-            <NavLink className="topbar-user" to="/app/account">
-              {session?.user.username}
-            </NavLink>
-            <button className="link" onClick={exit}>
-              退出登录
+        <header className="mobile-header">
+          <NavLink
+            className="mobile-brand"
+            to={admin ? "/admin" : "/app"}
+            translate="no"
+          >
+            <span className="brandmark">M</span>
+            <strong>MosDNS X</strong>
+          </NavLink>
+          <div className="mobile-account">
+            <button className="link" onClick={exit} aria-label="移动端退出登录">
+              退出
             </button>
-          </header>
-        ) : null}
+          </div>
+        </header>
         {logoutError ? <Alert error={logoutError} /> : null}
         <UnsavedGuardContext.Provider value={registerUnsavedGuard}>
           <Outlet />
@@ -418,6 +434,7 @@ export function Modal({
   className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleID = useId();
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
@@ -428,7 +445,7 @@ export function Modal({
     <dialog
       ref={ref}
       className={`modal ${className}`.trim()}
-      aria-labelledby="modal-title"
+      aria-labelledby={titleID}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
@@ -437,14 +454,21 @@ export function Modal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div onClick={(e) => e.stopPropagation()}>
-        <header>
-          <h2 id="modal-title">{title}</h2>
-          <button className="icon-button" onClick={onClose} aria-label="关闭">
-            ×
+      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+          <h2 id={titleID}>{title}</h2>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            <svg aria-hidden viewBox="0 0 24 24">
+              <path d="m6 6 12 12M18 6 6 18" />
+            </svg>
           </button>
         </header>
-        {children}
+        <div className="modal-body">{children}</div>
       </div>
     </dialog>
   );

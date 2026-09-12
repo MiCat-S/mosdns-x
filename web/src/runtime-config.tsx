@@ -124,13 +124,14 @@ function RuntimeSwitch({
 }) {
   return (
     <label className="runtime-switch">
+      <span className="runtime-switch-copy">{label}</span>
       <input
         type="checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
-      <span>{label}</span>
+      <span className="runtime-switch-control" aria-hidden />
     </label>
   );
 }
@@ -163,7 +164,7 @@ function RuntimeUpstreamEditor({
             aria-label={`上游 ${index + 1} 地址`}
             value={upstream.addr}
             disabled={disabled}
-            placeholder="https://dns.example/dns-query"
+            placeholder="例如：https://dns.example/dns-query…"
             required
             aria-invalid={!upstream.addr.trim() || undefined}
             onChange={(event) => update("addr", event.target.value)}

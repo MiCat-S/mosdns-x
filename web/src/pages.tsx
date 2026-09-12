@@ -201,30 +201,28 @@ export function Login() {
     <div className="login">
       <div className="login-shell">
         <div className="login-intro" aria-hidden>
-          <div className="login-orbit">
-            <span />
-            <span />
-            <span />
-            <strong>M</strong>
+          <div className="login-monogram">M</div>
+          <div className="login-intro-copy">
+            <p className="login-kicker">MOSDNS X / CONTROL PLANE</p>
+            <h2>DNS 服务的统一控制界面</h2>
+            <p>集中管理接入、策略、可观测性与运行状态。</p>
           </div>
-          <p className="login-kicker">PRIVATE DNS PLATFORM</p>
-          <h2>
-            让每一次查询
-            <br />
-            都清晰可控
-          </h2>
-          <p>统一管理用户、凭证、配额与 DNS 运行数据。</p>
+          <div className="login-capabilities">
+            <span>身份鉴权</span>
+            <span>运行观测</span>
+            <span>策略控制</span>
+          </div>
         </div>
         <section>
-          <div className="brand login-brand">
+          <div className="brand login-brand" translate="no">
             <span className="brandmark">M</span>
             <span className="brand-copy">
-              <strong>MosDNS</strong>
-              <small>Control Center</small>
+              <strong>MosDNS X</strong>
+              <small>Network Console</small>
             </span>
           </div>
-          <h1>欢迎回来</h1>
-          <p>登录后管理你的 DNS 服务</p>
+          <h1>登录控制台</h1>
+          <p>使用管理员或用户账户继续</p>
           <Alert error={error} />
           <form onSubmit={submit}>
             <Field label="用户名">
@@ -232,8 +230,7 @@ export function Login() {
                 name="username"
                 autoComplete="username"
                 required
-                autoFocus
-                placeholder="请输入用户名"
+                placeholder="请输入用户名…"
               />
             </Field>
             <Field label="密码">
@@ -242,7 +239,7 @@ export function Login() {
                 type="password"
                 autoComplete="current-password"
                 required
-                placeholder="请输入密码"
+                placeholder="请输入密码…"
               />
             </Field>
             <button className="primary wide login-submit" disabled={busy}>
@@ -830,7 +827,7 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
               required
               maxLength={80}
               autoComplete="off"
-              placeholder="例如：家中路由器"
+              placeholder="例如：家中路由器…"
             />
           </Field>
           <Field label="单独到期" hint="留空则跟随账户">
@@ -1711,7 +1708,7 @@ export function QueryDetails({
               <input
                 value={draft.name}
                 onChange={(event) => updateFilter("name", event.target.value)}
-                placeholder="包含 example.com"
+                placeholder="例如：包含 example.com…"
                 maxLength={255}
               />
             </Field>
@@ -1770,7 +1767,7 @@ export function QueryDetails({
                   onChange={(event) =>
                     updateFilter("credentialId", event.target.value)
                   }
-                  placeholder="凭证 ID"
+                  placeholder="凭证 ID…"
                   maxLength={64}
                 />
               )}
@@ -1798,7 +1795,7 @@ export function QueryDetails({
                 onChange={(event) =>
                   updateFilter("address", event.target.value)
                 }
-                placeholder="192.0.2.1"
+                placeholder="例如：192.0.2.1…"
               />
             </Field>
             <Field label="缓存">
@@ -1830,7 +1827,7 @@ export function QueryDetails({
                 onChange={(event) =>
                   updateFilter("upstreamId", event.target.value)
                 }
-                placeholder="forward_remote/0"
+                placeholder="例如：forward_remote/0…"
                 maxLength={255}
               />
             </Field>
@@ -2619,14 +2616,14 @@ function CompactRuleForm({
           <input
             name="pattern"
             aria-label="重写域名"
-            placeholder="域名"
+            placeholder="输入域名…"
             maxLength={1024}
             required
           />
           <input
             name="value"
             aria-label="重写值"
-            placeholder="IP 地址或 CNAME"
+            placeholder="IP 地址或 CNAME…"
             maxLength={1024}
             required
           />
@@ -2642,7 +2639,7 @@ function CompactRuleForm({
           <input
             name="pattern"
             aria-label="规则域名"
-            placeholder="域名或匹配内容"
+            placeholder="域名或匹配内容…"
             maxLength={1024}
             required
           />
@@ -2945,13 +2942,13 @@ export function LookupPage() {
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="example.com"
+              placeholder="例如：example.com…"
               maxLength={255}
               required
             />
           </Field>
           <Field label="ECS（CIDR）" hint="此节点未支持 Lookup ECS。">
-            <input disabled placeholder="例如 203.0.113.0/24" />
+            <input disabled placeholder="例如：203.0.113.0/24…" />
           </Field>
           <button className="primary" disabled={busy}>
             {busy ? "正在查询…" : "开始查询"}
@@ -3468,7 +3465,7 @@ function PublicListForm({
             name="name"
             defaultValue={list?.name}
             autoComplete="off"
-            placeholder="例如 广告拦截"
+            placeholder="例如：广告拦截…"
             maxLength={128}
             required
           />
@@ -3477,7 +3474,7 @@ function PublicListForm({
           <input
             name="category"
             defaultValue={list?.category}
-            placeholder="例如 广告与追踪"
+            placeholder="例如：广告与追踪…"
             maxLength={64}
             autoComplete="off"
           />
@@ -3488,7 +3485,7 @@ function PublicListForm({
           name="url"
           type="url"
           defaultValue={list?.url}
-          placeholder="https://example.com/list.txt"
+          placeholder="例如：https://example.com/list.txt…"
           maxLength={2048}
           autoComplete="url"
           required
