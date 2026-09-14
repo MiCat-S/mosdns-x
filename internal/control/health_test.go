@@ -259,25 +259,27 @@ func TestRuntimeHealthNeverBlocksBehindPendingClose(t *testing.T) {
 	if h := s.RuntimeHealth(); h.Bolt == nil {
 		t.Fatal("open store reported no runtime stats")
 	}
-	// Hold the lock a long read transaction such as Backup would hold, then
-	// queue Close behind it. sync.RWMutex hands the pending writer priority.
-	s.mu.RLock()
 	closed := make(chan error, 1)
-	go func() { closed <- s.Close() }()
-	time.Sleep(50 * time.Millisecond)
-	done := make(chan StorageHealth, 1)
-	go func() { done <- s.RuntimeHealth() }()
-	select {
-	case h := <-done:
-		if h.Driver != "bbolt" || h.Bolt == nil {
-			t.Fatalf("runtime stats lost while a close was pending: %+v", h)
+	func() {
+		// Hold the lock a long read transaction such as Backup would hold, then
+		// queue Close behind it. sync.RWMutex hands the pending writer priority.
+		s.mu.RLock()
+		// Release before waiting for Close, including when Fatal/Fatalf exits
+		// the test and newTestStore's cleanup also tries to close the store.
+		defer s.mu.RUnlock()
+		go func() { closed <- s.Close() }()
+		time.Sleep(50 * time.Millisecond)
+		done := make(chan StorageHealth, 1)
+		go func() { done <- s.RuntimeHealth() }()
+		select {
+		case h := <-done:
+			if h.Driver != "bbolt" || h.Bolt == nil {
+				t.Fatalf("runtime stats lost while a close was pending: %+v", h)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("RuntimeHealth blocked behind a pending Close")
 		}
-	case <-time.After(2 * time.Second):
-		s.mu.RUnlock()
-		<-closed
-		t.Fatal("RuntimeHealth blocked behind a pending Close")
-	}
-	s.mu.RUnlock()
+	}()
 	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}

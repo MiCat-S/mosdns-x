@@ -182,3 +182,9 @@ MySQL 单元测试使用 sqlmock。真实 MySQL 5.7/8.4 的集成测试仍需要
 
 - 该并发路径不会 panic：bbolt 的 `stats` 指针在 DB 生命周期内不置空，`Stats()` 自带统计锁，关闭紧跟标志读取之后也只返回最后一次统计。
 - `MySQLStore.RuntimeHealth` 原本已是无锁读取 `closed` 加 `db.Stats()`，`database/sql` 在已关闭连接池上 `Stats()` 安全，本轮未改动。
+
+### 并发测试清理修复验证（2026-09-14）
+
+- 修复 `TestRuntimeHealthNeverBlocksBehindPendingClose` 的失败清理路径：将持锁区放入局部函数并 `defer RUnlock`，确保正常返回、`Fatalf` 断言失败、`Fatal` 超时退出时都先释放读锁，避免测试清理中的 `Store.Close()` 挂住。不改变生产代码。
+- 该测试以 `-race -count=20` 连续通过；存储包完整 `go test -mod=readonly -race ./internal/control -count=1`、对应 `go vet`、格式与差异检查通过。
+- 临时 `go test -overlay` 分别强制触发断言失败和超时分支；两种情况均以预期失败退出，未触发全局测试超时或清理死锁。故障注入文件不纳入仓库。
