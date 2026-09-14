@@ -224,7 +224,9 @@ func (h *Handler) healthSnapshot() HealthReport {
 			if p.MaxOpen > 0 {
 				pool = healthMetric("db_connections", pool.Label, pool.Unit, number(float64(p.InUse)*100/float64(p.MaxOpen)), 80, 90, "")
 			} else {
-				pool.Reason = "unlimited_pool"
+				// An unbounded pool has no ratio to observe. Leaving this
+				// "unknown" would suppress the overall score permanently.
+				pool.Status, pool.Reason = "not_applicable", "unlimited_pool"
 			}
 			rollback.Value = number(float64(p.RollbackErrors))
 			rollback.Status, rollback.Reason = "info", "cumulative_only"

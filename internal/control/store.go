@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -68,10 +69,14 @@ type Options struct {
 }
 
 type Store struct {
-	db              *bbolt.DB
-	clock           Clock
-	mu              sync.RWMutex
+	db    *bbolt.DB
+	clock Clock
+	mu    sync.RWMutex
+	// closed is authoritative and guarded by mu so no transaction may start
+	// after Close. closedFlag mirrors it for wait-free readers that must not
+	// queue behind Close, such as RuntimeHealth.
 	closed          bool
+	closedFlag      atomic.Bool
 	closeCh         chan struct{}
 	admitSlots      chan struct{}
 	healthScanLimit int
@@ -182,6 +187,7 @@ func (s *Store) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.closedFlag.Store(true)
 	close(s.closeCh)
 	return s.db.Close()
 }

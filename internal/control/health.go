@@ -170,14 +170,18 @@ func (s *Store) collectHealth(ctx context.Context, limit int) (StorageHealth, er
 	return result, nil
 }
 
+// RuntimeHealth must stay wait-free: /admin/health and every Prometheus scrape
+// call it, and Store.mu is held for whole read transactions such as Backup. A
+// pending Close would otherwise give the writer priority and block scrapes for
+// the duration of that transaction. bbolt keeps its stats pointer for the life
+// of the DB, so Stats stays safe if Close lands right after the flag read.
 func (s *Store) RuntimeHealth() StorageHealth {
 	result := StorageHealth{Driver: "bbolt"}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.closed {
-		stats := s.db.Stats()
-		result.Bolt = &BoltHealth{OpenReadTransactions: stats.OpenTxN, PendingPages: stats.PendingPageN}
+	if s.closedFlag.Load() {
+		return result
 	}
+	stats := s.db.Stats()
+	result.Bolt = &BoltHealth{OpenReadTransactions: stats.OpenTxN, PendingPages: stats.PendingPageN}
 	return result
 }
 
