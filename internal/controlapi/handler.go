@@ -143,6 +143,7 @@ type Handler struct {
 	lookupSlots   chan struct{}
 	limiter       *ipLimiter
 	lookupLimiter *ipLimiter
+	health        healthState
 }
 
 func New(opts Options) (*Handler, error) {
@@ -235,6 +236,7 @@ func New(opts Options) (*Handler, error) {
 		kdfSlots: make(chan struct{}, opts.LoginConcurrency), lookupSlots: make(chan struct{}, opts.LookupConcurrency),
 		limiter:       newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
 		lookupLimiter: newIPLimiter(opts.LookupRateLimit, opts.LookupRateWindow, opts.LookupIPCapacity, opts.Now),
+		health:        healthState{startedAt: opts.Now().UTC()},
 	}, nil
 }
 
@@ -439,7 +441,10 @@ func (h *Handler) cleanupSession(ctx context.Context, ss control.Session) {
 	// A disconnected client must not cancel cleanup of an already committed session.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := h.opts.Control.RevokeSession(cleanupCtx, ss.UserID, ss.ID); err != nil {
+	started := time.Now()
+	err := h.opts.Control.RevokeSession(cleanupCtx, ss.UserID, ss.ID)
+	h.recordCleanup(started, err)
+	if err != nil {
 		h.opts.Logger.Error("failed to revoke session after login response failure",
 			zap.String("session_id", ss.ID), zap.String("user_id", ss.UserID), zap.Error(err))
 	}
@@ -590,6 +595,10 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request, ss control.Session,
 }
 
 func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.Session, admin control.User, p string) {
+	if p == "/health" {
+		h.serveHealth(w, r)
+		return
+	}
 	if strings.HasPrefix(p, "/runtime/") {
 		h.adminRuntime(w, r, session.ID, strings.TrimPrefix(p, "/runtime"))
 		return
@@ -1976,6 +1985,8 @@ type ipLimiter struct {
 	now         func() time.Time
 	entries     map[string]ipEntry
 	nextCleanup time.Time
+	evicted     uint64
+	rejected    uint64
 }
 
 func newIPLimiter(limit int, window time.Duration, capacity int, now func() time.Time) *ipLimiter {
@@ -1989,6 +2000,7 @@ func (l *ipLimiter) allow(ip string) bool {
 		for k, e := range l.entries {
 			if now.Sub(e.start) >= l.window {
 				delete(l.entries, k)
+				l.evicted++
 			}
 		}
 		l.nextCleanup = now.Add(min(l.window, time.Minute))
@@ -1999,6 +2011,7 @@ func (l *ipLimiter) allow(ip string) bool {
 			return true
 		}
 		if e.count >= l.limit {
+			l.rejected++
 			return false
 		}
 		e.count++
@@ -2009,9 +2022,11 @@ func (l *ipLimiter) allow(ip string) bool {
 		for k, e := range l.entries {
 			if now.Sub(e.start) >= l.window {
 				delete(l.entries, k)
+				l.evicted++
 			}
 		}
 		if len(l.entries) >= l.capacity {
+			l.rejected++
 			return false
 		}
 	}

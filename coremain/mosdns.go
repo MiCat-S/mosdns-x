@@ -84,6 +84,7 @@ type Mosdns struct {
 	controlCfg        *ControlConfig
 	trustedProxies    []netip.Prefix
 	maintenanceCancel context.CancelFunc
+	maintenanceCtx    context.Context
 	maintenanceWG     sync.WaitGroup
 	apiMu             sync.Mutex
 	apiAccepting      bool
@@ -149,6 +150,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		}
 		maintCtx, cancel := context.WithCancel(context.Background())
 		m.maintenanceCancel = cancel
+		m.maintenanceCtx = maintCtx
 		maintainer, ok := m.control.(control.Maintainer)
 		if !ok {
 			return errors.New("control backend does not implement maintenance")
@@ -216,6 +218,15 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 			if err != nil {
 				return fmt.Errorf("failed to init control api: %w", err)
 			}
+			healthHandler := apiHandler.(*controlapi.Handler)
+			if err := m.metricsReg.Register(healthHandler); err != nil {
+				return fmt.Errorf("failed to register control health metrics: %w", err)
+			}
+			m.maintenanceWG.Add(1)
+			go func() {
+				defer m.maintenanceWG.Done()
+				healthHandler.RunHealthMonitor(m.maintenanceCtx)
+			}()
 		}
 		listener, err := net.Listen("tcp", httpAddr)
 		if err != nil {

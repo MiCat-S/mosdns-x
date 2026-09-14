@@ -7,6 +7,8 @@
 > 📌 **当前处理状态**: 请优先阅读 [安全复核与修复记录](SECURITY_REMEDIATION.md)（2026-09-14），了解实际修复情况。  
 > 以下初审资料保留供追溯，部分结论和示例已经纠正，不能直接作为补丁应用。
 
+监控功能已实现：管理员「系统概览」、受保护的 Prometheus 指标、结构化日志和只读脚本统一使用真实采集数据。入口、口径、限制与验证见 [实际监控说明](../docs/monitoring.md)，而不是原方案中的公共 `/health-ui` 示例。
+
 This directory contains the complete security review report and fix guide for mosdns-x.
 
 ---
@@ -24,6 +26,7 @@ This directory contains the complete security review report and fix guide for mo
 | **QA 测试** | [✅ VERIFICATION_REPORT.md](VERIFICATION_REPORT.md) | 验证方法和测试结果 |
 | **安全审计** | [📋 SECURITY_REVIEW_CN.md](SECURITY_REVIEW_CN.md) | 完整审查报告 |
 | **快速查阅** | [⚡ SECURITY_QUICKREF.md](SECURITY_QUICKREF.md) | 5分钟速查表 |
+| **运行监控** | [实际监控说明](../docs/monitoring.md) | 已实现的面板、API、指标与脚本 |
 
 ---
 

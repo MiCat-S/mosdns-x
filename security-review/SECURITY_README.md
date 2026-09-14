@@ -60,6 +60,26 @@
 
 ---
 
+### 5. [monitoring/](monitoring/) - 监控指标实施 📊
+**适合**: 运维工程师和 SRE  
+**阅读时间**: 根据方案选择
+
+包含内容：
+- **[README.md](monitoring/README.md)** - 监控文档索引
+- **[MONITORING_QUICKSTART.md](MONITORING_QUICKSTART.md)** - 快速启动（1-2小时）
+- **[MONITORING_IMPLEMENTATION.md](MONITORING_IMPLEMENTATION.md)** - 完整方案（2-4天）
+- **[monitoring-script.sh](monitoring-script.sh)** - 自动化监控脚本
+- **[monitoring-demo.sh](monitoring-demo.sh)** - 功能演示
+
+**监控的5大核心指标**：
+- 会话清理失败率
+- 数据库连接池使用率
+- 限速器内存大小
+- 凭证计数一致性
+- 整体健康评分
+
+---
+
 ## 🎯 根据角色选择文档
 
 ### 如果你是...
