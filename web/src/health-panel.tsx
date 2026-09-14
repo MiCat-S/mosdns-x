@@ -3,13 +3,21 @@ import { message, request } from "./api";
 import { Alert, Card, Metric, Spinner, fmt } from "./components";
 
 type HealthStatus =
-  "healthy" | "warning" | "critical" | "unknown" | "not_applicable";
+  | "healthy"
+  | "warning"
+  | "critical"
+  | "unknown"
+  | "not_applicable"
+  | "no_samples"
+  | "info";
 export interface HealthReport {
   timestamp: string;
   started_at: string;
   storage_checked_at: string | null;
   storage_status: string;
   storage_error?: string;
+  storage_age_seconds?: number | null;
+  runtime_status?: string;
   overall_status: HealthStatus;
   overall_score: number | null;
   metrics: {
@@ -24,6 +32,7 @@ export interface HealthReport {
   rate_limiters: {
     name: string;
     entries: number;
+    active_entries?: number;
     capacity: number;
     rejected_total: number;
     evicted_total: number;
@@ -51,19 +60,24 @@ const labels: Record<HealthStatus, string> = {
   critical: "异常",
   unknown: "数据不足",
   not_applicable: "不适用",
+  no_samples: "暂无样本",
+  info: "历史参考",
 };
 const reasons: Record<string, string> = {
-  no_samples: "尚无会话清理样本，不计算失败率",
+  no_samples: "尚无会话清理样本，不计算失败率，也不影响当前评分",
+  cumulative_only: "进程累计值，仅作历史参考；近期告警使用窗口增量",
   bbolt_backend: "bbolt 不使用 MySQL 事务或连接池",
   no_materialized_count: "MySQL 按事务查询计数，没有独立计数缓存",
   unlimited_pool: "连接池未设置上限，无法计算占用比例",
   not_collected: "等待首次数据库采集",
   collection_failed: "数据库采集失败，请检查服务日志",
-  scan_limit: "数据量超过单次扫描上限，未返回不完整统计",
+  scan_limit:
+    "数据量超过扫描预算；可调整 control.health_scan_limit，运行统计仍独立提供",
   stale: "数据库快照已过期，等待重新采集",
   unsupported: "当前后端未提供健康检查",
   invalid_value: "采集值无效",
   invalid_capacity: "无法读取有效容量",
+  runtime_unavailable: "运行统计不可用",
 };
 function Status({ status }: { status: HealthStatus }) {
   const color =
@@ -143,11 +157,13 @@ export function HealthPanel() {
     };
   }, [automatic, revision]);
   const storageFresh = data?.storage_status === "healthy";
+  const runtimeFresh =
+    (data?.runtime_status ?? data?.storage_status) === "healthy";
   return (
     <Card title="安全与运行监控">
       <div className="health-toolbar">
         <p className="caption">
-          页面每 5 秒刷新；数据库每分钟采集。指标与计数不包含用户秘密。
+          页面每 5 秒刷新；数据库每分钟扫描。连接池与限速器读取当前内存统计。
         </p>
         <div className="table-actions">
           <button
@@ -227,8 +243,8 @@ export function HealthPanel() {
             </table>
           </div>
           <p className="caption">
-            失败率、回滚失败与拒绝计数均从进程启动累计，不是最近 5
-            分钟数据。评分仅依据已采集指标，不代表安全审计结论或服务可用性承诺。
+            清理失败率、回滚失败与拒绝计数从进程启动累计，仅作历史参考，不影响当前评分。
+            暂无样本不等于采集失败；未知的适用指标仍会使评分不可用。评分不代表安全审计结论或服务可用性承诺。
           </p>
           <div className="metrics health-summary">
             <Metric
@@ -243,14 +259,14 @@ export function HealthPanel() {
               <Metric
                 label="控制库使用中 / 连接上限"
                 value={
-                  storageFresh
+                  runtimeFresh
                     ? `${value(data.storage.mysql.in_use)} / ${data.storage.mysql.max_open === 0 ? "无限制" : value(data.storage.mysql.max_open)}`
                     : "—"
                 }
                 hint={
-                  storageFresh
+                  runtimeFresh
                     ? `累计等待 ${value(data.storage.mysql.wait_count)} 次`
-                    : "数据库快照不可用"
+                    : "运行统计不可用"
                 }
               />
             ) : null}
@@ -258,7 +274,7 @@ export function HealthPanel() {
               <Metric
                 label="bbolt 只读事务 / 待复用页"
                 value={
-                  storageFresh
+                  runtimeFresh
                     ? `${value(data.storage.bbolt.open_read_transactions)} / ${value(data.storage.bbolt.pending_pages)}`
                     : "—"
                 }
@@ -275,7 +291,8 @@ export function HealthPanel() {
               <thead>
                 <tr>
                   <th>限速器</th>
-                  <th>条目 / 容量</th>
+                  <th>有效条目 / 容量</th>
+                  <th>内存保留条目</th>
                   <th>累计拒绝</th>
                   <th>累计清理</th>
                 </tr>
@@ -287,8 +304,10 @@ export function HealthPanel() {
                       {limiter.name === "login" ? "面板登录" : "面板 DNS 查询"}
                     </td>
                     <td>
-                      {value(limiter.entries)} / {value(limiter.capacity)}
+                      {value(limiter.active_entries)} /{" "}
+                      {value(limiter.capacity)}
                     </td>
+                    <td>{value(limiter.entries)}</td>
                     <td>{value(limiter.rejected_total)}</td>
                     <td>{value(limiter.evicted_total)}</td>
                   </tr>

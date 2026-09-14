@@ -51,6 +51,38 @@ class ReportTests(unittest.TestCase):
         self.sample["metrics"][0].update(status="not_applicable")
         self.assertEqual(monitor.analyze([self.line()], self.now)["status"], "healthy")
 
+    def test_no_samples_and_historical_errors_do_not_block_health(self):
+        self.sample["runtime_status"] = "healthy"
+        self.sample["storage_age_seconds"] = 0
+        self.sample["metrics"][0].update(status="no_samples", value=None)
+        self.sample["metrics"][4].update(status="info", value=1)
+        report = monitor.analyze([self.line()], self.now)
+        self.assertEqual(report["status"], "healthy")
+        self.assertEqual(report["score"], 100)
+        self.sample["metrics"][0].update(status="info", value=100)
+        self.assertEqual(monitor.analyze([self.line()], self.now)["score"], 100)
+
+    def test_scan_failure_preserves_runtime_metrics_and_applicability(self):
+        self.sample.update(storage_status="unknown", runtime_status="healthy", storage_age_seconds=0)
+        self.sample["metrics"][0].update(status="no_samples", value=None)
+        self.sample["metrics"][1].update(status="healthy", value=20)
+        self.sample["metrics"][3].update(status="not_applicable", value=None)
+        self.sample["metrics"][4].update(status="info", value=2)
+        report = monitor.analyze([self.line()], self.now)
+        self.assertEqual(report["status"], "unknown")
+        self.assertIsNone(report["score"])
+        self.assertEqual(report["metrics"][1]["value"], 20)
+        self.assertEqual(report["metrics"][3]["status"], "not_applicable")
+        self.assertEqual(report["metrics"][4]["value"], 2)
+
+    def test_monotonic_scan_age_survives_wall_adjustment_but_event_still_expires(self):
+        self.sample.update(runtime_status="healthy", storage_age_seconds=30)
+        self.sample["storage_checked_at"] = (self.now + dt.timedelta(hours=1)).isoformat()
+        self.assertEqual(monitor.analyze([self.line()], self.now)["status"], "healthy")
+        self.assertEqual(monitor.analyze([self.line()], self.now + dt.timedelta(seconds=91))["status"], "unknown")
+        self.sample["storage_age_seconds"] = None
+        self.assertEqual(monitor.analyze([self.line()], self.now)["status"], "unknown")
+
     def test_critical_wins_but_incomplete_has_no_score(self):
         self.sample["metrics"][0].update(status="critical", value=20)
         self.sample["metrics"][1].update(status="unknown", value=None)

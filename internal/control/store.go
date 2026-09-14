@@ -62,17 +62,19 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now() }
 
 type Options struct {
-	Clock          Clock
-	AdmitQueueSize int
+	Clock           Clock
+	AdmitQueueSize  int
+	HealthScanLimit int
 }
 
 type Store struct {
-	db         *bbolt.DB
-	clock      Clock
-	mu         sync.RWMutex
-	closed     bool
-	closeCh    chan struct{}
-	admitSlots chan struct{}
+	db              *bbolt.DB
+	clock           Clock
+	mu              sync.RWMutex
+	closed          bool
+	closeCh         chan struct{}
+	admitSlots      chan struct{}
+	healthScanLimit int
 }
 
 type userRecord struct {
@@ -116,6 +118,12 @@ func Open(path string, opts Options) (*Store, error) {
 	if opts.AdmitQueueSize < 0 {
 		return nil, fmt.Errorf("%w: negative admit queue size", ErrInvalidInput)
 	}
+	if err := ValidateHealthScanLimit(opts.HealthScanLimit); err != nil {
+		return nil, err
+	}
+	if opts.HealthScanLimit == 0 {
+		opts.HealthScanLimit = DefaultHealthScanLimit
+	}
 	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("%w: open database: %v", ErrUnavailable, err)
@@ -126,7 +134,7 @@ func Open(path string, opts Options) (*Store, error) {
 	}
 	db.MaxBatchDelay = time.Millisecond
 	db.MaxBatchSize = 128
-	s := &Store{db: db, clock: opts.Clock, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, opts.AdmitQueueSize)}
+	s := &Store{db: db, clock: opts.Clock, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, opts.AdmitQueueSize), healthScanLimit: opts.HealthScanLimit}
 	if err := db.Update(func(tx *bbolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists(bMeta)
 		if err != nil {

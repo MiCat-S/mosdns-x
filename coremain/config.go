@@ -41,17 +41,18 @@ type Config struct {
 }
 
 type ControlConfig struct {
-	Database       string          `yaml:"database"`
-	StatsDatabase  string          `yaml:"stats_database"`
-	PublicDNSURL   string          `yaml:"public_dns_url"`
-	PanelOrigin    string          `yaml:"panel_origin"`
-	Development    bool            `yaml:"development"`
-	QueryLog       bool            `yaml:"query_log"`
-	EnablePprof    bool            `yaml:"enable_pprof"`
-	TrustedProxies []string        `yaml:"trusted_proxies"`
-	ManagedConfig  string          `yaml:"managed_config"`
-	Storage        StorageConfig   `yaml:"storage"`
-	Telemetry      TelemetryConfig `yaml:"telemetry"`
+	Database        string          `yaml:"database"`
+	StatsDatabase   string          `yaml:"stats_database"`
+	PublicDNSURL    string          `yaml:"public_dns_url"`
+	PanelOrigin     string          `yaml:"panel_origin"`
+	Development     bool            `yaml:"development"`
+	QueryLog        bool            `yaml:"query_log"`
+	EnablePprof     bool            `yaml:"enable_pprof"`
+	TrustedProxies  []string        `yaml:"trusted_proxies"`
+	ManagedConfig   string          `yaml:"managed_config"`
+	HealthScanLimit int             `yaml:"health_scan_limit"`
+	Storage         StorageConfig   `yaml:"storage"`
+	Telemetry       TelemetryConfig `yaml:"telemetry"`
 }
 
 type StorageConfig struct {

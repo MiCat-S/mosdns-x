@@ -236,7 +236,7 @@ func New(opts Options) (*Handler, error) {
 		kdfSlots: make(chan struct{}, opts.LoginConcurrency), lookupSlots: make(chan struct{}, opts.LookupConcurrency),
 		limiter:       newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
 		lookupLimiter: newIPLimiter(opts.LookupRateLimit, opts.LookupRateWindow, opts.LookupIPCapacity, opts.Now),
-		health:        healthState{startedAt: opts.Now().UTC()},
+		health:        healthState{startedAt: opts.Now().UTC(), monotonicNow: time.Now},
 	}, nil
 }
 

@@ -10,14 +10,15 @@ import time
 MAX_TAIL_BYTES = 8 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024
 KEYS = {
-    "session_cleanup": "会话清理失败率",
+    "session_cleanup": "累计会话清理失败率",
     "db_connections": "控制库连接池占用",
     "rate_limiter": "IP 限速器最高占用",
-    "credential_count": "凭证计数不一致用户",
-    "transaction_rollback": "MySQL 回滚失败",
+    "credential_count": "凭证一致性异常",
+    "transaction_rollback": "累计 MySQL 回滚失败",
 }
 STATUSES = {"healthy": "正常", "warning": "警告", "critical": "异常",
-            "unknown": "数据不足", "not_applicable": "不适用"}
+            "unknown": "数据不足", "not_applicable": "不适用",
+            "no_samples": "暂无样本", "info": "历史参考"}
 EXIT_CODES = {"healthy": 0, "warning": 1, "critical": 2, "unknown": 3}
 
 
@@ -71,7 +72,7 @@ def validate_snapshot(snapshot):
         if not isinstance(key, str) or key not in KEYS or key in seen or not isinstance(status, str) or status not in STATUSES:
             return False
         seen.add(key)
-        if status in {"unknown", "not_applicable"}:
+        if status in {"unknown", "not_applicable", "no_samples"}:
             if value is not None:
                 return False
         elif not finite_number(value):
@@ -99,18 +100,30 @@ def analyze(lines, now, minutes=5):
     if not validate_snapshot(latest):
         return {"status": "unknown", "reason": "invalid_health_snapshot", "score": None, "metrics": []}
     metrics = [{key: item.get(key) for key in ("key", "status", "value")} for item in latest["metrics"]]
+    # New reports supply a server-monotonic scan age. The elapsed time since
+    # this log event must still be added; an old event cannot stay fresh forever.
+    event_age = (now - latest_at).total_seconds()
     storage_fresh = latest.get("storage_status") == "healthy"
-    try:
-        checked = timestamp(latest.get("storage_checked_at"))
-        storage_fresh = storage_fresh and dt.timedelta(0) <= now - checked <= dt.timedelta(seconds=120)
-    except (ValueError, OverflowError):
-        storage_fresh = False
+    if "storage_age_seconds" in latest:
+        age = latest["storage_age_seconds"]
+        storage_fresh = storage_fresh and finite_number(age) and age + event_age <= 120
+    else:
+        try:
+            checked = timestamp(latest.get("storage_checked_at"))
+            storage_fresh = storage_fresh and dt.timedelta(0) <= now - checked <= dt.timedelta(seconds=120)
+        except (ValueError, OverflowError):
+            storage_fresh = False
+    runtime_fresh = latest.get("runtime_status") == "healthy" and event_age <= 120 if "runtime_status" in latest else storage_fresh
     if not storage_fresh:
         for item in metrics:
-            if item["key"] in {"db_connections", "credential_count", "transaction_rollback"}:
+            if item["key"] == "credential_count" and item["status"] != "not_applicable":
+                item["status"], item["value"] = "unknown", None
+    if not runtime_fresh:
+        for item in metrics:
+            if item["key"] in {"db_connections", "transaction_rollback"} and item["status"] != "not_applicable":
                 item["status"], item["value"] = "unknown", None
     statuses = {item["status"] for item in metrics}
-    complete = storage_fresh and "unknown" not in statuses
+    complete = storage_fresh and runtime_fresh and "unknown" not in statuses
     status = "critical" if "critical" in statuses else "warning" if "warning" in statuses else "healthy" if complete else "unknown"
     score = max(0, 100 - sum(25 if m["status"] == "critical" else 10 if m["status"] == "warning" else 0 for m in metrics)) if complete else None
     return {
@@ -149,7 +162,8 @@ def display(report, as_json):
     for metric in report["metrics"]:
         value = metric["value"] if metric["value"] is not None else "—"
         print(f"  {KEYS[metric['key']]}：{value} · {STATUSES[metric['status']]}")
-    print("计数与失败率从进程启动累计；时间窗口仅用于选择新鲜快照。")
+    print("累计错误仅作历史参考，不参与当前评分；无样本不等于采集失败。")
+    print("时间窗口仅用于选择新鲜快照；近期错误告警应使用 Prometheus increase()。")
     if report.get("tail_limited"):
         print("仅读取日志末尾 8 MiB；缺失数据不代表正常。")
 
@@ -161,8 +175,9 @@ def demo():
         "storage_status": "healthy",
         "metrics": [{"key": key, "status": "healthy", "value": 0} for key in KEYS],
     }
-    report["metrics"][0].update(status="unknown", value=None)
-    print("模拟数据演示（不是服务实测）；无清理样本应显示“数据不足”。")
+    report["metrics"][0].update(status="no_samples", value=None)
+    report["metrics"][4].update(status="info", value=1)
+    print("模拟数据演示（不是服务实测）；无样本与历史错误不阻断当前健康评分。")
     with tempfile.TemporaryDirectory(prefix="mosdns-monitor-demo-") as directory:
         path = Path(directory) / "sample.jsonl"
         path.write_text(json.dumps({"msg": "security_health", "health": report}) + "\n")

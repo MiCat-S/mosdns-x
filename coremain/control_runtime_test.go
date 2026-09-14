@@ -3,13 +3,18 @@ package coremain
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 
+	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/safe_close"
 )
@@ -56,6 +61,9 @@ func TestValidateControlConfig(t *testing.T) {
 		want   string
 	}{
 		{name: "valid"},
+		{name: "custom health scan budget", change: func(c *Config) { c.Control.HealthScanLimit = 100_000 }},
+		{name: "negative health scan budget", change: func(c *Config) { c.Control.HealthScanLimit = -1 }, want: "health scan limit"},
+		{name: "excessive health scan budget", change: func(c *Config) { c.Control.HealthScanLimit = 1_000_001 }, want: "health scan limit"},
 		{name: "valid mysql", change: func(c *Config) {
 			c.Control.Database = ""
 			c.Control.StatsDatabase = ""
@@ -114,6 +122,53 @@ func TestValidateControlConfigDefaultsPath(t *testing.T) {
 	}
 	if u.Path != "/dns-query" || cfg.Servers[0].Listeners[0].URLPath != "/dns-query" {
 		t.Fatalf("paths = %q, %q", u.Path, cfg.Servers[0].Listeners[0].URLPath)
+	}
+}
+
+func TestHealthScanLimitFromYAMLToStore(t *testing.T) {
+	for _, limit := range []int{0, 1, 2, 100_000} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.yaml")
+			config := fmt.Sprintf("control:\n  database: %q\n  health_scan_limit: %d\n",
+				filepath.Join(dir, "control.db"), limit)
+			if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, _, err := loadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Control == nil || cfg.Control.HealthScanLimit != limit {
+				t.Fatalf("scan budget not decoded: %+v", cfg.Control)
+			}
+			ctx := context.Background()
+			store, err := openControlStore(ctx, cfg.Control)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			admin, err := store.InitializeAdmin(ctx, control.UserSpec{
+				Username: "budget-admin", Password: "test-budget-password",
+				Limit: 100, QPS: 10, MaxCredentials: 5,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.CreateSession(ctx, admin.ID, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			// One user plus one session: the configured limit must reach the
+			// actual store, and a budget of exactly two must accept both records.
+			health, err := store.(control.HealthProvider).CollectHealth(ctx)
+			if limit == 1 {
+				if !errors.Is(err, control.ErrHealthScanLimit) || health.ActiveSessions != nil || health.Bolt == nil {
+					t.Fatalf("budget not enforced without losing runtime stats: %+v %v", health, err)
+				}
+			} else if err != nil || health.ActiveSessions == nil || *health.ActiveSessions != 1 {
+				t.Fatalf("default or sufficient budget rejected: %+v %v", health, err)
+			}
+		})
 	}
 }
 

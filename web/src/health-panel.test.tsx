@@ -14,15 +14,16 @@ function report(): HealthReport {
     started_at: "2026-09-14T11:00:00Z",
     storage_checked_at: "2026-09-14T12:00:00Z",
     storage_status: "healthy",
-    overall_status: "unknown",
-    overall_score: null,
+    runtime_status: "healthy",
+    overall_status: "healthy",
+    overall_score: 100,
     metrics: [
       {
         key: "session_cleanup",
         label: "会话清理失败率",
         value: null,
         unit: "%",
-        status: "unknown",
+        status: "no_samples",
         reason: "no_samples",
       },
       {
@@ -53,6 +54,7 @@ function report(): HealthReport {
       {
         name: "login",
         entries: 0,
+        active_entries: 0,
         capacity: 4096,
         evicted_total: 0,
         rejected_total: 0,
@@ -75,15 +77,18 @@ afterEach(() => {
 });
 
 describe("管理员健康监控", () => {
-  it("明确区分零、无样本与不适用，不伪造健康评分", async () => {
+  it("明确区分零、无样本与不适用，无样本不会阻断正常评分", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(report())));
     render(<HealthPanel />);
     expect(
-      await screen.findByText("尚无会话清理样本，不计算失败率"),
+      await screen.findByText(
+        "尚无会话清理样本，不计算失败率，也不影响当前评分",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("0%")).toBeInTheDocument();
     expect(screen.getByText("不适用")).toBeInTheDocument();
-    expect(screen.getByText(/已观测项评分：—（指标不足）/)).toBeInTheDocument();
+    expect(screen.getByText("暂无样本")).toBeInTheDocument();
+    expect(screen.getByText(/已观测项评分：100/)).toBeInTheDocument();
     expect(
       screen.getByRole("table", { name: "安全监控指标" }),
     ).toBeInTheDocument();
@@ -109,9 +114,11 @@ describe("管理员健康监控", () => {
     expect(screen.queryByText(/已观测项评分：100/)).not.toBeInTheDocument();
   });
 
-  it("过期的数据库快照不展示旧的连接池计数", async () => {
+  it("运行统计失效时不展示旧的连接池计数", async () => {
     const data = report();
     data.storage_status = "unknown";
+    data.runtime_status = "unknown";
+    data.overall_score = null;
     data.storage_error = "stale";
     data.storage = {
       driver: "mysql",
@@ -129,9 +136,48 @@ describe("管理员健康监控", () => {
     };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(data)));
     render(<HealthPanel />);
-    expect(await screen.findByText("数据库快照不可用")).toBeInTheDocument();
+    expect(await screen.findByText("运行统计不可用")).toBeInTheDocument();
     expect(screen.queryByText("累计等待 123 次")).not.toBeInTheDocument();
     expect(screen.queryByText("3 / 20")).not.toBeInTheDocument();
+  });
+
+  it("扫描失败仍显示独立连接池统计，累计错误只标为历史参考", async () => {
+    const data = report();
+    data.storage_status = "unknown";
+    data.storage_error = "scan_limit";
+    data.overall_status = "unknown";
+    data.overall_score = null;
+    data.storage = {
+      driver: "mysql",
+      active_sessions: null,
+      credential_count_mismatches: null,
+      mysql: {
+        max_open: 20,
+        open: 5,
+        in_use: 3,
+        idle: 2,
+        wait_count: 123,
+        wait_seconds: 2,
+        rollback_errors_total: 1,
+      },
+    };
+    data.metrics[0] = {
+      key: "session_cleanup",
+      label: "累计会话清理失败率",
+      value: 100,
+      unit: "%",
+      status: "info",
+      reason: "cumulative_only",
+    };
+    data.rate_limiters[0].entries = 3900;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(data)));
+    render(<HealthPanel />);
+    expect(await screen.findByText("3 / 20")).toBeInTheDocument();
+    expect(screen.getByText("累计等待 123 次")).toBeInTheDocument();
+    expect(screen.getByText("历史参考")).toBeInTheDocument();
+    expect(screen.getByText(/已观测项评分：—（指标不足）/)).toBeInTheDocument();
+    expect(screen.getByText("0 / 4,096")).toBeInTheDocument();
+    expect(screen.getByText("3,900")).toBeInTheDocument();
   });
 
   it("不会重叠轮询，卸载时取消正在进行的请求", async () => {

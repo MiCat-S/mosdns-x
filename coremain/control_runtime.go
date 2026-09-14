@@ -22,6 +22,9 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	if c == nil {
 		return nil, nil, nil
 	}
+	if err := control.ValidateHealthScanLimit(c.HealthScanLimit); err != nil {
+		return nil, nil, err
+	}
 	controlDriver := effectiveControlDriver(c)
 	telemetryDriver := effectiveTelemetryDriver(c)
 	if controlDriver != "bbolt" && controlDriver != "mysql" {
@@ -169,7 +172,7 @@ func openControlStore(ctx context.Context, c *ControlConfig) (control.Service, e
 		return nil, err
 	}
 	if effectiveControlDriver(c) == "bbolt" {
-		return control.Open(c.Database, control.Options{})
+		return control.Open(c.Database, control.Options{HealthScanLimit: c.HealthScanLimit})
 	}
 	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
 	return control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})

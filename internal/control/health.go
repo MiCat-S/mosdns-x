@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,7 +9,17 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-const healthScanLimit = 50_000
+const (
+	DefaultHealthScanLimit = 50_000
+	MaxHealthScanLimit     = 1_000_000
+)
+
+func ValidateHealthScanLimit(limit int) error {
+	if limit < 0 || limit > MaxHealthScanLimit {
+		return fmt.Errorf("%w: health scan limit must be between 0 and %d", ErrInvalidInput, MaxHealthScanLimit)
+	}
+	return nil
+}
 
 var ErrHealthScanLimit = errors.New("health scan limit exceeded")
 
@@ -16,6 +27,12 @@ var ErrHealthScanLimit = errors.New("health scan limit exceeded")
 // Collection is read-only. Callers must bound its frequency and provide a deadline.
 type HealthProvider interface {
 	CollectHealth(context.Context) (StorageHealth, error)
+}
+
+// RuntimeHealthProvider supplies cheap driver-local statistics without SQL,
+// scanning records, or acquiring a database transaction.
+type RuntimeHealthProvider interface {
+	RuntimeHealth() StorageHealth
 }
 
 type StorageHealth struct {
@@ -42,11 +59,14 @@ type BoltHealth struct {
 }
 
 func (s *Store) CollectHealth(ctx context.Context) (StorageHealth, error) {
-	return s.collectHealth(ctx, healthScanLimit)
+	return s.collectHealth(ctx, s.healthScanLimit)
 }
 
 func (s *Store) collectHealth(ctx context.Context, limit int) (StorageHealth, error) {
-	result := StorageHealth{Driver: "bbolt"}
+	result := s.RuntimeHealth()
+	if result.Bolt == nil {
+		return result, ErrUnavailable
+	}
 	var sessions, mismatches uint64
 	limited := false
 	now := s.clock.Now().UTC()
@@ -89,16 +109,22 @@ func (s *Store) collectHealth(ctx context.Context, limit int) (StorageHealth, er
 			if err := check(); err != nil {
 				return err
 			}
-			var c credentialRecord
-			if err := decode(tx.Bucket(bCredentials).Get(id), &c); err != nil {
-				return err
-			}
-			u := users[c.UserID]
-			if u == nil || string(k) != string(userCredentialKey(c.UserID, c.ID)) || string(id) != c.ID {
-				return fmt.Errorf("invalid active credential index")
+			owner, credentialID, ok := bytes.Cut(k, []byte{0})
+			u := users[string(owner)]
+			if !ok || len(owner) == 0 || len(credentialID) == 0 || u == nil {
+				// Unattributable entries are distinct integrity faults, not
+				// reasons to discard all other measurements.
+				mismatches++
+				return nil
 			}
 			u.indexed++
-			u.invalid = u.invalid || !c.RevokedAt.IsZero()
+			var c credentialRecord
+			if err := decode(tx.Bucket(bCredentials).Get(id), &c); err != nil {
+				u.invalid = true
+				return nil
+			}
+			u.invalid = u.invalid || c.UserID != string(owner) ||
+				c.ID != string(credentialID) || string(id) != c.ID || !c.RevokedAt.IsZero()
 			return nil
 		}); err != nil {
 			return err
@@ -135,20 +161,28 @@ func (s *Store) collectHealth(ctx context.Context, limit int) (StorageHealth, er
 		}
 		return result, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.closed {
+	result.Bolt = s.RuntimeHealth().Bolt
+	if result.Bolt == nil {
 		return result, ErrUnavailable
 	}
-	stats := s.db.Stats()
 	result.ActiveSessions = &sessions
 	result.CredentialCountMismatches = &mismatches
-	result.Bolt = &BoltHealth{OpenReadTransactions: stats.OpenTxN, PendingPages: stats.PendingPageN}
 	return result, nil
 }
 
+func (s *Store) RuntimeHealth() StorageHealth {
+	result := StorageHealth{Driver: "bbolt"}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.closed {
+		stats := s.db.Stats()
+		result.Bolt = &BoltHealth{OpenReadTransactions: stats.OpenTxN, PendingPages: stats.PendingPageN}
+	}
+	return result
+}
+
 func (s *MySQLStore) CollectHealth(ctx context.Context) (StorageHealth, error) {
-	result := StorageHealth{Driver: "mysql"}
+	result := s.RuntimeHealth()
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -165,17 +199,31 @@ func (s *MySQLStore) CollectHealth(ctx context.Context) (StorageHealth, error) {
 	if err != nil {
 		return result, mysqlStoreError(err)
 	}
-	stats := s.db.Stats()
+	result.MySQL = s.RuntimeHealth().MySQL
+	if result.MySQL == nil {
+		return result, ErrUnavailable
+	}
 	result.ActiveSessions = &active
 	// MySQL checks COUNT(*) under a user row lock; there is no cached credential
 	// count to compare. Leave the metric nil, not a fabricated zero.
+	return result, nil
+}
+
+func (s *MySQLStore) RuntimeHealth() StorageHealth {
+	result := StorageHealth{Driver: "mysql"}
+	if s.closed.Load() {
+		return result
+	}
+	stats := s.db.Stats()
 	result.MySQL = &PoolHealth{
 		MaxOpen: stats.MaxOpenConnections, Open: stats.OpenConnections, InUse: stats.InUse,
 		Idle: stats.Idle, WaitCount: stats.WaitCount, WaitSeconds: stats.WaitDuration.Seconds(),
 		RollbackErrors: s.rollbackErrors.Load(),
 	}
-	return result, nil
+	return result
 }
 
 var _ HealthProvider = (*Store)(nil)
 var _ HealthProvider = (*MySQLStore)(nil)
+var _ RuntimeHealthProvider = (*Store)(nil)
+var _ RuntimeHealthProvider = (*MySQLStore)(nil)

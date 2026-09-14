@@ -32,33 +32,38 @@ type CleanupHealth struct {
 type LimiterHealth struct {
 	Name     string `json:"name"`
 	Entries  int    `json:"entries"`
+	Active   int    `json:"active_entries"`
 	Capacity int    `json:"capacity"`
 	Evicted  uint64 `json:"evicted_total"`
 	Rejected uint64 `json:"rejected_total"`
 }
 
 type HealthReport struct {
-	Timestamp        time.Time             `json:"timestamp"`
-	StartedAt        time.Time             `json:"started_at"`
-	StorageCheckedAt *time.Time            `json:"storage_checked_at"`
-	StorageStatus    string                `json:"storage_status"`
-	StorageError     string                `json:"storage_error,omitempty"`
-	Storage          control.StorageHealth `json:"storage"`
-	Cleanup          CleanupHealth         `json:"cleanup"`
-	RateLimiters     []LimiterHealth       `json:"rate_limiters"`
-	Metrics          []HealthMetric        `json:"metrics"`
-	OverallStatus    string                `json:"overall_status"`
-	OverallScore     *int                  `json:"overall_score"`
+	Timestamp         time.Time             `json:"timestamp"`
+	StartedAt         time.Time             `json:"started_at"`
+	StorageCheckedAt  *time.Time            `json:"storage_checked_at"`
+	StorageStatus     string                `json:"storage_status"`
+	StorageError      string                `json:"storage_error,omitempty"`
+	StorageAgeSeconds *float64              `json:"storage_age_seconds"`
+	RuntimeStatus     string                `json:"runtime_status"`
+	Storage           control.StorageHealth `json:"storage"`
+	Cleanup           CleanupHealth         `json:"cleanup"`
+	RateLimiters      []LimiterHealth       `json:"rate_limiters"`
+	Metrics           []HealthMetric        `json:"metrics"`
+	OverallStatus     string                `json:"overall_status"`
+	OverallScore      *int                  `json:"overall_score"`
 }
 
 type healthState struct {
-	mu        sync.Mutex
-	refreshMu sync.Mutex
-	startedAt time.Time
-	checkedAt *time.Time
-	storage   control.StorageHealth
-	errCode   string
-	cleanup   CleanupHealth
+	mu           sync.Mutex
+	refreshMu    sync.Mutex
+	startedAt    time.Time
+	checkedAt    *time.Time
+	checkedMono  time.Time
+	monotonicNow func() time.Time
+	storage      control.StorageHealth
+	errCode      string
+	cleanup      CleanupHealth
 }
 
 // RunHealthMonitor is owned by coremain's maintenance lifecycle. It must stop
@@ -106,6 +111,7 @@ func (h *Handler) refreshHealth(ctx context.Context) {
 	h.health.mu.Lock()
 	defer h.health.mu.Unlock()
 	h.health.storage, h.health.checkedAt, h.health.errCode = storage, &now, code
+	h.health.checkedMono = h.health.monotonicNow()
 }
 
 func (h *Handler) recordCleanup(start time.Time, err error) {
@@ -121,7 +127,14 @@ func (h *Handler) recordCleanup(start time.Time, err error) {
 func (l *ipLimiter) healthSnapshot(name string) LimiterHealth {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return LimiterHealth{Name: name, Entries: len(l.entries), Capacity: l.capacity, Evicted: l.evicted, Rejected: l.rejected}
+	active := 0
+	now := l.now()
+	for _, entry := range l.entries {
+		if now.Sub(entry.start) < l.window {
+			active++
+		}
+	}
+	return LimiterHealth{Name: name, Entries: len(l.entries), Active: active, Capacity: l.capacity, Evicted: l.evicted, Rejected: l.rejected}
 }
 
 func healthMetric(key, label, unit string, value *float64, warning, critical float64, reason string) HealthMetric {
@@ -151,19 +164,37 @@ func (h *Handler) healthSnapshot() HealthReport {
 		Timestamp: now, StartedAt: h.health.startedAt, StorageCheckedAt: h.health.checkedAt,
 		Storage: h.health.storage, StorageError: h.health.errCode, Cleanup: h.health.cleanup,
 	}
+	if r.StorageCheckedAt != nil {
+		r.StorageAgeSeconds = number(h.health.monotonicNow().Sub(h.health.checkedMono).Seconds())
+	}
 	h.health.mu.Unlock()
 	r.StorageStatus = "healthy"
 	if r.StorageCheckedAt == nil {
 		r.StorageStatus, r.StorageError = "unknown", "not_collected"
-	} else if now.Before(*r.StorageCheckedAt) || now.Sub(*r.StorageCheckedAt) > 2*healthInterval {
+	} else if *r.StorageAgeSeconds < 0 || *r.StorageAgeSeconds > (2*healthInterval).Seconds() {
 		r.StorageStatus, r.StorageError = "unknown", "stale"
 	} else if r.StorageError != "" {
 		r.StorageStatus = "unknown"
 	}
+	// Cheap runtime counters are independent of the periodic database scan.
+	// The optional provider must only read in-memory driver statistics.
+	r.RuntimeStatus = "unknown"
+	if provider, ok := h.opts.Control.(control.RuntimeHealthProvider); ok {
+		stats := provider.RuntimeHealth()
+		r.Storage.Driver, r.Storage.MySQL, r.Storage.Bolt = stats.Driver, stats.MySQL, stats.Bolt
+		if stats.MySQL != nil || stats.Bolt != nil {
+			r.RuntimeStatus = "healthy"
+		}
+	} else if r.StorageAgeSeconds != nil && *r.StorageAgeSeconds >= 0 &&
+		*r.StorageAgeSeconds <= (2*healthInterval).Seconds() && (r.Storage.MySQL != nil || r.Storage.Bolt != nil) {
+		r.RuntimeStatus = "healthy"
+	}
 	r.RateLimiters = []LimiterHealth{h.limiter.healthSnapshot("login"), h.lookupLimiter.healthSnapshot("lookup")}
-	cleanup := healthMetric("session_cleanup", "会话清理失败率", "%", nil, 1, 5, "no_samples")
+	cleanup := healthMetric("session_cleanup", "累计会话清理失败率", "%", nil, 1, 5, "no_samples")
+	cleanup.Status = "no_samples"
 	if r.Cleanup.Attempts > 0 {
-		cleanup = healthMetric("session_cleanup", "会话清理失败率", "%", number(float64(r.Cleanup.Errors)*100/float64(r.Cleanup.Attempts)), 1, 5, "")
+		cleanup.Value = number(float64(r.Cleanup.Errors) * 100 / float64(r.Cleanup.Attempts))
+		cleanup.Status, cleanup.Reason = "info", "cumulative_only"
 	}
 	limiter := healthMetric("rate_limiter", "IP 限速器最高占用", "%", nil, 80, 95, "invalid_capacity")
 	var highest float64
@@ -173,35 +204,34 @@ func (h *Handler) healthSnapshot() HealthReport {
 			valid = false
 			break
 		}
-		highest = max(highest, float64(l.Entries)*100/float64(l.Capacity))
+		highest = max(highest, float64(l.Active)*100/float64(l.Capacity))
 	}
 	if valid {
 		limiter = healthMetric("rate_limiter", "IP 限速器最高占用", "%", number(highest), 80, 95, "")
 	}
-	pool := healthMetric("db_connections", "控制库连接池占用", "%", nil, 80, 90, r.StorageError)
-	integrity := healthMetric("credential_count", "凭证计数不一致用户", "个", nil, 1, 1, r.StorageError)
-	rollback := healthMetric("transaction_rollback", "MySQL 回滚失败", "次", nil, 1, 1, r.StorageError)
-	if r.StorageStatus == "healthy" {
-		if r.Storage.Driver == "bbolt" {
-			pool.Status, pool.Reason = "not_applicable", "bbolt_backend"
-			rollback.Status, rollback.Reason = "not_applicable", "bbolt_backend"
-			if count := r.Storage.CredentialCountMismatches; count != nil {
-				integrity = healthMetric("credential_count", integrity.Label, integrity.Unit, number(float64(*count)), 1, 1, "")
+	pool := healthMetric("db_connections", "控制库连接池占用", "%", nil, 80, 90, "runtime_unavailable")
+	integrity := healthMetric("credential_count", "凭证一致性异常", "处", nil, 1, 1, r.StorageError)
+	rollback := healthMetric("transaction_rollback", "累计 MySQL 回滚失败", "次", nil, 1, 1, "runtime_unavailable")
+	if r.Storage.Driver == "bbolt" {
+		pool.Status, pool.Reason = "not_applicable", "bbolt_backend"
+		rollback.Status, rollback.Reason = "not_applicable", "bbolt_backend"
+		if count := r.Storage.CredentialCountMismatches; r.StorageStatus == "healthy" && count != nil {
+			integrity = healthMetric("credential_count", integrity.Label, integrity.Unit, number(float64(*count)), 1, 1, "")
+		}
+	} else if r.Storage.Driver == "mysql" {
+		integrity.Status, integrity.Reason = "not_applicable", "no_materialized_count"
+		if p := r.Storage.MySQL; r.RuntimeStatus == "healthy" && p != nil {
+			if p.MaxOpen > 0 {
+				pool = healthMetric("db_connections", pool.Label, pool.Unit, number(float64(p.InUse)*100/float64(p.MaxOpen)), 80, 90, "")
+			} else {
+				pool.Reason = "unlimited_pool"
 			}
-		} else if r.Storage.Driver == "mysql" {
-			integrity.Status, integrity.Reason = "not_applicable", "no_materialized_count"
-			if p := r.Storage.MySQL; p != nil {
-				if p.MaxOpen > 0 {
-					pool = healthMetric("db_connections", pool.Label, pool.Unit, number(float64(p.InUse)*100/float64(p.MaxOpen)), 80, 90, "")
-				} else {
-					pool.Reason = "unlimited_pool"
-				}
-				rollback = healthMetric("transaction_rollback", rollback.Label, rollback.Unit, number(float64(p.RollbackErrors)), 1, 1, "")
-			}
+			rollback.Value = number(float64(p.RollbackErrors))
+			rollback.Status, rollback.Reason = "info", "cumulative_only"
 		}
 	}
 	r.Metrics = []HealthMetric{cleanup, pool, limiter, integrity, rollback}
-	score, complete := 100, r.StorageStatus == "healthy"
+	score, complete := 100, r.StorageStatus == "healthy" && r.RuntimeStatus == "healthy"
 	r.OverallStatus = "healthy"
 	for _, m := range r.Metrics {
 		switch m.Status {
