@@ -43,6 +43,7 @@ type MySQLStore struct {
 	closeOnce        sync.Once
 	closeCh          chan struct{}
 	closeErr         error
+	rollbackErrors   atomic.Uint64
 }
 
 var mysqlControlMigrations = []string{
@@ -444,7 +445,11 @@ func (s *MySQLStore) withTx(parent context.Context, fn func(context.Context, *sq
 	if err != nil {
 		return mysqlStoreError(err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			s.rollbackErrors.Add(1)
+		}
+	}()
 	if err = fn(ctx, tx); err != nil {
 		return mysqlStoreError(err)
 	}

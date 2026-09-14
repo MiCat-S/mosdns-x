@@ -28,6 +28,7 @@ import {
   useLoad,
 } from "./components";
 import { useSession } from "./session";
+import { HealthPanel } from "./health-panel";
 export { RuntimeConfigPage } from "./runtime-config";
 import type {
   Audit,
@@ -4201,7 +4202,7 @@ export function SystemPage() {
         description="版本、运行时间与可公开的配置摘要"
         action={data ? <button onClick={download}>下载配置摘要</button> : null}
       />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />} <HealthPanel />
       {data ? (
         <>
           <div className="metrics">

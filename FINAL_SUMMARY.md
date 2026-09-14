@@ -1,5 +1,7 @@
 # 🎉 mosdns-x 安全审查与监控方案 - 最终交付总结
 
+> 本文为历史方案汇总。安全结论以 [复核记录](security-review/SECURITY_REMEDIATION.md) 为准，监控实际功能与限制见 [当前监控文档](docs/monitoring.md)。示例评分不是安全验收证据。
+
 ## 📋 项目概述
 
 对 GitHub 项目 https://github.com/MiCat-S/mosdns-x 进行了全面的安全代码审查，发现并分析了15个安全问题，并创建了完整的修复方案和监控体系。
