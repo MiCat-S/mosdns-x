@@ -251,3 +251,37 @@ func TestHealthConfigurableBudgetForLargeStore(t *testing.T) {
 		}
 	}
 }
+
+// Scrapes and /admin/health call RuntimeHealth on the request path, so it must
+// not queue behind a Close that is itself waiting on a long read transaction.
+func TestRuntimeHealthNeverBlocksBehindPendingClose(t *testing.T) {
+	s, _, _ := newTestStore(t, time.Now())
+	if h := s.RuntimeHealth(); h.Bolt == nil {
+		t.Fatal("open store reported no runtime stats")
+	}
+	// Hold the lock a long read transaction such as Backup would hold, then
+	// queue Close behind it. sync.RWMutex hands the pending writer priority.
+	s.mu.RLock()
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan StorageHealth, 1)
+	go func() { done <- s.RuntimeHealth() }()
+	select {
+	case h := <-done:
+		if h.Driver != "bbolt" || h.Bolt == nil {
+			t.Fatalf("runtime stats lost while a close was pending: %+v", h)
+		}
+	case <-time.After(2 * time.Second):
+		s.mu.RUnlock()
+		<-closed
+		t.Fatal("RuntimeHealth blocked behind a pending Close")
+	}
+	s.mu.RUnlock()
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if h := s.RuntimeHealth(); h.Bolt != nil || h.Driver != "bbolt" {
+		t.Fatalf("closed store must not report bbolt stats: %+v", h)
+	}
+}

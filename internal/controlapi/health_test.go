@@ -122,6 +122,12 @@ func TestHealthMySQLIdlePoolAndCollectionFailure(t *testing.T) {
 	if r.Metrics[1].Value != nil || r.Metrics[1].Reason != "unlimited_pool" {
 		t.Fatal("unlimited pool must not divide by zero")
 	}
+	// An unobservable ratio is not applicable, not unknown: leaving it unknown
+	// would suppress the score forever, the defect no_samples once caused.
+	if r.Metrics[1].Status != "not_applicable" || r.OverallStatus != "healthy" ||
+		r.OverallScore == nil || *r.OverallScore != 100 {
+		t.Fatalf("unlimited pool suppressed the overall score: %+v %v", r.Metrics[1], r.OverallScore)
+	}
 	provider.err = errors.New("mysql://secret:password@private")
 	f.handler.refreshHealth(context.Background())
 	body, err := json.Marshal(f.handler.healthSnapshot())
