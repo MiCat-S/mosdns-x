@@ -95,7 +95,7 @@ func inspectControlStatus(ctx context.Context, configFile string) string {
 		store, err = control.Open(cfg.Control.Database, control.Options{})
 	case "mysql":
 		lifetime, timeout := mysqlDurations(cfg.Control.Storage.MySQL)
-		store, err = control.OpenMySQL(control.MySQLOptions{
+		store, err = control.OpenMySQLContext(ctx, control.MySQLOptions{
 			DSN:              cfg.Control.Storage.MySQL.DSN,
 			MaxOpenConns:     cfg.Control.Storage.MySQL.MaxOpenConns,
 			MaxIdleConns:     cfg.Control.Storage.MySQL.MaxIdleConns,
@@ -160,7 +160,7 @@ func newControlInitAdminCommand() *cobra.Command {
 		}
 		var s control.Service
 		if mysqlDSN != "" {
-			s, err = control.OpenMySQL(control.MySQLOptions{DSN: mysqlDSN})
+			s, err = control.OpenMySQLContext(cmd.Context(), control.MySQLOptions{DSN: mysqlDSN})
 		} else {
 			if err = ensureParent(database); err != nil {
 				return fmt.Errorf("prepare database directory: %w", err)
@@ -293,7 +293,7 @@ func newControlMigrateMySQLCommand() *cobra.Command {
 }
 
 func runControlMySQLMigration(cmd *cobra.Command, source, dsn string) error {
-	destination, err := control.OpenMySQL(control.MySQLOptions{DSN: dsn, OperationTimeout: 30 * time.Minute})
+	destination, err := control.OpenMySQLContext(cmd.Context(), control.MySQLOptions{DSN: dsn, OperationTimeout: 30 * time.Minute})
 	if err != nil {
 		return fmt.Errorf("open MySQL control destination: %w", err)
 	}
@@ -307,7 +307,7 @@ func runControlMySQLMigration(cmd *cobra.Command, source, dsn string) error {
 }
 
 func runTelemetryMySQLMigration(cmd *cobra.Command, source, dsn string) error {
-	destination, err := telemetry.OpenMySQL(telemetry.MySQLOptions{DSN: dsn, OperationTimeout: 30 * time.Minute, QueryLogEnabled: true})
+	destination, err := telemetry.OpenMySQLContext(cmd.Context(), telemetry.MySQLOptions{DSN: dsn, OperationTimeout: 30 * time.Minute, QueryLogEnabled: true})
 	if err != nil {
 		return fmt.Errorf("open MySQL telemetry destination: %w", err)
 	}

@@ -226,6 +226,14 @@ const mysqlControlV3ColumnsQuery = `SELECT COLUMN_NAME FROM information_schema.C
 	AND COLUMN_NAME IN ('custom_block_enabled', 'custom_allow_enabled', 'custom_rewrite_enabled', 'policy_paused_until_ns')`
 
 func OpenMySQL(opts MySQLOptions) (*MySQLStore, error) {
+	return OpenMySQLContext(context.Background(), opts)
+}
+
+// OpenMySQLContext allows callers to cancel connection setup and schema initialization.
+func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*MySQLStore, error) {
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(opts.DSN) == "" {
 		return nil, fmt.Errorf("%w: empty mysql dsn", ErrInvalidInput)
 	}
@@ -265,7 +273,7 @@ func OpenMySQL(opts MySQLOptions) (*MySQLStore, error) {
 	db.SetConnMaxLifetime(opts.ConnMaxLifetime)
 	s := &MySQLStore{db: db, clock: opts.Clock, operationTimeout: opts.OperationTimeout, closeCh: make(chan struct{})}
 	startupTimeout := max(opts.OperationTimeout, 15*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	ctx, cancel := context.WithTimeout(parent, startupTimeout)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
@@ -436,8 +444,8 @@ func (s *MySQLStore) withTx(parent context.Context, fn func(context.Context, *sq
 	if err != nil {
 		return mysqlStoreError(err)
 	}
+	defer tx.Rollback()
 	if err = fn(ctx, tx); err != nil {
-		_ = tx.Rollback()
 		return mysqlStoreError(err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -1275,20 +1283,9 @@ func (s *MySQLStore) Admit(ctx context.Context, identity Identity) error {
 		if u.QuotaUsed >= u.Limit {
 			return ErrQuotaExceeded
 		}
-		cap := float64(u.QPS) + float64(u.Burst)
-		if u.RateAt == 0 {
-			u.RateTokens = cap
-		} else if elapsed := float64(now.UnixNano()-u.RateAt) / float64(time.Second); elapsed > 0 {
-			u.RateTokens = math.Min(cap, u.RateTokens+elapsed*float64(u.QPS))
-			u.RateAt = now.UnixNano()
+		if err := consumeRateToken(&u, now); err != nil {
+			return err
 		}
-		if u.RateAt == 0 {
-			u.RateAt = now.UnixNano()
-		}
-		if u.RateTokens < 1 {
-			return ErrRateLimited
-		}
-		u.RateTokens--
 		u.QuotaUsed++
 		if err := updateMySQLUser(ctx, tx, u); err != nil {
 			return err

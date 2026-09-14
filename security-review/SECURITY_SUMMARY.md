@@ -1,5 +1,7 @@
 # mosdns-x 安全审查总结
 
+> 请先阅读 [安全复核与修复记录](SECURITY_REMEDIATION.md)。以下为历史初审摘要，当前处理结论与实际验收结果以复核记录为准。
+
 ## 执行摘要
 
 对 mosdns-x DNS 服务器代码库进行了全面的安全审查，重点关注认证、并发安全、输入验证和资源管理。
@@ -381,4 +383,3 @@ metrics.Histogram("auth.password_verify_duration", duration.Seconds())
 **审查人**: Claude Code Security Review  
 **版本**: 1.0  
 **状态**: 待修复
-

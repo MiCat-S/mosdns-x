@@ -164,22 +164,28 @@ func mysqlDurations(c MySQLConfig) (time.Duration, time.Duration) {
 	return time.Duration(c.ConnMaxLifetimeSec) * time.Second, time.Duration(c.OperationTimeoutMS) * time.Millisecond
 }
 
-func openControlStore(c *ControlConfig) (control.Service, error) {
+func openControlStore(ctx context.Context, c *ControlConfig) (control.Service, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if effectiveControlDriver(c) == "bbolt" {
 		return control.Open(c.Database, control.Options{})
 	}
 	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
-	return control.OpenMySQL(control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})
+	return control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})
 }
 
-func openTelemetryStore(c *ControlConfig) (telemetry.Service, error) {
+func openTelemetryStore(ctx context.Context, c *ControlConfig) (telemetry.Service, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	settings := telemetrySettings(c)
 	if effectiveTelemetryDriver(c) == "bbolt" {
 		return telemetry.Open(telemetry.Options{Path: c.StatsDatabase, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
 	}
 	mysqlCfg := effectiveTelemetryMySQL(c)
 	lifetime, timeout := mysqlDurations(mysqlCfg)
-	return telemetry.OpenMySQL(telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+	return telemetry.OpenMySQLContext(ctx, telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
 }
 
 func telemetrySettings(c *ControlConfig) telemetry.Settings {

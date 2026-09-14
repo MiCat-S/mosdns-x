@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -17,6 +18,22 @@ type testDNSHandler struct{}
 
 func (testDNSHandler) ServeDNS(context.Context, *dns.Msg, *query_context.RequestMeta) (*dns.Msg, error) {
 	return new(dns.Msg), nil
+}
+
+func TestStorageStartupHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, driver := range []string{"bbolt", "mysql"} {
+		t.Run(driver, func(t *testing.T) {
+			c := &ControlConfig{Storage: StorageConfig{Driver: driver}, Telemetry: TelemetryConfig{Driver: driver}}
+			if _, err := openControlStore(ctx, c); !errors.Is(err, context.Canceled) {
+				t.Fatalf("control startup=%v", err)
+			}
+			if _, err := openTelemetryStore(ctx, c); !errors.Is(err, context.Canceled) {
+				t.Fatalf("telemetry startup=%v", err)
+			}
+		})
+	}
 }
 
 func validControlConfig() *Config {

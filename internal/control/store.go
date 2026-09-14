@@ -1172,23 +1172,9 @@ func (s *Store) Admit(ctx context.Context, id Identity) error {
 		if u.QuotaUsed >= u.Limit {
 			return ErrQuotaExceeded
 		}
-		cap := float64(u.QPS) + float64(u.Burst)
-		if u.RateAt == 0 {
-			u.RateTokens = cap
-		} else {
-			elapsed := float64(now.UnixNano()-u.RateAt) / float64(time.Second)
-			if elapsed > 0 {
-				u.RateTokens = math.Min(cap, u.RateTokens+elapsed*float64(u.QPS))
-				u.RateAt = now.UnixNano()
-			}
+		if err := consumeRateToken(&u, now); err != nil {
+			return err
 		}
-		if u.RateAt == 0 {
-			u.RateAt = now.UnixNano()
-		}
-		if u.RateTokens < 1 {
-			return ErrRateLimited
-		}
-		u.RateTokens--
 		u.QuotaUsed++
 		if err = marshalPut(tx.Bucket(bUsers), []byte(u.ID), u); err != nil {
 			return err
@@ -1220,6 +1206,31 @@ func (s *Store) Admit(ctx context.Context, id Identity) error {
 		}
 		return nil
 	})
+}
+
+// consumeRateToken is shared by both transactional storage backends.
+func consumeRateToken(u *userRecord, now time.Time) error {
+	if u.QPS == 0 || u.QPS > 1_000_000 || u.Burst > 1_000_000 ||
+		math.IsNaN(u.RateTokens) || math.IsInf(u.RateTokens, 0) || u.RateTokens < 0 {
+		return ErrUnavailable
+	}
+	capacity := float64(u.QPS) + float64(u.Burst)
+	u.RateTokens = math.Min(capacity, u.RateTokens)
+	if u.RateAt == 0 {
+		u.RateTokens = capacity
+		u.RateAt = now.UnixNano()
+	} else if now.UnixNano() > u.RateAt {
+		// Time.Sub saturates instead of overflowing a signed nanosecond subtraction.
+		elapsed := now.Sub(time.Unix(0, u.RateAt)).Seconds()
+		u.RateTokens = math.Min(capacity, u.RateTokens+elapsed*float64(u.QPS))
+		u.RateAt = now.UnixNano()
+	}
+	// Keep the previous refill timestamp on clock rollback to prevent double refill.
+	if u.RateTokens < 1 {
+		return ErrRateLimited
+	}
+	u.RateTokens--
+	return nil
 }
 
 func usageKey(scope string, minute int64) []byte {

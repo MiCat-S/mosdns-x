@@ -122,6 +122,14 @@ var mysqlTelemetryMigrations = []string{
 }
 
 func OpenMySQL(opts MySQLOptions) (*Store, error) {
+	return OpenMySQLContext(context.Background(), opts)
+}
+
+// OpenMySQLContext allows callers to cancel connection setup and schema initialization.
+func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*Store, error) {
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(opts.DSN) == "" {
 		return nil, errors.New("empty mysql telemetry dsn")
 	}
@@ -171,7 +179,7 @@ func OpenMySQL(opts MySQLOptions) (*Store, error) {
 	db.SetMaxIdleConns(opts.MaxIdleConns)
 	db.SetConnMaxLifetime(opts.ConnMaxLifetime)
 	startupTimeout := max(opts.OperationTimeout, 15*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	ctx, cancel := context.WithTimeout(parent, startupTimeout)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()

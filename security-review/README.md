@@ -1,5 +1,7 @@
 # Security Review / 安全审查
 
+> 当前处理状态请先阅读 [安全复核与修复记录](SECURITY_REMEDIATION.md)（2026-09-14）。以下初审资料保留供追溯，部分结论和示例已经纠正，不能直接作为补丁应用。
+
 本目录包含 mosdns-x 的完整安全审查报告和修复指南。
 
 This directory contains the complete security review report and fix guide for mosdns-x.

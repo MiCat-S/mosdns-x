@@ -141,11 +141,16 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		var err error
 		if cfg.UnixDomainSocket {
 			if !abstract {
-				os.Remove(cfg.Addr)
+				if err := removeUnixSocket(cfg.Addr); err != nil {
+					return err
+				}
 			}
 			conn, err = config.ListenPacket(ctx, "unixgram", cfg.Addr)
-			if !abstract {
-				os.Chmod(cfg.Addr, 0x777)
+			if err == nil && !abstract {
+				if chmodErr := os.Chmod(cfg.Addr, 0o600); chmodErr != nil {
+					_ = conn.Close()
+					return fmt.Errorf("set unix socket permissions: %w", chmodErr)
+				}
 			}
 		} else {
 			conn, err = config.ListenPacket(ctx, "udp", cfg.Addr)
@@ -178,11 +183,16 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		var err error
 		if cfg.UnixDomainSocket {
 			if !abstract {
-				os.Remove(cfg.Addr)
+				if err := removeUnixSocket(cfg.Addr); err != nil {
+					return err
+				}
 			}
 			l, err = config.Listen(ctx, "unix", cfg.Addr)
-			if !abstract {
-				os.Chmod(cfg.Addr, 0x777)
+			if err == nil && !abstract {
+				if chmodErr := os.Chmod(cfg.Addr, 0o600); chmodErr != nil {
+					_ = l.Close()
+					return fmt.Errorf("set unix socket permissions: %w", chmodErr)
+				}
 			}
 		} else {
 			l, err = config.Listen(ctx, "tcp", cfg.Addr)
@@ -252,6 +262,20 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 	})
 
 	return nil
+}
+
+func removeUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to replace non-socket path %q", path)
+	}
+	return os.Remove(path)
 }
 
 func isHTTPDNSProtocol(protocol string) bool {

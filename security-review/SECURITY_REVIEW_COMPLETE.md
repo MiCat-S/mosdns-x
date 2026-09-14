@@ -1,5 +1,7 @@
 # mosdns-x Security Review Complete | 安全审查完成
 
+> 请先阅读 [安全复核与修复记录](SECURITY_REMEDIATION.md)。以下为历史初审总结，部分严重等级和修复建议已由源码核实结果纠正。
+
 ## English Summary
 
 ### What Was Done

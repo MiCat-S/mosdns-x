@@ -22,6 +22,7 @@ import (
 	"github.com/pmkol/mosdns-x/internal/publiclist"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
+	"go.uber.org/zap"
 )
 
 const (
@@ -132,6 +133,7 @@ type Options struct {
 	LookupRateWindow  time.Duration
 	LookupIPCapacity  int
 	Now               func() time.Time
+	Logger            *zap.Logger
 }
 
 type Handler struct {
@@ -221,6 +223,12 @@ func New(opts Options) (*Handler, error) {
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
+	}
+	if opts.Logger == nil {
+		opts.Logger = zap.NewNop()
+	}
+	if opts.Development {
+		opts.Logger.Warn("control development mode enabled; HTTP is for loopback use only, authentication remains required; do not expose through a public proxy")
 	}
 	return &Handler{
 		opts: opts, publicURL: u,
@@ -392,14 +400,14 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 			h.serviceError(w, err)
 			return
 		}
-		h.setCookie(w, token, ss.ExpiresAt)
 		u, err := h.opts.Control.GetUser(r.Context(), ss.UserID)
 		if err != nil {
-			_ = h.opts.Control.RevokeSession(context.Background(), ss.UserID, ss.ID)
+			h.cleanupSession(r.Context(), ss)
 			h.clearCookie(w)
 			h.serviceError(w, err)
 			return
 		}
+		h.setCookie(w, token, ss.ExpiresAt)
 		writeJSON(w, http.StatusOK, sessionResponse{u, ss.CSRFToken, ss.ExpiresAt})
 	case http.MethodGet:
 		ss, u, ok := h.auth(w, r)
@@ -424,6 +432,16 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		methodNotAllowed(w)
+	}
+}
+
+func (h *Handler) cleanupSession(ctx context.Context, ss control.Session) {
+	// A disconnected client must not cancel cleanup of an already committed session.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := h.opts.Control.RevokeSession(cleanupCtx, ss.UserID, ss.ID); err != nil {
+		h.opts.Logger.Error("failed to revoke session after login response failure",
+			zap.String("session_id", ss.ID), zap.String("user_id", ss.UserID), zap.Error(err))
 	}
 }
 
@@ -1541,7 +1559,7 @@ func (h *Handler) lookup(w http.ResponseWriter, r *http.Request, user control.Us
 	}
 	started := time.Now()
 	response, err := h.opts.Lookup(r.Context(), user.ID, dns.Fqdn(name), qtype)
-	if err != nil {
+	if err != nil || response == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
@@ -1951,12 +1969,13 @@ type ipEntry struct {
 	count int
 }
 type ipLimiter struct {
-	mu       sync.Mutex
-	limit    int
-	window   time.Duration
-	capacity int
-	now      func() time.Time
-	entries  map[string]ipEntry
+	mu          sync.Mutex
+	limit       int
+	window      time.Duration
+	capacity    int
+	now         func() time.Time
+	entries     map[string]ipEntry
+	nextCleanup time.Time
 }
 
 func newIPLimiter(limit int, window time.Duration, capacity int, now func() time.Time) *ipLimiter {
@@ -1966,6 +1985,14 @@ func (l *ipLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	if !now.Before(l.nextCleanup) {
+		for k, e := range l.entries {
+			if now.Sub(e.start) >= l.window {
+				delete(l.entries, k)
+			}
+		}
+		l.nextCleanup = now.Add(min(l.window, time.Minute))
+	}
 	if e, ok := l.entries[ip]; ok {
 		if now.Sub(e.start) >= l.window {
 			l.entries[ip] = ipEntry{now, 1}
