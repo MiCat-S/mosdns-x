@@ -25,6 +25,9 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	if err := control.ValidateHealthScanLimit(c.HealthScanLimit); err != nil {
 		return nil, nil, err
 	}
+	if c.Admit.QueueSize < 0 || c.Admit.WaitMS < 0 || c.Admit.BatchDelayMS < 0 || c.Admit.BatchSize < 0 {
+		return nil, nil, errors.New("control admit settings cannot be negative")
+	}
 	controlDriver := effectiveControlDriver(c)
 	telemetryDriver := effectiveTelemetryDriver(c)
 	if controlDriver != "bbolt" && controlDriver != "mysql" {
@@ -123,6 +126,33 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	return u, trusted, nil
 }
 
+// unauthenticatedListenerAddrs reports the configured listeners that serve DNS
+// without credential authentication or per-user admission. Only HTTP-based
+// listeners carry those, and validateControlConfig already confines every other
+// protocol to loopback, so the result is the set of loopback raw DNS listeners.
+// They still answer queries for anything that reaches loopback — another local
+// account, a container sharing the network namespace, or a forwarded port — and
+// those queries consume no quota and appear in no per-user usage.
+func unauthenticatedListenerAddrs(cfg *Config) []string {
+	if cfg.Control == nil {
+		return nil
+	}
+	var addrs []string
+	for _, serverCfg := range cfg.Servers {
+		for _, l := range serverCfg.Listeners {
+			if isHTTPDNSProtocol(l.Protocol) {
+				continue
+			}
+			proto := strings.ToLower(l.Protocol)
+			if proto == "" {
+				proto = "udp"
+			}
+			addrs = append(addrs, proto+"://"+l.Addr)
+		}
+	}
+	return addrs
+}
+
 func effectiveControlDriver(c *ControlConfig) string {
 	driver := strings.ToLower(strings.TrimSpace(c.Storage.Driver))
 	if driver == "" {
@@ -172,7 +202,13 @@ func openControlStore(ctx context.Context, c *ControlConfig) (control.Service, e
 		return nil, err
 	}
 	if effectiveControlDriver(c) == "bbolt" {
-		return control.Open(c.Database, control.Options{HealthScanLimit: c.HealthScanLimit})
+		return control.Open(c.Database, control.Options{
+			HealthScanLimit: c.HealthScanLimit,
+			AdmitQueueSize:  c.Admit.QueueSize,
+			AdmitWait:       time.Duration(c.Admit.WaitMS) * time.Millisecond,
+			BatchDelay:      time.Duration(c.Admit.BatchDelayMS) * time.Millisecond,
+			BatchSize:       c.Admit.BatchSize,
+		})
 	}
 	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
 	return control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})

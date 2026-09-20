@@ -51,8 +51,27 @@ type ControlConfig struct {
 	TrustedProxies  []string        `yaml:"trusted_proxies"`
 	ManagedConfig   string          `yaml:"managed_config"`
 	HealthScanLimit int             `yaml:"health_scan_limit"`
+	Admit           AdmitConfig     `yaml:"admit"`
 	Storage         StorageConfig   `yaml:"storage"`
 	Telemetry       TelemetryConfig `yaml:"telemetry"`
+}
+
+// AdmitConfig tunes the per-query admission path. Every admit is still durably
+// committed before the query is released; these settings only decide how many
+// admits share one commit and how long a query may queue for a slot. None of
+// them skip, defer or over-admit a quota deduction.
+type AdmitConfig struct {
+	// QueueSize bounds concurrent in-flight admits. Zero selects 1024.
+	QueueSize int `yaml:"queue_size"`
+	// WaitMS bounds how long a query queues for a slot before it is rejected
+	// with a retryable unavailable error. Zero selects 250ms.
+	WaitMS int `yaml:"wait_ms"`
+	// BatchDelayMS is how long a commit waits to collect more admits. Raising
+	// it amortizes more admits per fsync at the cost of added latency.
+	// Zero selects 1ms.
+	BatchDelayMS int `yaml:"batch_delay_ms"`
+	// BatchSize caps how many admits share one commit. Zero selects 128.
+	BatchSize int `yaml:"batch_size"`
 }
 
 type StorageConfig struct {

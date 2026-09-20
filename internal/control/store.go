@@ -63,10 +63,28 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now() }
 
 type Options struct {
-	Clock           Clock
-	AdmitQueueSize  int
+	Clock          Clock
+	AdmitQueueSize int
+	// AdmitWait bounds how long an admit may queue for a slot once every slot
+	// is busy. Zero selects DefaultAdmitWait.
+	AdmitWait time.Duration
+	// BatchDelay and BatchSize tune how many admits share one bbolt commit.
+	// Every admit is durably committed before the query is released, so these
+	// only trade added latency against commits amortized per fsync; they never
+	// skip, defer or over-admit a quota deduction. Zero selects the defaults.
+	BatchDelay      time.Duration
+	BatchSize       int
 	HealthScanLimit int
 }
+
+const (
+	DefaultAdmitWait  = 250 * time.Millisecond
+	MaxAdmitWait      = 5 * time.Second
+	DefaultBatchDelay = time.Millisecond
+	MaxBatchDelay     = time.Second
+	DefaultBatchSize  = 128
+	MaxBatchSize      = 10_000
+)
 
 type Store struct {
 	db    *bbolt.DB
@@ -79,6 +97,7 @@ type Store struct {
 	closedFlag      atomic.Bool
 	closeCh         chan struct{}
 	admitSlots      chan struct{}
+	admitWait       time.Duration
 	healthScanLimit int
 }
 
@@ -123,6 +142,24 @@ func Open(path string, opts Options) (*Store, error) {
 	if opts.AdmitQueueSize < 0 {
 		return nil, fmt.Errorf("%w: negative admit queue size", ErrInvalidInput)
 	}
+	if opts.AdmitWait == 0 {
+		opts.AdmitWait = DefaultAdmitWait
+	}
+	if opts.AdmitWait < 0 || opts.AdmitWait > MaxAdmitWait {
+		return nil, fmt.Errorf("%w: admit wait must be between 0 and %s", ErrInvalidInput, MaxAdmitWait)
+	}
+	if opts.BatchDelay == 0 {
+		opts.BatchDelay = DefaultBatchDelay
+	}
+	if opts.BatchDelay < 0 || opts.BatchDelay > MaxBatchDelay {
+		return nil, fmt.Errorf("%w: batch delay must be between 0 and %s", ErrInvalidInput, MaxBatchDelay)
+	}
+	if opts.BatchSize == 0 {
+		opts.BatchSize = DefaultBatchSize
+	}
+	if opts.BatchSize < 1 || opts.BatchSize > MaxBatchSize {
+		return nil, fmt.Errorf("%w: batch size must be between 1 and %d", ErrInvalidInput, MaxBatchSize)
+	}
 	if err := ValidateHealthScanLimit(opts.HealthScanLimit); err != nil {
 		return nil, err
 	}
@@ -137,9 +174,9 @@ func Open(path string, opts Options) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("%w: chmod database: %v", ErrUnavailable, err)
 	}
-	db.MaxBatchDelay = time.Millisecond
-	db.MaxBatchSize = 128
-	s := &Store{db: db, clock: opts.Clock, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, opts.AdmitQueueSize), healthScanLimit: opts.HealthScanLimit}
+	db.MaxBatchDelay = opts.BatchDelay
+	db.MaxBatchSize = opts.BatchSize
+	s := &Store{db: db, clock: opts.Clock, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, opts.AdmitQueueSize), admitWait: opts.AdmitWait, healthScanLimit: opts.HealthScanLimit}
 	if err := db.Update(func(tx *bbolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists(bMeta)
 		if err != nil {
@@ -228,15 +265,33 @@ func (s *Store) update(ctx context.Context, fn func(*bbolt.Tx) error) error {
 	return nil
 }
 
-func (s *Store) batch(ctx context.Context, fn func(*bbolt.Tx) error) error {
+// acquireAdmitSlot reserves one in-flight admit slot. The uncontended path is a
+// non-blocking send. When every slot is busy the caller queues for at most
+// admitWait instead of failing immediately, so a burst is paced rather than
+// rejected; the bounded wait keeps queued goroutines from growing without limit.
+func (s *Store) acquireAdmitSlot(ctx context.Context) error {
 	select {
 	case s.admitSlots <- struct{}{}:
+		return nil
+	default:
+	}
+	timer := time.NewTimer(s.admitWait)
+	defer timer.Stop()
+	select {
+	case s.admitSlots <- struct{}{}:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-s.closeCh:
 		return ErrUnavailable
-	default:
-		return ErrUnavailable
+	case <-timer.C:
+		return fmt.Errorf("%w: admit queue is saturated", ErrUnavailable)
+	}
+}
+
+func (s *Store) batch(ctx context.Context, fn func(*bbolt.Tx) error) error {
+	if err := s.acquireAdmitSlot(ctx); err != nil {
+		return err
 	}
 	defer func() { <-s.admitSlots }()
 	if err := ctx.Err(); err != nil {
@@ -452,7 +507,6 @@ func periodBounds(now time.Time, p Period, tz string) (time.Time, time.Time, err
 	return start.UTC(), end.UTC(), nil
 }
 
-func publicUser(r userRecord) User { return r.User }
 func getUserRecord(tx *bbolt.Tx, id string) (userRecord, error) {
 	var r userRecord
 	err := decode(tx.Bucket(bUsers).Get([]byte(id)), &r)

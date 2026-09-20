@@ -126,6 +126,11 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		return err
 	}
 	if cfg.Control != nil {
+		if addrs := unauthenticatedListenerAddrs(cfg); len(addrs) > 0 {
+			m.logger.Warn("raw DNS listeners serve queries without authentication or quota accounting; "+
+				"they are confined to loopback but remain reachable from this host",
+				zap.Strings("listeners", addrs))
+		}
 		m.trustedProxies = trustedProxies
 		m.controlCfg = cfg.Control
 		m.control, err = openControlStore(ctx, cfg.Control)

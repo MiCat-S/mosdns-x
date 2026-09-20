@@ -73,3 +73,28 @@ control:
 MySQL 表会在首次连接时自动创建。首次管理员使用 `mosdns control init-admin --config /etc/mosdns/config.yaml --username admin` 初始化，命令从配置读取 DSN，管理员密码仍从 stdin 读取。已有 bbolt 数据应按[存储文档](storage.md)的离线迁移流程导入。
 
 控制模式禁用 TLS early data 与 QUIC 0-RTT，避免可重放请求重复扣减额度。停止服务时会先关闭 listener、拒绝新请求并等待在途 DNS/API 请求完成，随后才关闭插件、统计库和账户库。
+
+## 受理路径调优（`control.admit`）
+
+每个经鉴权的 DoH/DoH3 查询在放行前都要提交一次受理事务（扣额度、扣 QPS 令牌、写用量）。这个约束不可调：`admit` 下的参数只改变"多少次受理共用一次提交"和"槽位占满时等多久"，不会跳过落盘、异步补扣或超额放行。
+
+```yaml
+control:
+  admit:
+    queue_size: 1024      # 并发在途受理上限
+    wait_ms: 250          # 槽位占满时的最长排队时间，超时返回可重试的不可用错误
+    batch_delay_ms: 1     # 一次提交为收集更多受理而等待的时间
+    batch_size: 128       # 一次提交最多合并的受理数
+```
+
+全部省略时使用上面这组默认值。
+
+调优方向：
+
+- **突发被拒（日志出现 `admit queue is saturated`，客户端收到 503）**：先调大 `wait_ms`，让突发被排队而不是拒绝；再考虑调大 `queue_size`。`wait_ms` 应小于 server 的 `timeout`，否则查询会先超时。
+- **吞吐受限于磁盘 fsync**：调大 `batch_delay_ms` 和 `batch_size`，用一次 fsync 摊薄更多受理。代价是每个查询固定增加最多 `batch_delay_ms` 的延迟。在高并发下这通常是划算的；低并发下只会徒增延迟。
+- **延迟敏感且并发不高**：保持 `batch_delay_ms: 1`。
+
+这些参数只对 bbolt 存储生效。`storage.driver: mysql` 的受理路径由连接池参数（`max_open_conns` 等）控制。
+
+改动后请按 [性能验证](performance.md) 的方法在目标机器和磁盘上实测，不要沿用别处的数字。

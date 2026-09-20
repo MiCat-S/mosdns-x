@@ -86,6 +86,13 @@ func TestValidateControlConfig(t *testing.T) {
 		}},
 		{name: "public api", change: func(c *Config) { c.API.HTTP = "0.0.0.0:8080" }, want: "loopback"},
 		{name: "public raw dns", change: func(c *Config) { c.Servers[0].Listeners[0].Protocol = "udp" }, want: "raw DNS"},
+		{name: "negative admit queue size", change: func(c *Config) { c.Control.Admit.QueueSize = -1 }, want: "admit settings"},
+		{name: "negative admit wait", change: func(c *Config) { c.Control.Admit.WaitMS = -1 }, want: "admit settings"},
+		{name: "negative admit batch delay", change: func(c *Config) { c.Control.Admit.BatchDelayMS = -1 }, want: "admit settings"},
+		{name: "negative admit batch size", change: func(c *Config) { c.Control.Admit.BatchSize = -1 }, want: "admit settings"},
+		{name: "custom admit tuning", change: func(c *Config) {
+			c.Control.Admit = AdmitConfig{QueueSize: 2048, WaitMS: 500, BatchDelayMS: 4, BatchSize: 512}
+		}},
 		{name: "proxy protocol", change: func(c *Config) { c.Servers[0].Listeners[0].ProxyProtocol = true }, want: "proxy_protocol"},
 		{name: "path mismatch", change: func(c *Config) { c.Servers[0].Listeners[0].URLPath = "/other" }, want: "differs"},
 		{name: "development public dns", change: func(c *Config) { c.Control.Development = true }, want: "development public_dns_url"},
@@ -193,4 +200,44 @@ func TestListenerOwnedWhenSafeCloseAlreadyClosed(t *testing.T) {
 		t.Fatalf("listener leaked when Attach was skipped: %v", err)
 	}
 	rebound.Close()
+}
+
+// TestControlRejectsPublicRawListeners pins the invariant that only HTTP-based
+// listeners carry credential authentication and per-user admission. A raw DNS
+// listener is neither authenticated nor metered, so control mode must refuse to
+// expose one beyond loopback regardless of which raw protocol is configured.
+func TestControlRejectsPublicRawListeners(t *testing.T) {
+	for _, proto := range []string{"", "udp", "tcp", "tls", "dot", "quic", "doq"} {
+		t.Run("raw/"+proto, func(t *testing.T) {
+			cfg := validControlConfig()
+			cfg.Servers[0].Listeners[0].Protocol = proto
+			cfg.Servers[0].Listeners[0].Addr = "0.0.0.0:53"
+			_, _, err := validateControlConfig(cfg)
+			if err == nil || !strings.Contains(err.Error(), "raw DNS") {
+				t.Fatalf("protocol %q: error = %v, want a raw DNS listener rejection", proto, err)
+			}
+		})
+	}
+	for _, proto := range []string{"udp", "tcp", "dot", "doq"} {
+		t.Run("loopback/"+proto, func(t *testing.T) {
+			cfg := validControlConfig()
+			cfg.Servers[0].Listeners[0].Protocol = proto
+			cfg.Servers[0].Listeners[0].Addr = "127.0.0.1:5353"
+			if _, _, err := validateControlConfig(cfg); err != nil {
+				t.Fatalf("protocol %q on loopback: %v", proto, err)
+			}
+		})
+	}
+}
+
+func TestUnauthenticatedListenerAddrs(t *testing.T) {
+	cfg := validControlConfig()
+	cfg.Servers[0].Listeners = append(cfg.Servers[0].Listeners,
+		&ServerListenerConfig{Protocol: "udp", Addr: "127.0.0.1:5353"},
+		&ServerListenerConfig{Protocol: "doh", Addr: "0.0.0.0:443", URLPath: "/dns-query"},
+	)
+	got := unauthenticatedListenerAddrs(cfg)
+	if len(got) != 1 || got[0] != "udp://127.0.0.1:5353" {
+		t.Fatalf("addrs = %v, want only the raw loopback listener", got)
+	}
 }
