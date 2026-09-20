@@ -121,6 +121,29 @@ select_checksum_line() {
     die "SHA256SUMS 中必须且只能有一条 ${asset@Q} 校验记录，实际为 ${#matches[@]} 条"
   printf '%s\n' "${matches[0]}"
 }
+# download_checksums fetches SHA256SUMS directly from GitHub even when the
+# archive itself came through a proxy. Taking both from the same proxy would
+# reduce the check to transport corruption only: whoever serves a tampered
+# archive from that hop can serve matching checksums alongside it. A direct
+# SHA256SUMS keeps the proxy honest about the bytes it delivered.
+download_checksums() {
+  local download_dir=$1
+  local github_proxy=$2
+  local release_base=$3
+  if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 10 --max-time 60 \
+    --output "$download_dir/SHA256SUMS" "$release_base/SHA256SUMS"; then
+    [[ -n $github_proxy ]] && printf 'SHA256SUMS：直连 GitHub 获取，独立于下载代理。\n'
+    return 0
+  fi
+  [[ -n $github_proxy ]] || die '无法下载 SHA256SUMS'
+  printf '警告：无法直连 GitHub 获取 SHA256SUMS，改用代理 %s。\n' "$github_proxy" >&2
+  printf '警告：校验和与安装包来自同一跳，仅能发现传输损坏，无法独立证明发布件未被篡改。\n' >&2
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --output "$download_dir/SHA256SUMS" "$(github_download_url "$github_proxy" "$release_base/SHA256SUMS")" ||
+    die '无法下载 SHA256SUMS'
+}
+
 verify_checksum() {
   local download_dir=$1
   local asset=$2
@@ -349,7 +372,7 @@ main() {
     die "$BINARY_PATH 已存在且不是普通文件，拒绝覆盖"
   [[ ( ! -e $CONFIG_PATH && ! -L $CONFIG_PATH ) || -f $CONFIG_PATH ]] ||
     die "$CONFIG_PATH 已存在且不是普通文件，拒绝使用"
-  local arch asset release_base github_proxy asset_url checksum_url
+  local arch asset release_base github_proxy asset_url
   arch=$(uname -m)
   asset=$(asset_for_arch "$arch")
   release_base="https://github.com/${RELEASE_REPOSITORY}/releases/download/${version}"
@@ -366,7 +389,6 @@ main() {
     printf 'GitHub 下载：未检测到中国 IP，使用直连。\n'
   fi
   asset_url=$(github_download_url "$github_proxy" "$release_base/$asset")
-  checksum_url=$(github_download_url "$github_proxy" "$release_base/SHA256SUMS")
   install_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-install.XXXXXXXX") || die '无法创建临时目录'
   chmod 0700 "$install_temp_dir"
   trap cleanup EXIT
@@ -374,8 +396,7 @@ main() {
   printf '下载 Mosdns-x %s（%s）...\n' "$version" "$asset"
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --output "$install_temp_dir/$asset" "$asset_url"
-  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    --output "$install_temp_dir/SHA256SUMS" "$checksum_url"
+  download_checksums "$install_temp_dir" "$github_proxy" "$release_base"
   verify_checksum "$install_temp_dir" "$asset" || die 'Release SHA-256 校验失败'
   extract_release_files "$install_temp_dir/$asset" "$install_temp_dir"
   chmod 0755 "$install_temp_dir/mosdns"

@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | 
 脚本只执行这些操作：
 
 1. 根据 `uname -m` 选择对应的 Linux Release。
-2. 下载 zip 和 `SHA256SUMS`，精确校验所选文件。
+2. 下载 zip 和 `SHA256SUMS`，精确校验所选文件。`SHA256SUMS` 始终直连 GitHub 获取，不经过下载代理。
 3. 安装 `/usr/local/bin/mosdns`。
 4. 如果 `/etc/mosdns/config.yaml` 不存在，安装 Release 自带的默认配置；已有配置保持原样。
 5. 首次安装时调用 `mosdns service install` 创建 systemd 服务；在启用或启动服务前检查控制存储。控制模式未启用或管理员已存在时正常启动；未初始化时会在交互终端询问管理员用户名和两次密码，并通过标准输入初始化。非交互运行且未初始化时，脚本不启动服务，并输出可直接执行的初始化命令。
@@ -18,6 +18,10 @@ curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | 
 它不会安装 Caddy、软件包或防火墙规则，也不会创建服务账户、域名或管理员密码。运行前确保主机已有 `bash`、`curl`、`unzip`、`sha256sum` 和 systemd。
 
 安装器会通过 Cloudflare trace 判断当前出口国家。检测到 `CN` 时，GitHub Release 下载默认使用 `https://gh-proxy.com/` 前缀；非中国出口或检测失败时直接连接 GitHub。检测过程不会输出公网 IP。
+
+使用代理时，`SHA256SUMS` 仍然直连 GitHub 获取。如果两者都走同一个代理，校验就退化成只能发现传输损坏：能够投递被篡改安装包的那一跳，同样可以投递与之匹配的校验和。直连失败时脚本会退回代理并打印明确告警，此时校验和与安装包同源，无法独立证明发布件未被篡改；在意这一点的话，请用 `--no-github-proxy` 强制直连，或按 [构建说明](building.md) 自行构建。
+
+Release 目前由本地构建后手工上传，没有签名或 provenance 证明。对供应链有更高要求的部署应自行构建二进制。
 
 安装完成后检查：
 

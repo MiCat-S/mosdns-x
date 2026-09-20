@@ -183,3 +183,46 @@ if (select_checksum_line "$checksum_dir/SHA256SUMS" "$asset" >/dev/null 2>&1); t
 fi
 
 printf 'install.sh helper tests passed\n'
+
+# download_checksums must reach GitHub directly even when the archive came
+# through a proxy, and must refuse to install if it cannot obtain SHA256SUMS.
+checksum_dir=$(mktemp -d)
+trap 'rm -rf -- "$checksum_dir"' EXIT
+curl_calls="$checksum_dir/curl-calls"
+
+curl() {
+  local url=${*: -1}
+  local out=''
+  local -a args=("$@")
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [[ ${args[i]} == --output ]] && out=${args[i + 1]}
+  done
+  printf '%s\n' "$url" >>"$curl_calls"
+  case "$url" in
+    "$FAKE_UNREACHABLE"*) return 22 ;;
+    *) printf 'sums\n' >"$out" ;;
+  esac
+}
+
+FAKE_UNREACHABLE='https://unreachable.invalid'
+: >"$curl_calls"
+download_checksums "$checksum_dir" 'https://proxy.example/' 'https://github.com/o/r/releases/download/v1' >/dev/null
+assert_eq 'https://github.com/o/r/releases/download/v1/SHA256SUMS' "$(cat "$curl_calls")" \
+  'SHA256SUMS must be fetched directly, never through the proxy'
+
+: >"$curl_calls"
+assert_fails 'direct-only download must fail when GitHub is unreachable' \
+  download_checksums "$checksum_dir" '' "$FAKE_UNREACHABLE/v1"
+assert_eq 1 "$(wc -l <"$curl_calls" | tr -d ' ')" \
+  'without a proxy only the direct fetch may be attempted'
+
+: >"$curl_calls"
+(download_checksums "$checksum_dir" 'https://proxy.example/' "$FAKE_UNREACHABLE/v1" >/dev/null 2>&1)
+assert_eq 2 "$(wc -l <"$curl_calls" | tr -d ' ')" \
+  'proxy fallback must be attempted only after the direct fetch fails'
+assert_eq "https://proxy.example/$FAKE_UNREACHABLE/v1/SHA256SUMS" "$(tail -n 1 "$curl_calls")" \
+  'the fallback must go through the proxy'
+
+unset -f curl
+printf 'install.sh checksum tests passed\n'

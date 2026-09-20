@@ -150,8 +150,41 @@ func sanitizeEndpoint(key, value string) string {
 	if parsed.Fragment != "" {
 		parsed.Fragment = ""
 	}
+	// A DoH path can itself be the credential: this project issues device URLs
+	// as /dns-query/<uuid>, so an upstream pointed at one carries a bearer token
+	// in its path. Keep the first path segment, which identifies the endpoint,
+	// and redact the rest.
+	parsed.Path, parsed.RawPath = redactEndpointPath(parsed.Path)
 	if parsed.Host == "" && strings.Contains(value, "@") {
 		return redactedValue
 	}
 	return parsed.String()
+}
+
+// redactEndpointPath keeps the leading path segment and replaces every deeper
+// segment with the redaction marker. It returns the new Path and RawPath; the
+// RawPath is set only when a segment was redacted, so an untouched path keeps
+// whatever escaping it already had, and a redacted one renders the marker
+// literally instead of percent-encoding its brackets.
+func redactEndpointPath(path string) (string, string) {
+	if path == "" || path == "/" {
+		return path, ""
+	}
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(segments) < 2 {
+		return path, ""
+	}
+	redacted := false
+	for i := 1; i < len(segments); i++ {
+		if segments[i] == "" {
+			continue
+		}
+		segments[i] = redactedValue
+		redacted = true
+	}
+	if !redacted {
+		return path, ""
+	}
+	result := "/" + strings.Join(segments, "/")
+	return result, result
 }
