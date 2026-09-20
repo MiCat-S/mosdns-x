@@ -1,7 +1,14 @@
 name: Test mosdns
 
 on:
+  # Only main, so a commit is not tested twice. An unfiltered push ran once for
+  # the topic branch and again for the same SHA when main fast-forwarded onto
+  # it, and ran a third time alongside pull_request for any branch with a PR
+  # open. A topic branch is covered by pull_request, and by main once merged.
+  # It also keeps tag pushes out; releases are verified by release.yml.
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
