@@ -22,6 +22,16 @@ control:
       operation_timeout_ms: 1500
 
   # 统计后端默认跟随控制后端，并复用 storage.mysql.dsn。
+  # 省略或设为 0 时使用 50000 的默认扫描预算。
+  health_scan_limit: 50000
+  # 受理路径调优。每次受理仍在放行前落盘提交，这些参数只改变
+  # 多少次受理共用一次提交、以及槽位占满时排队多久；不会跳过落盘、
+  # 异步补扣或超额放行。省略或设为 0 时使用下列默认值。仅 bbolt 生效。
+  admit:
+    queue_size: 1024
+    wait_ms: 250
+    batch_delay_ms: 1
+    batch_size: 128
   telemetry:
     driver: mysql
     queue_size: 8192

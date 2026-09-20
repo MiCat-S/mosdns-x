@@ -10,6 +10,16 @@ control:
   query_log: true
   enable_pprof: false
   trusted_proxies: []
+  # 省略或设为 0 时使用 50000 的默认扫描预算。
+  health_scan_limit: 50000
+  # 受理路径调优。每次受理仍在放行前落盘提交，这些参数只改变
+  # 多少次受理共用一次提交、以及槽位占满时排队多久；不会跳过落盘、
+  # 异步补扣或超额放行。省略或设为 0 时使用下列默认值。仅 bbolt 生效。
+  admit:
+    queue_size: 1024
+    wait_ms: 250
+    batch_delay_ms: 1
+    batch_size: 128
   telemetry:
     # 省略或设为 0 时分别使用 7 天、24 小时和 100000 条默认值。
     aggregate_retention_days: 7
