@@ -20,6 +20,7 @@ import (
 
 	"github.com/miekg/dns"
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 
 	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
@@ -336,7 +337,7 @@ func (s *Store) UpdateSettings(settings Settings) error {
 		// increasing retention does not delete data early and decreasing it
 		// takes effect without waiting for the old deadline.
 		if err := s.db.Update(func(tx *bolt.Tx) error {
-			if err := tx.DeleteBucket(bucketExpiry); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
+			if err := tx.DeleteBucket(bucketExpiry); err != nil && !errors.Is(err, bolterrors.ErrBucketNotFound) {
 				return err
 			}
 			if _, err := tx.CreateBucket(bucketExpiry); err != nil {
@@ -963,7 +964,10 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 			seek = prefix + page.Cursor
 		}
 		c := b.Cursor()
-		k, v := c.Seek([]byte(seek))
+		// Seek lands on the first key at or after the bound; both branches then
+		// step to the newest key strictly before it, so Seek's value is unused.
+		k, _ := c.Seek([]byte(seek))
+		var v []byte
 		if k == nil {
 			k, v = c.Last()
 		} else {

@@ -328,14 +328,30 @@ func secureHTTPClient(timeout time.Duration) *http.Client {
 		if err != nil {
 			return nil, err
 		}
+		// Try every public address rather than only the first. A host that
+		// advertises an unreachable address first, which an IPv6 record on an
+		// IPv4-only egress commonly does, must not fail the whole refresh.
+		var dialErr error
+		public := false
 		for _, ip := range ips {
 			ip = ip.Unmap()
 			if !publicAddress(ip) {
 				continue
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			public = true
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			dialErr = errors.Join(dialErr, err)
+			if ctx.Err() != nil {
+				return nil, dialErr
+			}
 		}
-		return nil, fmt.Errorf("%w: host has no public address", ErrInvalidSource)
+		if !public {
+			return nil, fmt.Errorf("%w: host has no public address", ErrInvalidSource)
+		}
+		return nil, dialErr
 	}
 	return &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: checkRedirect}
 }

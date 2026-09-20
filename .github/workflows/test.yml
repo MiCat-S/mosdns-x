@@ -43,6 +43,12 @@ jobs:
       - name: Test Go
         run: go test ./...
 
+      # The control panel adds a telemetry queue, generation hot-swap, admit
+      # slots and a health probe, all of which are concurrent. Run the detector
+      # so a new race fails here instead of in production.
+      - name: Test Go with the race detector
+        run: go test -race ./...
+
       - name: Build headless
         run: go build
 
@@ -86,4 +92,4 @@ jobs:
       - name: Test MySQL backends
         env:
           MOSDNS_TEST_MYSQL_DSN: "mosdns:mosdns-test-password@tcp(127.0.0.1:3306)/mosdns_test?charset=utf8mb4&timeout=5s&readTimeout=5s&writeTimeout=5s"
-        run: go test ./internal/control ./internal/telemetry
+        run: go test -race ./internal/control ./internal/telemetry
