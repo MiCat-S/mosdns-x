@@ -44,7 +44,7 @@ func init() { AddSubCmd(newControlCommand()) }
 
 func newControlCommand() *cobra.Command {
 	c := &cobra.Command{Use: "control", Short: "Manage the multi-user control database", SilenceUsage: true}
-	c.AddCommand(newControlInitAdminCommand(), newControlStatusCommand(), newControlBackupCommand(), newControlRestoreCommand(), newControlMigrateMySQLCommand())
+	c.AddCommand(newControlInitAdminCommand(), newControlResetPasswordCommand(), newControlStatusCommand(), newControlBackupCommand(), newControlRestoreCommand(), newControlMigrateMySQLCommand())
 	return c
 }
 
@@ -119,37 +119,48 @@ func inspectControlStatus(ctx context.Context, configFile string) string {
 	return controlStatusReady
 }
 
+// resolveControlStorage turns the three mutually exclusive storage flags into
+// exactly one selected backend. Shared by every offline control command so they
+// accept the same flags and reject the same combinations.
+func resolveControlStorage(configFile, database, mysqlDSN string) (string, string, error) {
+	if configFile != "" {
+		if database != "" || mysqlDSN != "" {
+			return "", "", errors.New("--config cannot be combined with --database or --mysql-dsn")
+		}
+		cfg, fileUsed, err := loadConfig(configFile)
+		if err != nil {
+			return "", "", err
+		}
+		if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
+			return "", "", err
+		}
+		if cfg.Control == nil {
+			return "", "", errors.New("config does not enable control mode")
+		}
+		switch effectiveControlDriver(cfg.Control) {
+		case "mysql":
+			mysqlDSN = cfg.Control.Storage.MySQL.DSN
+		case "bbolt":
+			database = cfg.Control.Database
+		default:
+			return "", "", fmt.Errorf("unsupported control storage driver %q", cfg.Control.Storage.Driver)
+		}
+	}
+	if (database == "") == (mysqlDSN == "") {
+		return "", "", errors.New("exactly one of --config, --database, or --mysql-dsn must select control storage")
+	}
+	return database, mysqlDSN, nil
+}
+
 func newControlInitAdminCommand() *cobra.Command {
 	var configFile, database, mysqlDSN, username string
 	c := &cobra.Command{Use: "init-admin", Short: "Initialize the first administrator using a password from stdin", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if strings.TrimSpace(username) == "" {
 			return errors.New("--username is required")
 		}
-		if configFile != "" {
-			if database != "" || mysqlDSN != "" {
-				return errors.New("--config cannot be combined with --database or --mysql-dsn")
-			}
-			cfg, fileUsed, err := loadConfig(configFile)
-			if err != nil {
-				return err
-			}
-			if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
-				return err
-			}
-			if cfg.Control == nil {
-				return errors.New("config does not enable control mode")
-			}
-			switch effectiveControlDriver(cfg.Control) {
-			case "mysql":
-				mysqlDSN = cfg.Control.Storage.MySQL.DSN
-			case "bbolt":
-				database = cfg.Control.Database
-			default:
-				return fmt.Errorf("unsupported control storage driver %q", cfg.Control.Storage.Driver)
-			}
-		}
-		if (database == "") == (mysqlDSN == "") {
-			return errors.New("exactly one of --config, --database, or --mysql-dsn must select control storage")
+		var err error
+		if database, mysqlDSN, err = resolveControlStorage(configFile, database, mysqlDSN); err != nil {
+			return err
 		}
 		if err := cmd.Context().Err(); err != nil {
 			return err
@@ -182,6 +193,96 @@ func newControlInitAdminCommand() *cobra.Command {
 	c.Flags().StringVar(&database, "database", "", "control database path")
 	c.Flags().StringVar(&mysqlDSN, "mysql-dsn", "", "MySQL DSN for the control storage")
 	c.Flags().StringVar(&username, "username", "", "initial administrator username")
+	return c
+}
+
+// findUserByUsername locates a user by name for the offline commands. The
+// Service interface exposes no name lookup, so this pages through the list.
+// Usernames are stored case-insensitively, so the comparison folds case.
+func findUserByUsername(ctx context.Context, s control.Service, username string) (control.User, error) {
+	want := strings.ToLower(strings.TrimSpace(username))
+	var cursor string
+	for {
+		page, err := s.ListUsers(ctx, control.Page{Limit: 200, Cursor: cursor})
+		if err != nil {
+			return control.User{}, err
+		}
+		for _, u := range page.Items {
+			if strings.ToLower(u.Username) == want {
+				return u, nil
+			}
+		}
+		if page.NextCursor == "" {
+			return control.User{}, fmt.Errorf("no user named %q", strings.TrimSpace(username))
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// newControlResetPasswordCommand restores access when the only administrator
+// password is lost. Stored passwords are Argon2id digests over a random salt,
+// so the original cannot be recovered and the account has to be given a new
+// one. The panel cannot do this: changing another user's password requires an
+// administrator session, which is exactly what a lost password denies. The
+// command therefore runs offline, against the stopped service's database, and
+// authorizes on filesystem access to that database alone.
+func newControlResetPasswordCommand() *cobra.Command {
+	var configFile, database, mysqlDSN, username string
+	c := &cobra.Command{
+		Use:   "reset-password",
+		Short: "Reset a user's password offline using a password from stdin",
+		Long: "Reset a user's password offline using a password from stdin.\n\n" +
+			"Stop mosdns first: bbolt takes an exclusive lock, and a running service keeps it.\n" +
+			"Every session belonging to the user is revoked, so the panel requires a fresh login.\n" +
+			"Device credentials are not touched and keep resolving.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(username) == "" {
+				return errors.New("--username is required")
+			}
+			var err error
+			if database, mysqlDSN, err = resolveControlStorage(configFile, database, mysqlDSN); err != nil {
+				return err
+			}
+			if err := cmd.Context().Err(); err != nil {
+				return err
+			}
+			// Read the password before opening the database so a malformed one
+			// fails without taking the lock.
+			password, err := readPassword(cmd.InOrStdin())
+			if err != nil {
+				return err
+			}
+			var s control.Service
+			if mysqlDSN != "" {
+				s, err = control.OpenMySQLContext(cmd.Context(), control.MySQLOptions{DSN: mysqlDSN})
+			} else {
+				s, err = control.Open(database, control.Options{})
+			}
+			if err != nil {
+				return fmt.Errorf("open control storage: %w", err)
+			}
+			user, opErr := findUserByUsername(cmd.Context(), s, username)
+			if opErr == nil {
+				// Passing the user as its own actor is what lets this run with
+				// no administrator session. SetPassword rehashes, bumps the
+				// password version and revokes the user's sessions.
+				opErr = s.SetPassword(cmd.Context(), user.ID, user.ID, password)
+			}
+			closeErr := s.Close()
+			if err := operationAndCloseError("reset password", opErr, closeErr); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(),
+				"用户 %q（角色 %s）的密码已重置，其全部会话已吊销。设备凭证未受影响。\n",
+				user.Username, user.Role)
+			return err
+		},
+	}
+	c.Flags().StringVarP(&configFile, "config", "c", "", "read control storage from a Mosdns config file")
+	c.Flags().StringVar(&database, "database", "", "control database path")
+	c.Flags().StringVar(&mysqlDSN, "mysql-dsn", "", "MySQL DSN for the control storage")
+	c.Flags().StringVar(&username, "username", "", "username whose password is reset")
 	return c
 }
 
