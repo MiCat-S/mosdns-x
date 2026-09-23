@@ -4051,22 +4051,117 @@ export function LabsPage() {
     <>
       <PageTitle
         title="实验性功能"
-        description="以下功能需要节点提供额外实现，当前服务未启用。"
+        description="部分功能需要节点提供额外实现，未启用的项目会注明原因。"
       />
+      <SafeModeCard />
       <UnavailableGroup
         title="Web3 与替代根"
         items={["ENS / Web3 域名解析", "替代 DNS 根"]}
       />
-      <UnavailableGroup
-        title="快捷功能与自定义上游"
-        items={["一键安全模式", "自定义实验上游"]}
-      />
+      <UnavailableGroup title="自定义上游" items={["自定义实验上游"]} />
       <UnavailableGroup
         title="网络与响应优化"
         items={["ECS 实验模式", "IPv4 / IPv6 响应偏好", "响应记录优化"]}
       />
       <UnavailableGroup title="实验查询类型" items={["新兴 qtype 分流"]} />
     </>
+  );
+}
+
+// SafeModeCard applies the protections that carry no functional cost in one
+// action. It is a button, not a switch: turning "safe mode" off has no clear
+// meaning, and must not undo a protection the user enabled on its own. ECS
+// stripping is left out because it trades CDN locality for privacy, which is
+// not a safety choice.
+function SafeModeCard() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const threat = useThreatIntel();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const settings = data ? normalizeSettings(data) : undefined;
+
+  const paused = settings ? policyPaused(settings.policy_paused_until) : false;
+  const items = settings
+    ? [
+        { label: "DNS 重绑定防护", on: settings.block_private_answers },
+        { label: "自定义拦截规则", on: settings.custom_block_enabled },
+        { label: "保护策略未暂停", on: !paused },
+        {
+          label: "恶意域名情报",
+          on: threat.enabled,
+          unavailable: !threat.available,
+        },
+      ]
+    : [];
+  const complete = items.every((item) => item.on || item.unavailable);
+
+  async function apply() {
+    if (!settings) return;
+    const patch: Partial<UserSettings> = {};
+    if (!settings.block_private_answers) patch.block_private_answers = true;
+    if (!settings.custom_block_enabled) patch.custom_block_enabled = true;
+    if (paused) patch.policy_paused_until = zeroTime;
+    setBusy(true);
+    setError("");
+    try {
+      if (Object.keys(patch).length > 0) {
+        const updated = await request<UserSettings>(
+          "/me/settings",
+          json("PATCH", patch),
+        );
+        setData(normalizeSettings(updated));
+      }
+      if (threat.available && !threat.enabled) await threat.setEnabled(true);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="一键安全模式">
+      <p className="safe-mode-intro">
+        一次开启下列不影响正常使用的保护。已单独开启的项目保持不变。
+      </p>
+      {loading ? (
+        <Spinner />
+      ) : (
+        <Alert error={loadError || error || threat.error} />
+      )}
+      {settings ? (
+        <>
+          <ul className="safe-mode-list" aria-label="安全模式包含的保护">
+            {items.map((item) => (
+              <li key={item.label}>
+                <span aria-hidden>
+                  {item.unavailable ? "–" : item.on ? "✓" : "○"}
+                </span>
+                {item.label}
+                <small>
+                  {item.unavailable
+                    ? "暂不可用"
+                    : item.on
+                      ? "已开启"
+                      : "未开启"}
+                </small>
+              </li>
+            ))}
+          </ul>
+          <button
+            className="primary"
+            disabled={complete || busy || threat.busy || threat.loading}
+            onClick={() => void apply()}
+          >
+            {complete ? "已全部开启" : busy ? "正在开启…" : "一键开启"}
+          </button>
+        </>
+      ) : null}
+    </Card>
   );
 }
 

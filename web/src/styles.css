@@ -1472,6 +1472,41 @@ summary {
   border-bottom: 1px solid #e8ebee;
 }
 
+.safe-mode-intro {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+}
+
+.safe-mode-list {
+  display: grid;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.safe-mode-list > li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.safe-mode-list > li:last-child {
+  border-bottom: 0;
+}
+
+.safe-mode-list > li > span {
+  width: 1.1rem;
+  text-align: center;
+  color: var(--success);
+}
+
+.safe-mode-list > li > small {
+  margin-left: auto;
+  color: var(--muted);
+}
+
 .capability-list > div:last-child {
   border-bottom: 0;
 }

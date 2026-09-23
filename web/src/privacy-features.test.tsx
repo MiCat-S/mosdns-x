@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PrivacyPage } from "./pages";
+import { LabsPage, PrivacyPage } from "./pages";
 
 type Call = { url: string; method: string; body: unknown };
 
@@ -196,5 +196,78 @@ describe("恶意域名情报", () => {
     expect(calls.find((c) => c.method === "PATCH")?.url).toContain(
       "/me/public-lists/phishing",
     );
+  });
+});
+
+describe("一键安全模式", () => {
+  const settingsCalls = (calls: Call[]) =>
+    calls.filter((c) => c.method === "PATCH" && c.url.includes("/me/settings"));
+  const listCalls = (calls: Call[]) =>
+    calls.filter(
+      (c) => c.method === "PATCH" && c.url.includes("/me/public-lists/"),
+    );
+
+  it("只开启尚未开启的保护，并同时启用恶意域名情报", async () => {
+    const calls = mockApi(
+      {
+        ...baseSettings,
+        block_private_answers: false,
+        custom_block_enabled: true,
+        strip_ecs: false,
+      },
+      [list("malware", "恶意域名")],
+    );
+    render(<LabsPage />);
+    const button = await screen.findByRole("button", { name: "一键开启" });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(button);
+    await waitFor(() => expect(listCalls(calls)).toHaveLength(1));
+    // Only the protection that was off is sent; ECS is never touched.
+    expect(settingsCalls(calls).map((c) => c.body)).toEqual([
+      { block_private_answers: true },
+    ]);
+    expect(listCalls(calls)[0].body).toEqual({ enabled: true });
+    await screen.findByRole("button", { name: "已全部开启" });
+  });
+
+  it("策略处于暂停时一并恢复", async () => {
+    const future = new Date(Date.now() + 3600_000).toISOString();
+    const calls = mockApi({
+      ...baseSettings,
+      block_private_answers: true,
+      policy_paused_until: future as unknown as null,
+    });
+    render(<LabsPage />);
+    const button = await screen.findByRole("button", { name: "一键开启" });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(button);
+    await waitFor(() => expect(settingsCalls(calls)).toHaveLength(1));
+    expect(settingsCalls(calls)[0].body).toEqual({
+      policy_paused_until: "0001-01-01T00:00:00Z",
+    });
+  });
+
+  it("全部已开启时按钮不可点，不发请求", async () => {
+    const calls = mockApi({ ...baseSettings, block_private_answers: true }, [
+      list("malware", "恶意域名", { enabled: true }),
+    ]);
+    render(<LabsPage />);
+    const button = (await screen.findByRole("button", {
+      name: "已全部开启",
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+
+  it("没有情报源时不影响完成判定，并标注暂不可用", async () => {
+    mockApi({ ...baseSettings, block_private_answers: true });
+    render(<LabsPage />);
+    await screen.findByRole("button", { name: "已全部开启" });
+    const list = screen.getByRole("list", { name: "安全模式包含的保护" });
+    expect(list.textContent).toContain("暂不可用");
   });
 });
