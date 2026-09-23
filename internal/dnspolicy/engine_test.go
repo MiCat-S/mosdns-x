@@ -70,7 +70,7 @@ func TestBeforeAppliesSettingsAndFirstMatchingRule(t *testing.T) {
 		t.Fatalf("blocked response=%v decision=%+v err=%v", response, decision, err)
 	}
 	response, decision, err = engine.BeforeWithDecision(ctx, principal, question("example.org", dns.TypeHTTPS))
-	if err != nil || response == nil || response.Rcode != dns.RcodeNameError || decision.Action != control.DNSPolicyBlock || decision.RuleID != "" {
+	if err != nil || !isNoData(response) || decision.Action != control.DNSPolicyBlock || decision.RuleID != "" {
 		t.Fatalf("qtype response=%v decision=%+v err=%v", response, decision, err)
 	}
 }
@@ -118,7 +118,7 @@ func TestInvalidateAppliesSavedSettingsOnNextQuery(t *testing.T) {
 	}
 	engine.Invalidate(principal.UserID)
 	response, err := engine.Before(ctx, principal, question("example.org", dns.TypeTXT))
-	if err != nil || response == nil || response.Rcode != dns.RcodeNameError {
+	if err != nil || !isNoData(response) {
 		t.Fatalf("updated response=%v err=%v", response, err)
 	}
 }
@@ -149,7 +149,7 @@ func TestPolicyPauseSkipsRequestAndResponsePolicyThenExpires(t *testing.T) {
 	}
 	base = pausedUntil.Add(time.Nanosecond)
 	response, err := engine.Before(ctx, principal, question("example.org", dns.TypeA))
-	if err != nil || response == nil || response.Rcode != dns.RcodeNameError {
+	if err != nil || !isNoData(response) {
 		t.Fatalf("expired pause response=%v err=%v", response, err)
 	}
 }
@@ -233,3 +233,48 @@ func TestPublicListsRunAfterCustomAllowAndRespectPause(t *testing.T) {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+// isNoData reports a NOERROR response with no answers: the name exists but has
+// no record of the requested type. Query type blocks must answer this way.
+func isNoData(response *dns.Msg) bool {
+	return response != nil && response.Rcode == dns.RcodeSuccess && len(response.Answer) == 0
+}
+
+// A query type block and a name block must answer differently. A type block
+// means the name exists without that record, so it answers NODATA; answering
+// NXDOMAIN would let an RFC 8020 resolver cache the whole name as absent and
+// fail its A lookup too. A name block really does assert the name is absent.
+func TestTypeBlockAnswersNoDataWhileNameBlockAnswersNXDomain(t *testing.T) {
+	engine, store, principal := testEngine(t)
+	ctx := context.Background()
+	qtypes := []string{"HTTPS", "SVCB", "AAAA"}
+	if _, err := store.UpdateDNSPolicySettings(ctx, principal.UserID, principal.UserID, control.DNSPolicySettingsPatch{BlockedQTypes: &qtypes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateDNSPolicyRule(ctx, principal.UserID, principal.UserID, control.DNSPolicyRuleSpec{
+		Enabled: true, Priority: 10, Action: control.DNSPolicyBlock, Match: control.DNSPolicyMatchSuffix, Pattern: "blocked.test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	engine.Invalidate(principal.UserID)
+
+	for _, qtype := range []uint16{dns.TypeHTTPS, dns.TypeSVCB, dns.TypeAAAA} {
+		response, decision, err := engine.BeforeWithDecision(ctx, principal, question("allowed.test", qtype))
+		if err != nil || !isNoData(response) || decision.Action != control.DNSPolicyBlock {
+			t.Fatalf("%s type block: response=%v decision=%+v err=%v", dns.TypeToString[qtype], response, decision, err)
+		}
+		if response.Question[0].Qtype != qtype {
+			t.Fatalf("%s type block echoed the wrong question", dns.TypeToString[qtype])
+		}
+	}
+
+	// An unblocked type on the same name is passed through untouched.
+	if response, _, err := engine.BeforeWithDecision(ctx, principal, question("allowed.test", dns.TypeA)); err != nil || response != nil {
+		t.Fatalf("an unblocked type was answered: response=%v err=%v", response, err)
+	}
+
+	response, decision, err := engine.BeforeWithDecision(ctx, principal, question("www.blocked.test", dns.TypeA))
+	if err != nil || response == nil || response.Rcode != dns.RcodeNameError || decision.RuleID == "" {
+		t.Fatalf("name block: response=%v decision=%+v err=%v", response, decision, err)
+	}
+}

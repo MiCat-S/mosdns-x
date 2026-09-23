@@ -97,7 +97,7 @@ func (e *Engine) BeforeWithDecision(ctx context.Context, principal query_context
 	qtype := dns.TypeToString[question.Qtype]
 	for _, blocked := range p.settings.BlockedQTypes {
 		if strings.EqualFold(blocked, qtype) {
-			return blockedResponse(request), Decision{Action: control.DNSPolicyBlock}, nil
+			return noDataResponse(request), Decision{Action: control.DNSPolicyBlock}, nil
 		}
 	}
 	name := strings.ToLower(strings.TrimSuffix(question.Name, "."))
@@ -263,10 +263,25 @@ func stripECS(request *dns.Msg) {
 	opt.Option = filtered
 }
 
+// blockedResponse answers NXDOMAIN, which asserts the name does not exist. It
+// is for name-level blocks: custom rules, public lists and private answers.
 func blockedResponse(request *dns.Msg) *dns.Msg {
 	response := new(dns.Msg)
 	response.SetReply(request)
 	response.Rcode = dns.RcodeNameError
+	return response
+}
+
+// noDataResponse answers NOERROR with an empty answer section: the name exists
+// but has no record of the requested type. Query type blocking must use this
+// rather than NXDOMAIN. Under RFC 8020 an NXDOMAIN means nothing exists at or
+// below the name for any type, so a resolver may cache it and fail the A
+// lookup as well. Browsers query HTTPS alongside A and AAAA, so an NXDOMAIN
+// for a blocked HTTPS record could take the whole site down.
+func noDataResponse(request *dns.Msg) *dns.Msg {
+	response := new(dns.Msg)
+	response.SetReply(request)
+	response.Rcode = dns.RcodeSuccess
 	return response
 }
 

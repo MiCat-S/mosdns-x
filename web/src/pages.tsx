@@ -2331,10 +2331,12 @@ export function PrivacyPage() {
           <div className="settings-row qtype-row">
             <div>
               <strong>查询类型拦截</strong>
-              <small>点击类型即可立即加入或移出拒绝列表。</small>
+              <small>
+                点击类型即可立即加入或移出拒绝列表。被拦截的类型返回空应答，域名本身仍可正常解析。
+              </small>
             </div>
             <div className="qtype-switches" aria-label="查询类型拦截">
-              {["AAAA", "TXT", "MX", "NS"].map((type) => {
+              {["AAAA", "HTTPS", "SVCB", "TXT", "MX", "NS"].map((type) => {
                 const checked = settings.blocked_qtypes.includes(type);
                 return (
                   <button
@@ -3978,7 +3980,7 @@ export function LabsPage() {
       />
       <UnavailableGroup
         title="实验查询类型"
-        items={["HTTPS / SVCB 处理", "新兴 qtype 分流"]}
+        items={["新兴 qtype 分流"]}
       />
     </>
   );
