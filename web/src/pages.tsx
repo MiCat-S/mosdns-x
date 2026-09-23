@@ -2256,6 +2256,8 @@ type NormalizedUserSettings = Omit<
   | "ttl_max"
   | "flatten_cname"
   | "shuffle_answers"
+  | "ecs_ipv4"
+  | "ecs_ipv6"
 > & {
   blocked_qtypes: string[];
   custom_block_enabled: boolean;
@@ -2267,6 +2269,8 @@ type NormalizedUserSettings = Omit<
   ttl_max: number;
   flatten_cname: boolean;
   shuffle_answers: boolean;
+  ecs_ipv4: string;
+  ecs_ipv6: string;
 };
 
 function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
@@ -2282,6 +2286,8 @@ function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
     ttl_max: settings.ttl_max ?? 0,
     flatten_cname: settings.flatten_cname ?? false,
     shuffle_answers: settings.shuffle_answers ?? false,
+    ecs_ipv4: settings.ecs_ipv4 ?? "",
+    ecs_ipv6: settings.ecs_ipv6 ?? "",
   };
 }
 
@@ -4387,6 +4393,100 @@ function ResponseOptimizationCard() {
   );
 }
 
+// ECSOverrideCard sets the client subnet sent upstream for A and AAAA
+// queries. Stripping ECS on the privacy page wins over it, and the card says
+// so rather than disabling its fields, so an override can be prepared first.
+function ECSOverrideCard() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState<{ v4: string; v6: string }>();
+  const settings = data ? normalizeSettings(data) : undefined;
+  const values = draft ?? {
+    v4: settings?.ecs_ipv4 ?? "",
+    v6: settings?.ecs_ipv6 ?? "",
+  };
+  const changed =
+    settings !== undefined &&
+    (values.v4.trim() !== settings.ecs_ipv4 ||
+      values.v6.trim() !== settings.ecs_ipv6);
+
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", {
+          ecs_ipv4: values.v4.trim(),
+          ecs_ipv6: values.v6.trim(),
+        }),
+      );
+      setData(normalizeSettings(updated));
+      setDraft(undefined);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="ECS 地址覆写">
+      <p className="safe-mode-intro">
+        用你指定的网段代替真实客户端网段发给上游，让 CDN 按该网络返回结果。A
+        查询优先用 IPv4 网段，AAAA 优先用 IPv6，缺一项时互相替代；只对带 EDNS
+        的请求生效。留空即不覆写。
+      </p>
+      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {settings?.strip_ecs ? (
+        <p className="notice" role="status">
+          「停用 ECS」已开启，优先于覆写：当前不会向上游发送任何网段。
+        </p>
+      ) : null}
+      {settings ? (
+        <div className="ttl-fields ecs-fields">
+          <Field label="IPv4 网段">
+            <input
+              value={values.v4}
+              placeholder="例如 203.0.113.0/24"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              onChange={(event) =>
+                setDraft({ ...values, v4: event.target.value })
+              }
+            />
+          </Field>
+          <Field label="IPv6 网段">
+            <input
+              value={values.v6}
+              placeholder="例如 2001:db8::/48"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={busy}
+              onChange={(event) =>
+                setDraft({ ...values, v6: event.target.value })
+              }
+            />
+          </Field>
+          <button
+            className="primary"
+            disabled={busy || !changed}
+            onClick={() => void save()}
+          >
+            保存
+          </button>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
 function UnavailableGroup({
   title,
   items,
@@ -4513,10 +4613,8 @@ export function AdvancedPage() {
           </div>
         </Card>
       ) : null}
-      <UnavailableGroup
-        title="缓存 / ECS"
-        items={["自定义缓存策略", "ECS 地址覆写"]}
-      />
+      <UnavailableGroup title="缓存" items={["自定义缓存策略"]} />
+      <ECSOverrideCard />
       <UnavailableGroup title="日志" items={["扩展查询日志", "长期日志保留"]} />
       <UnavailableGroup
         title="兼容"

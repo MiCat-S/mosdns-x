@@ -1391,6 +1391,8 @@ type dnsPolicySettingsPatchRequest struct {
 	TTLMax         *uint32               `json:"ttl_max"`
 	FlattenCNAME   *bool                 `json:"flatten_cname"`
 	ShuffleAnswers *bool                 `json:"shuffle_answers"`
+	ECSIPv4        *string               `json:"ecs_ipv4"`
+	ECSIPv6        *string               `json:"ecs_ipv6"`
 }
 
 func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (control.DNSPolicySettingsPatch, error) {
@@ -1403,6 +1405,8 @@ func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (contro
 		TTLMax:               request.TTLMax,
 		FlattenCNAME:         request.FlattenCNAME,
 		ShuffleAnswers:       request.ShuffleAnswers,
+		ECSIPv4:              request.ECSIPv4,
+		ECSIPv6:              request.ECSIPv6,
 	}
 	if request.PolicyPausedUntil == nil {
 		return patch, nil

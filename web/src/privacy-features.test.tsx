@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LabsPage, PrivacyPage } from "./pages";
+import { AdvancedPage, LabsPage, PrivacyPage } from "./pages";
 
 type Call = { url: string; method: string; body: unknown };
 
@@ -378,5 +378,69 @@ describe("响应记录优化", () => {
     expect(save.disabled).toBe(true);
     fireEvent.click(save);
     expect(patches(calls)).toHaveLength(0);
+  });
+});
+
+describe("ECS 地址覆写", () => {
+  it("保存时提交去掉首尾空格的两个网段", async () => {
+    const calls = mockApi(baseSettings);
+    render(<AdvancedPage />);
+    const v4 = await screen.findByLabelText("IPv4 网段");
+    const save = screen.getByRole("button", {
+      name: "保存",
+    }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(v4, { target: { value: " 203.0.113.0/24 " } });
+    fireEvent.change(screen.getByLabelText("IPv6 网段"), {
+      target: { value: "2001:db8::/48" },
+    });
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(
+        calls.find(
+          (c) => c.method === "PATCH" && "ecs_ipv4" in (c.body as object),
+        )?.body,
+      ).toEqual({ ecs_ipv4: "203.0.113.0/24", ecs_ipv6: "2001:db8::/48" }),
+    );
+  });
+
+  it("停用 ECS 开启时提示覆写不生效，但仍可编辑", async () => {
+    mockApi({ ...baseSettings, strip_ecs: true });
+    render(<AdvancedPage />);
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("优先于覆写");
+    expect(
+      (screen.getByLabelText("IPv4 网段") as HTMLInputElement).disabled,
+    ).toBe(false);
+  });
+
+  it("显示服务端返回的校验错误", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/me/public-lists"))
+          return json({ items: [], next_cursor: "" });
+        if (init?.method === "PATCH")
+          return json(
+            {
+              error: {
+                code: "invalid_input",
+                message: "ecs prefix must be IPv4",
+              },
+            },
+            400,
+          );
+        return json(baseSettings);
+      }),
+    );
+    render(<AdvancedPage />);
+    fireEvent.change(await screen.findByLabelText("IPv4 网段"), {
+      target: { value: "2001:db8::/48" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(document.body.textContent).toMatch(/invalid_input|IPv4/),
+    );
   });
 });

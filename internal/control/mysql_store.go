@@ -151,6 +151,8 @@ var mysqlControlMigrations = []string{
 		ttl_max INT UNSIGNED NOT NULL DEFAULT 0,
 		flatten_cname BOOLEAN NOT NULL DEFAULT FALSE,
 		shuffle_answers BOOLEAN NOT NULL DEFAULT FALSE,
+		ecs_ipv4 VARCHAR(64) NOT NULL DEFAULT '',
+		ecs_ipv6 VARCHAR(64) NOT NULL DEFAULT '',
 		updated_at_ns BIGINT NOT NULL,
 		CONSTRAINT fk_mosdns_dns_policy_settings_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
@@ -445,6 +447,8 @@ var mysqlAdditivePolicyColumns = []struct {
 	{"ttl_max", "ttl_max INT UNSIGNED NOT NULL DEFAULT 0"},
 	{"flatten_cname", "flatten_cname BOOLEAN NOT NULL DEFAULT FALSE"},
 	{"shuffle_answers", "shuffle_answers BOOLEAN NOT NULL DEFAULT FALSE"},
+	{"ecs_ipv4", "ecs_ipv4 VARCHAR(64) NOT NULL DEFAULT ''"},
+	{"ecs_ipv6", "ecs_ipv6 VARCHAR(64) NOT NULL DEFAULT ''"},
 }
 
 func mysqlAdditivePolicyColumnsQuery() string {

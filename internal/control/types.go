@@ -162,8 +162,13 @@ type DNSPolicySettings struct {
 	// FlattenCNAME returns only the final addresses, owned by the queried name.
 	FlattenCNAME bool `json:"flatten_cname"`
 	// ShuffleAnswers randomizes the order of address records.
-	ShuffleAnswers bool      `json:"shuffle_answers"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ShuffleAnswers bool `json:"shuffle_answers"`
+	// ECSIPv4 and ECSIPv6 replace the client subnet sent upstream, as masked
+	// CIDR prefixes, so CDNs answer as for that network. Empty sends none of
+	// that family. StripECS takes precedence and sends no subnet at all.
+	ECSIPv4   string    `json:"ecs_ipv4"`
+	ECSIPv6   string    `json:"ecs_ipv6"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type DNSPolicySettingsPatch struct {
@@ -179,6 +184,8 @@ type DNSPolicySettingsPatch struct {
 	TTLMax               *uint32       `json:"ttl_max,omitempty"`
 	FlattenCNAME         *bool         `json:"flatten_cname,omitempty"`
 	ShuffleAnswers       *bool         `json:"shuffle_answers,omitempty"`
+	ECSIPv4              *string       `json:"ecs_ipv4,omitempty"`
+	ECSIPv6              *string       `json:"ecs_ipv6,omitempty"`
 }
 
 // MaxPolicyTTL bounds the answer TTL clamps. Raising the floor delays a name's

@@ -990,3 +990,15 @@ func TestUserSettingsAnswerOptimizations(t *testing.T) {
 		}
 	}
 }
+
+func TestUserSettingsECSOverride(t *testing.T) {
+	f := newFixture(t)
+	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
+	w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"ecs_ipv4":"203.0.113.77/24","ecs_ipv6":"2001:db8::/48"}`, alice, csrf)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ecs_ipv4":"203.0.113.0/24"`) || !strings.Contains(w.Body.String(), `"ecs_ipv6":"2001:db8::/48"`) {
+		t.Fatalf("update=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"ecs_ipv4":"2001:db8::/48"}`, alice, csrf); w.Code != http.StatusBadRequest {
+		t.Fatalf("wrong family status=%d %s", w.Code, w.Body.String())
+	}
+}

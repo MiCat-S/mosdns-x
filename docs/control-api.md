@@ -59,6 +59,8 @@ DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因�
 
 响应记录优化按用户生效，只改写发给该用户的应答，共享缓存保留上游原始结果。`flatten_cname` 去掉 CNAME 链，把剩余记录归到所查询的域名下；没有地址记录或含 DNAME 时保持原样。`shuffle_answers` 只在 A/AAAA 查询中打乱地址记录的顺序，CNAME 保持在前。`ttl_min`、`ttl_max` 限定应答区记录的 TTL，0 表示不限制，上限 86400 秒，同时设置时下限不得大于上限；授权区不受影响，SOA 仍决定否定缓存时长。改写直接作用于原应答，查询明细中的来源仍记为上游或缓存。暂停策略期间这些改写同样不生效。
 
+`ecs_ipv4`、`ecs_ipv6` 是 CIDR 网段，保存时去掉主机位；留空表示不覆写。字段必须与地址族一致，IPv4 映射的 IPv6 网段不算 IPv4，裸地址不接受。设置后，A 查询优先发送 IPv4 网段，AAAA 优先发送 IPv6 网段，缺一项时用另一项代替，并强制替换客户端自带的 ECS；其他查询类型不改。覆写只作用于本身带 EDNS 的请求，不会为纯 DNS 请求添加 OPT（RFC 6891）。上游在应答中回显的是覆写网段，与客户端所发的对不上，因此应答里的 ECS 选项会被移除（RFC 7871），OPT 保留。`strip_ecs` 优先于覆写，同时开启时不发送任何网段。带 EDNS 的查询默认不进入缓存；开启 `cache_everything` 时，缓存键包含整条请求和 ECS，不同网段分开缓存，不会跨用户串用。
+
 用户公共列表响应不会返回来源 URL、配置 SHA-256、快照 SHA-256 或原始刷新错误；这些字段只对管理员接口可见，避免签名 URL 和上游细节泄漏。用户仍可看到名称、分类、格式、条目数、发布与快照状态、刷新时间，以及自己的显式或继承选择。
 
 管理员用 `GET/POST /admin/public-lists` 和 `GET/PATCH/DELETE /admin/public-lists/{id}` 管理 HTTPS 列表目录。直接 POST 保存草稿；`POST /admin/public-lists/validate` 返回内容预览和绑定候选快照的令牌，随后用 `POST /admin/public-lists/publish` 或 `POST /admin/public-lists/{id}/publish` 发布该快照。`POST /admin/public-lists/{id}/refresh` 刷新一项，`POST /admin/public-lists/refresh-all` 刷新全部已发布项。列表项分别包含 `published`、`default_enabled`、刷新结果及快照状态；下载失败时继续使用上一份有效快照。`GET /admin/data-providers` 只读返回主配置中的节点数据源，不会把它们导入为用户拦截规则。

@@ -49,6 +49,8 @@ export interface UserSettings {
   ttl_max?: number;
   flatten_cname?: boolean;
   shuffle_answers?: boolean;
+  ecs_ipv4?: string;
+  ecs_ipv6?: string;
   updated_at: string;
 }
 export type AnswerFamily = "" | "ipv4" | "ipv6";

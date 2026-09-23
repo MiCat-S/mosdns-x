@@ -1482,6 +1482,10 @@ summary {
   gap: 0.75rem;
 }
 
+.ecs-fields input {
+  width: 14rem;
+}
+
 .ttl-fields input {
   width: 7rem;
 }

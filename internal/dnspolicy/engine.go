@@ -95,6 +95,8 @@ func (e *Engine) BeforeWithDecision(ctx context.Context, principal query_context
 	}
 	if p.settings.StripECS {
 		stripECS(request)
+	} else {
+		applyECSOverride(p.settings, request)
 	}
 	question := request.Question[0]
 	qtype := dns.TypeToString[question.Qtype]
@@ -158,6 +160,7 @@ func (e *Engine) AfterWithDecision(ctx context.Context, principal query_context.
 	if preferOtherFamily(ctx, p.settings.AnswerFamily, request, response) {
 		return noDataResponse(request), Decision{FamilyPreference: true}, nil
 	}
+	clearOverriddenECS(p.settings, request, response)
 	optimizeResponse(p.settings, request, response)
 	return response, Decision{}, nil
 }

@@ -87,7 +87,8 @@ func initializeDNSPolicyData(tx *bbolt.Tx, previousVersion uint64) error {
 
 func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySettingsPatch, now time.Time) (DNSPolicySettings, error) {
 	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil && patch.AnswerFamily == nil &&
-		patch.TTLMin == nil && patch.TTLMax == nil && patch.FlattenCNAME == nil && patch.ShuffleAnswers == nil {
+		patch.TTLMin == nil && patch.TTLMax == nil && patch.FlattenCNAME == nil && patch.ShuffleAnswers == nil &&
+		patch.ECSIPv4 == nil && patch.ECSIPv6 == nil {
 		return current, ErrInvalidInput
 	}
 	if patch.AnswerFamily != nil {
@@ -115,6 +116,20 @@ func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySetti
 	}
 	if patch.ShuffleAnswers != nil {
 		current.ShuffleAnswers = *patch.ShuffleAnswers
+	}
+	if patch.ECSIPv4 != nil {
+		prefix, err := normalizeECSPrefix(*patch.ECSIPv4, false)
+		if err != nil {
+			return current, err
+		}
+		current.ECSIPv4 = prefix
+	}
+	if patch.ECSIPv6 != nil {
+		prefix, err := normalizeECSPrefix(*patch.ECSIPv6, true)
+		if err != nil {
+			return current, err
+		}
+		current.ECSIPv6 = prefix
 	}
 	if patch.StripECS != nil {
 		current.StripECS = *patch.StripECS
@@ -565,4 +580,34 @@ func (s *Store) ListDNSPolicyRules(ctx context.Context, userID string, p Page) (
 		return nil
 	})
 	return out, err
+}
+
+// normalizeECSPrefix returns value as a masked CIDR prefix of the given
+// family, or "" to clear it. Masking discards host bits, so only the network
+// the user chose is stored and sent. A bare address is rejected rather than
+// read as a host route, because sending a full address is rarely intended.
+func normalizeECSPrefix(value string, v6 bool) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil {
+		return "", fmt.Errorf("%w: ecs prefix must be CIDR such as 203.0.113.0/24", ErrInvalidInput)
+	}
+	// An IPv4-mapped IPv6 prefix is neither: stored in the IPv4 field it
+	// would be sent as an IPv6 subnet, so each field demands its own family.
+	addr := prefix.Addr()
+	ok := addr.Is4()
+	if v6 {
+		ok = addr.Is6() && !addr.Is4In6()
+	}
+	if !ok {
+		family := "IPv4"
+		if v6 {
+			family = "IPv6"
+		}
+		return "", fmt.Errorf("%w: ecs prefix must be %s", ErrInvalidInput, family)
+	}
+	return prefix.Masked().String(), nil
 }
