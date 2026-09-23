@@ -1386,13 +1386,15 @@ type dnsPolicySettingsPatchRequest struct {
 	PolicyPausedUntil    json.RawMessage `json:"policy_paused_until"`
 	// Declared here because the decoder rejects unknown fields: omitting it
 	// would turn every answer_family update into a 400.
-	AnswerFamily   *control.AnswerFamily `json:"answer_family"`
-	TTLMin         *uint32               `json:"ttl_min"`
-	TTLMax         *uint32               `json:"ttl_max"`
-	FlattenCNAME   *bool                 `json:"flatten_cname"`
-	ShuffleAnswers *bool                 `json:"shuffle_answers"`
-	ECSIPv4        *string               `json:"ecs_ipv4"`
-	ECSIPv6        *string               `json:"ecs_ipv6"`
+	AnswerFamily        *control.AnswerFamily `json:"answer_family"`
+	TTLMin              *uint32               `json:"ttl_min"`
+	TTLMax              *uint32               `json:"ttl_max"`
+	FlattenCNAME        *bool                 `json:"flatten_cname"`
+	ShuffleAnswers      *bool                 `json:"shuffle_answers"`
+	ECSIPv4             *string               `json:"ecs_ipv4"`
+	ECSIPv6             *string               `json:"ecs_ipv6"`
+	QueryLogDisabled    *bool                 `json:"query_log_disabled"`
+	QueryRetentionHours *uint32               `json:"query_retention_hours"`
 }
 
 func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (control.DNSPolicySettingsPatch, error) {
@@ -1407,6 +1409,8 @@ func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (contro
 		ShuffleAnswers:       request.ShuffleAnswers,
 		ECSIPv4:              request.ECSIPv4,
 		ECSIPv6:              request.ECSIPv6,
+		QueryLogDisabled:     request.QueryLogDisabled,
+		QueryRetentionHours:  request.QueryRetentionHours,
 	}
 	if request.PolicyPausedUntil == nil {
 		return patch, nil

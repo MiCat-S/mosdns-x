@@ -36,22 +36,23 @@ func mysqlPolicyRuleRow(rule DNSPolicyRule) *sqlmock.Rows {
 func TestMySQLDNSPolicySettingsReadAndUpdate(t *testing.T) {
 	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	store, mock := mysqlPolicyStore(t, now)
-	columns := []string{"user_id", "strip_ecs", "block_private_answers", "blocked_qtypes_json", "custom_block_enabled", "custom_allow_enabled", "custom_rewrite_enabled", "policy_paused_until_ns", "answer_family", "ttl_min", "ttl_max", "flatten_cname", "shuffle_answers", "ecs_ipv4", "ecs_ipv6", "updated_at_ns"}
+	columns := []string{"user_id", "strip_ecs", "block_private_answers", "blocked_qtypes_json", "custom_block_enabled", "custom_allow_enabled", "custom_rewrite_enabled", "policy_paused_until_ns", "answer_family", "ttl_min", "ttl_max", "flatten_cname", "shuffle_answers", "ecs_ipv4", "ecs_ipv6", "query_log_disabled", "query_retention_hours", "updated_at_ns"}
 	storedPause := now.Add(30 * time.Minute)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlDNSPolicySettingsColumns + ` FROM mosdns_dns_policy_settings WHERE user_id=?`)).WithArgs("user-1").WillReturnRows(sqlmock.NewRows(columns).AddRow("user-1", false, false, []byte(`[]`), true, true, true, storedPause.UnixNano(), "ipv4", uint32(30), uint32(0), true, false, "203.0.113.0/24", "", now.Add(-time.Hour).UnixNano()))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlDNSPolicySettingsColumns + ` FROM mosdns_dns_policy_settings WHERE user_id=?`)).WithArgs("user-1").WillReturnRows(sqlmock.NewRows(columns).AddRow("user-1", false, false, []byte(`[]`), true, true, true, storedPause.UnixNano(), "ipv4", uint32(30), uint32(0), true, false, "203.0.113.0/24", "", true, uint32(168), now.Add(-time.Hour).UnixNano()))
 	settings, err := store.GetDNSPolicySettings(context.Background(), "user-1")
 	if err != nil || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 || settings.PolicyPausedUntil == nil || !settings.PolicyPausedUntil.Equal(storedPause) {
 		t.Fatalf("settings=%+v err=%v", settings, err)
 	}
-	if settings.AnswerFamily != AnswerFamilyIPv4 || settings.TTLMin != 30 || !settings.FlattenCNAME || settings.ShuffleAnswers || settings.ECSIPv4 != "203.0.113.0/24" {
+	if settings.AnswerFamily != AnswerFamilyIPv4 || settings.TTLMin != 30 || !settings.FlattenCNAME || settings.ShuffleAnswers || settings.ECSIPv4 != "203.0.113.0/24" ||
+		!settings.QueryLogDisabled || settings.QueryRetentionHours != 168 {
 		t.Fatalf("additive columns read back wrong: %+v", settings)
 	}
 
 	mock.ExpectBegin()
 	expectMySQLPolicyOwner(mock, now)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlDNSPolicySettingsColumns + ` FROM mosdns_dns_policy_settings WHERE user_id=? FOR UPDATE`)).WithArgs("user-1").WillReturnRows(sqlmock.NewRows(columns).AddRow("user-1", false, false, []byte(`[]`), true, true, true, storedPause.UnixNano(), "ipv4", uint32(30), uint32(0), true, false, "203.0.113.0/24", "", now.Add(-time.Hour).UnixNano()))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlDNSPolicySettingsColumns + ` FROM mosdns_dns_policy_settings WHERE user_id=? FOR UPDATE`)).WithArgs("user-1").WillReturnRows(sqlmock.NewRows(columns).AddRow("user-1", false, false, []byte(`[]`), true, true, true, storedPause.UnixNano(), "ipv4", uint32(30), uint32(0), true, false, "203.0.113.0/24", "", true, uint32(168), now.Add(-time.Hour).UnixNano()))
 	pausedUntil := now.Add(time.Hour)
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, answer_family=?, ttl_min=?, ttl_max=?, flatten_cname=?, shuffle_answers=?, ecs_ipv4=?, ecs_ipv6=?, updated_at_ns=? WHERE user_id=?`)).WithArgs(true, false, []byte(`["AAAA","A"]`), false, true, true, pausedUntil.UnixNano(), "ipv4", uint32(30), uint32(0), true, false, "203.0.113.0/24", "", now.UnixNano(), "user-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, answer_family=?, ttl_min=?, ttl_max=?, flatten_cname=?, shuffle_answers=?, ecs_ipv4=?, ecs_ipv6=?, query_log_disabled=?, query_retention_hours=?, updated_at_ns=? WHERE user_id=?`)).WithArgs(true, false, []byte(`["AAAA","A"]`), false, true, true, pausedUntil.UnixNano(), "ipv4", uint32(30), uint32(0), true, false, "203.0.113.0/24", "", true, uint32(168), now.UnixNano(), "user-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_audit_logs`)).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 	strip := true
@@ -83,12 +84,12 @@ func TestInsertMySQLDNSPolicySettingsPersistsAllFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_dns_policy_settings`)).WithArgs("user-1", true, true, []byte(`["AAAA"]`), false, true, false, pausedUntil.UnixNano(), "ipv6", uint32(0), uint32(600), false, true, "", "2001:db8::/48", now.UnixNano()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_dns_policy_settings`)).WithArgs("user-1", true, true, []byte(`["AAAA"]`), false, true, false, pausedUntil.UnixNano(), "ipv6", uint32(0), uint32(600), false, true, "", "2001:db8::/48", false, uint32(24), now.UnixNano()).WillReturnResult(sqlmock.NewResult(1, 1))
 	err = insertMySQLDNSPolicySettings(context.Background(), tx, DNSPolicySettings{
 		UserID: "user-1", StripECS: true, BlockPrivateAnswers: true, BlockedQTypes: []string{"AAAA"},
 		CustomBlockEnabled: false, CustomAllowEnabled: true, CustomRewriteEnabled: false,
 		PolicyPausedUntil: &pausedUntil, AnswerFamily: AnswerFamilyIPv6,
-		TTLMax: 600, ShuffleAnswers: true, ECSIPv6: "2001:db8::/48", UpdatedAt: now,
+		TTLMax: 600, ShuffleAnswers: true, ECSIPv6: "2001:db8::/48", QueryRetentionHours: 24, UpdatedAt: now,
 	})
 	if err != nil {
 		t.Fatal(err)

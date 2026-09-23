@@ -88,7 +88,7 @@ func initializeDNSPolicyData(tx *bbolt.Tx, previousVersion uint64) error {
 func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySettingsPatch, now time.Time) (DNSPolicySettings, error) {
 	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil && patch.AnswerFamily == nil &&
 		patch.TTLMin == nil && patch.TTLMax == nil && patch.FlattenCNAME == nil && patch.ShuffleAnswers == nil &&
-		patch.ECSIPv4 == nil && patch.ECSIPv6 == nil {
+		patch.ECSIPv4 == nil && patch.ECSIPv6 == nil && patch.QueryLogDisabled == nil && patch.QueryRetentionHours == nil {
 		return current, ErrInvalidInput
 	}
 	if patch.AnswerFamily != nil {
@@ -130,6 +130,15 @@ func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySetti
 			return current, err
 		}
 		current.ECSIPv6 = prefix
+	}
+	if patch.QueryLogDisabled != nil {
+		current.QueryLogDisabled = *patch.QueryLogDisabled
+	}
+	if patch.QueryRetentionHours != nil {
+		if *patch.QueryRetentionHours > MaxQueryRetentionHours {
+			return current, fmt.Errorf("%w: query_retention_hours must be between 0 and %d", ErrInvalidInput, MaxQueryRetentionHours)
+		}
+		current.QueryRetentionHours = *patch.QueryRetentionHours
 	}
 	if patch.StripECS != nil {
 		current.StripECS = *patch.StripECS

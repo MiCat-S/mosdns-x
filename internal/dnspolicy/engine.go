@@ -2,6 +2,7 @@ package dnspolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -399,4 +400,19 @@ func answerHasPrivateAddress(answer dns.RR) bool {
 		}
 	}
 	return false
+}
+
+// QueryLogFor reports a user's own query log choice for telemetry, from the
+// same cached settings the request path uses. A user with no settings, such
+// as one that was deleted, reports the defaults without error, so their
+// records still age out instead of being held back as unreadable forever.
+func (e *Engine) QueryLogFor(ctx context.Context, userID string) (bool, time.Duration, error) {
+	p, err := e.load(ctx, userID)
+	if errors.Is(err, control.ErrNotFound) {
+		return true, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	return !p.settings.QueryLogDisabled, time.Duration(p.settings.QueryRetentionHours) * time.Hour, nil
 }

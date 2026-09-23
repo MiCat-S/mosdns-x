@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	mysqlDNSPolicySettingsColumns = `user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, answer_family, ttl_min, ttl_max, flatten_cname, shuffle_answers, ecs_ipv4, ecs_ipv6, updated_at_ns`
+	mysqlDNSPolicySettingsColumns = `user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, answer_family, ttl_min, ttl_max, flatten_cname, shuffle_answers, ecs_ipv4, ecs_ipv6, query_log_disabled, query_retention_hours, updated_at_ns`
 	mysqlDNSPolicyRuleColumns     = `id, user_id, enabled, priority, action, match_kind, pattern, record_type, rewrite_value, created_at_ns, updated_at_ns`
 )
 
@@ -26,12 +26,13 @@ func insertMySQLDNSPolicySettings(ctx context.Context, tx *sql.Tx, settings DNSP
 	_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_dns_policy_settings
 		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled,
 		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, answer_family,
-		 ttl_min, ttl_max, flatten_cname, shuffle_answers, ecs_ipv4, ecs_ipv6, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, settings.UserID, settings.StripECS, settings.BlockPrivateAnswers, encoded,
+		 ttl_min, ttl_max, flatten_cname, shuffle_answers, ecs_ipv4, ecs_ipv6,
+		 query_log_disabled, query_retention_hours, updated_at_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, settings.UserID, settings.StripECS, settings.BlockPrivateAnswers, encoded,
 		settings.CustomBlockEnabled, settings.CustomAllowEnabled, settings.CustomRewriteEnabled,
 		mysqlPolicyPauseValue(settings.PolicyPausedUntil), string(settings.AnswerFamily),
 		settings.TTLMin, settings.TTLMax, settings.FlattenCNAME, settings.ShuffleAnswers,
-		settings.ECSIPv4, settings.ECSIPv6, settings.UpdatedAt.UnixNano())
+		settings.ECSIPv4, settings.ECSIPv6, settings.QueryLogDisabled, settings.QueryRetentionHours, settings.UpdatedAt.UnixNano())
 	return err
 }
 
@@ -50,7 +51,8 @@ func scanMySQLDNSPolicySettings(row sqlScanner) (DNSPolicySettings, error) {
 	var updated int64
 	err := row.Scan(&out.UserID, &out.StripECS, &out.BlockPrivateAnswers, &encoded,
 		&out.CustomBlockEnabled, &out.CustomAllowEnabled, &out.CustomRewriteEnabled, &paused, &family,
-		&out.TTLMin, &out.TTLMax, &out.FlattenCNAME, &out.ShuffleAnswers, &out.ECSIPv4, &out.ECSIPv6, &updated)
+		&out.TTLMin, &out.TTLMax, &out.FlattenCNAME, &out.ShuffleAnswers, &out.ECSIPv4, &out.ECSIPv6,
+		&out.QueryLogDisabled, &out.QueryRetentionHours, &updated)
 	if err != nil {
 		return out, err
 	}
@@ -119,10 +121,11 @@ func (s *MySQLStore) UpdateDNSPolicySettings(ctx context.Context, actor, userID 
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, answer_family=?, ttl_min=?, ttl_max=?, flatten_cname=?, shuffle_answers=?, ecs_ipv4=?, ecs_ipv6=?, updated_at_ns=? WHERE user_id=?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, answer_family=?, ttl_min=?, ttl_max=?, flatten_cname=?, shuffle_answers=?, ecs_ipv4=?, ecs_ipv6=?, query_log_disabled=?, query_retention_hours=?, updated_at_ns=? WHERE user_id=?`,
 			out.StripECS, out.BlockPrivateAnswers, encoded, out.CustomBlockEnabled, out.CustomAllowEnabled,
 			out.CustomRewriteEnabled, mysqlPolicyPauseValue(out.PolicyPausedUntil), string(out.AnswerFamily),
-			out.TTLMin, out.TTLMax, out.FlattenCNAME, out.ShuffleAnswers, out.ECSIPv4, out.ECSIPv6, now.UnixNano(), userID); err != nil {
+			out.TTLMin, out.TTLMax, out.FlattenCNAME, out.ShuffleAnswers, out.ECSIPv4, out.ECSIPv6,
+			out.QueryLogDisabled, out.QueryRetentionHours, now.UnixNano(), userID); err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "update_dns_policy_settings", "dns_policy_settings", userID, map[string]any{"before": current, "after": out}, now)

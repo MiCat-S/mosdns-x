@@ -342,6 +342,7 @@ type mysqlUpstreamKey struct {
 
 func (s *Store) writeMySQLBatch(events []event) error {
 	settings := s.Settings()
+	detailed := s.detailedLogging(events)
 	minutes := make(map[mysqlMinuteKey]minuteAggregate)
 	rcodes := make(map[mysqlRcodeKey]uint64)
 	latencies := make(map[mysqlLatencyKey]uint64)
@@ -371,7 +372,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 				rcodes[mysqlRcodeKey{mysqlMinuteKey: key, Rcode: rcode}]++
 				latencies[mysqlLatencyKey{mysqlMinuteKey: key, Bucket: latencyBucket(r.Duration)}]++
 			}
-			if settings.QueryLogEnabled {
+			if settings.QueryLogEnabled && detailed[r.Principal.UserID] {
 				idSuffix, err := randomTelemetryID()
 				if err != nil {
 					return err
@@ -425,6 +426,19 @@ func (s *Store) writeMySQLBatch(events []event) error {
 	}
 	ctx, cancel := s.mysqlContext(context.Background())
 	defer cancel()
+	now := s.now().UTC()
+	minute := now.Truncate(time.Minute).Unix()
+	shouldPrune := s.mysqlPrunedAt.Load() < minute
+	// Resolve each user's retention before the transaction, so no lookup
+	// into the control store runs while telemetry rows are locked.
+	var cutoffs map[string]time.Time
+	if shouldPrune {
+		users, err := s.mysqlQueryUsers(ctx)
+		if err != nil {
+			return fmt.Errorf("mysql telemetry: %w", err)
+		}
+		cutoffs = s.retentionCutoffs(users, now)
+	}
 	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
@@ -499,27 +513,24 @@ func (s *Store) writeMySQLBatch(events []event) error {
 			return rollback(err)
 		}
 	}
-	now := s.now().UTC()
-	minute := now.Truncate(time.Minute).Unix()
-	lastPrune := s.mysqlPrunedAt.Load()
-	shouldPrune := lastPrune < minute
 	if shouldPrune {
 		for _, table := range []string{"mosdns_telemetry_minutes", "mosdns_telemetry_rcodes", "mosdns_telemetry_latency", "mosdns_telemetry_upstreams"} {
 			if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE minute_epoch<?`, now.Add(-settings.AggregateRetention).Unix()); err != nil {
 				return rollback(err)
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-settings.QueryRetention).UnixNano()); err != nil {
+		// The ceiling no choice exceeds, which also covers users whose choice
+		// could not be read this minute.
+		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-maxQueryRetention).UnixNano()); err != nil {
 			return rollback(err)
 		}
-		var count uint64
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_query_logs`).Scan(&count); err != nil {
-			return rollback(err)
-		}
-		if count > uint64(settings.MaxQueryRecords) {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs ORDER BY time_ns, id LIMIT ?`, count-uint64(settings.MaxQueryRecords)); err != nil {
+		for userID, cutoff := range cutoffs {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE user_id=? AND time_ns<?`, userID, cutoff.UnixNano()); err != nil {
 				return rollback(err)
 			}
+		}
+		if err = mysqlEvictOverCap(ctx, tx, settings.MaxQueryRecords); err != nil {
+			return rollback(err)
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE mosdns_telemetry_meta SET updated_at_ns=? WHERE id=1`, now.UnixNano()); err != nil {
@@ -709,7 +720,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	if err := validateRange(from, to); err != nil {
 		return result, err
 	}
-	retainedFrom := s.now().UTC().Add(-settings.QueryRetention)
+	retainedFrom := s.now().UTC().Add(-s.visibleRetention(ctx, userID, settings.QueryRetention))
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}
@@ -833,3 +844,61 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 }
 
 var _ Service = (*Store)(nil)
+
+// mysqlQueryUsers lists the users holding query records. It reads the
+// (user_id, time_ns, id) index, so it does not scan the records themselves.
+func (s *Store) mysqlQueryUsers(ctx context.Context) ([]string, error) {
+	rows, err := s.mysql.QueryContext(ctx, `SELECT DISTINCT user_id FROM mosdns_query_logs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		users = append(users, userID)
+	}
+	return users, rows.Err()
+}
+
+// mysqlEvictOverCap brings the total within limit following
+// fairShareEviction: one GROUP BY for the counts, then one bounded DELETE per
+// user the plan cuts.
+func mysqlEvictOverCap(ctx context.Context, tx *sql.Tx, limit int) error {
+	var total uint64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_query_logs`).Scan(&total); err != nil {
+		return err
+	}
+	if total <= uint64(limit) {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT user_id, COUNT(*) FROM mosdns_query_logs GROUP BY user_id`)
+	if err != nil {
+		return err
+	}
+	counts := make(map[string]uint64)
+	for rows.Next() {
+		var userID string
+		var n uint64
+		if err := rows.Scan(&userID, &n); err != nil {
+			rows.Close()
+			return err
+		}
+		counts[userID] = n
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for userID, take := range fairShareEviction(counts, total-uint64(limit)) {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE user_id=? ORDER BY time_ns, id LIMIT ?`, userID, take); err != nil {
+			return err
+		}
+	}
+	return nil
+}

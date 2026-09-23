@@ -51,6 +51,8 @@ export interface UserSettings {
   shuffle_answers?: boolean;
   ecs_ipv4?: string;
   ecs_ipv6?: string;
+  query_log_disabled?: boolean;
+  query_retention_hours?: number;
   updated_at: string;
 }
 export type AnswerFamily = "" | "ipv4" | "ipv6";

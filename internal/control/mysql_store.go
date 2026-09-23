@@ -153,6 +153,8 @@ var mysqlControlMigrations = []string{
 		shuffle_answers BOOLEAN NOT NULL DEFAULT FALSE,
 		ecs_ipv4 VARCHAR(64) NOT NULL DEFAULT '',
 		ecs_ipv6 VARCHAR(64) NOT NULL DEFAULT '',
+		query_log_disabled BOOLEAN NOT NULL DEFAULT FALSE,
+		query_retention_hours INT UNSIGNED NOT NULL DEFAULT 0,
 		updated_at_ns BIGINT NOT NULL,
 		CONSTRAINT fk_mosdns_dns_policy_settings_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
@@ -449,6 +451,8 @@ var mysqlAdditivePolicyColumns = []struct {
 	{"shuffle_answers", "shuffle_answers BOOLEAN NOT NULL DEFAULT FALSE"},
 	{"ecs_ipv4", "ecs_ipv4 VARCHAR(64) NOT NULL DEFAULT ''"},
 	{"ecs_ipv6", "ecs_ipv6 VARCHAR(64) NOT NULL DEFAULT ''"},
+	{"query_log_disabled", "query_log_disabled BOOLEAN NOT NULL DEFAULT FALSE"},
+	{"query_retention_hours", "query_retention_hours INT UNSIGNED NOT NULL DEFAULT 0"},
 }
 
 func mysqlAdditivePolicyColumnsQuery() string {

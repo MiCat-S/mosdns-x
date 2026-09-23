@@ -2258,6 +2258,8 @@ type NormalizedUserSettings = Omit<
   | "shuffle_answers"
   | "ecs_ipv4"
   | "ecs_ipv6"
+  | "query_log_disabled"
+  | "query_retention_hours"
 > & {
   blocked_qtypes: string[];
   custom_block_enabled: boolean;
@@ -2271,6 +2273,8 @@ type NormalizedUserSettings = Omit<
   shuffle_answers: boolean;
   ecs_ipv4: string;
   ecs_ipv6: string;
+  query_log_disabled: boolean;
+  query_retention_hours: number;
 };
 
 function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
@@ -2288,6 +2292,8 @@ function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
     shuffle_answers: settings.shuffle_answers ?? false,
     ecs_ipv4: settings.ecs_ipv4 ?? "",
     ecs_ipv6: settings.ecs_ipv6 ?? "",
+    query_log_disabled: settings.query_log_disabled ?? false,
+    query_retention_hours: settings.query_retention_hours ?? 0,
   };
 }
 
@@ -4487,6 +4493,98 @@ function ECSOverrideCard() {
   );
 }
 
+const retentionOptions: Array<{ hours: number; label: string }> = [
+  { hours: 0, label: "跟随服务端默认" },
+  { hours: 24, label: "1 天" },
+  { hours: 72, label: "3 天" },
+  { hours: 168, label: "7 天" },
+  { hours: 336, label: "14 天" },
+  { hours: 720, label: "30 天" },
+];
+
+// QueryLogCard holds the user's own detailed query log choices. Usage
+// aggregates are kept either way, since quota and charts depend on them.
+function QueryLogCard() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const settings = data ? normalizeSettings(data) : undefined;
+
+  async function update(patch: Partial<UserSettings>) {
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", patch),
+      );
+      setData(normalizeSettings(updated));
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const known = retentionOptions.some(
+    (option) => option.hours === settings?.query_retention_hours,
+  );
+
+  return (
+    <Card title="日志" className="settings-list">
+      <p className="safe-mode-intro">
+        仅在服务端开启查询明细时生效。用量统计不受影响，额度与图表照常可用。
+      </p>
+      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {settings ? (
+        <>
+          <SettingsRow
+            title="记录详细查询日志"
+            description="记录每次查询的域名、客户端地址、应答地址和 EDNS。关闭后不再记录新的明细，已有记录按保留期到期后删除。"
+            checked={!settings.query_log_disabled}
+            disabled={busy}
+            onChange={(value) => void update({ query_log_disabled: !value })}
+          />
+          <div className="settings-row">
+            <div>
+              <strong>日志保留期</strong>
+              <small>
+                你的记录保留多久。可以长于服务端默认值；存储紧张时，服务端会先删减记录最多的用户，不会因为别人的查询量挤掉你的记录。
+              </small>
+            </div>
+            <Field label="保留期">
+              <select
+                value={settings.query_retention_hours}
+                disabled={busy}
+                onChange={(event) =>
+                  void update({
+                    query_retention_hours: Number(event.target.value),
+                  })
+                }
+              >
+                {known ? null : (
+                  <option value={settings.query_retention_hours}>
+                    {settings.query_retention_hours} 小时
+                  </option>
+                )}
+                {retentionOptions.map((option) => (
+                  <option key={option.hours} value={option.hours}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </>
+      ) : null}
+    </Card>
+  );
+}
+
 function UnavailableGroup({
   title,
   items,
@@ -4615,7 +4713,7 @@ export function AdvancedPage() {
       ) : null}
       <UnavailableGroup title="缓存" items={["自定义缓存策略"]} />
       <ECSOverrideCard />
-      <UnavailableGroup title="日志" items={["扩展查询日志", "长期日志保留"]} />
+      <QueryLogCard />
       <UnavailableGroup
         title="兼容"
         items={["客户端兼容模式", "传统 DNS 协议接入"]}

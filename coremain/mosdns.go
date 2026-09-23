@@ -153,6 +153,9 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("failed to open telemetry database: %w", err)
 		}
+		if setter, ok := m.telemetry.(telemetry.UserLogPolicySetter); ok {
+			setter.SetUserLogPolicy(m.policy)
+		}
 		maintCtx, cancel := context.WithCancel(context.Background())
 		m.maintenanceCancel = cancel
 		m.maintenanceCtx = maintCtx

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 
@@ -154,5 +155,25 @@ func TestFamilyPreferenceRejectsUnknownValue(t *testing.T) {
 		control.DNSPolicySettingsPatch{AnswerFamily: &bad})
 	if !errors.Is(err, control.ErrInvalidInput) {
 		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestQueryLogForReportsTheUsersChoice(t *testing.T) {
+	disabled := true
+	hours := uint32(168)
+	engine, settings := withSettings(t, control.DNSPolicySettingsPatch{QueryLogDisabled: &disabled, QueryRetentionHours: &hours})
+	enabled, retention, err := engine.QueryLogFor(context.Background(), settings.UserID)
+	if err != nil || enabled || retention != 168*time.Hour {
+		t.Fatalf("enabled=%v retention=%s err=%v", enabled, retention, err)
+	}
+}
+
+// A deleted user must report the defaults, not an error, or telemetry would
+// hold their records back as unreadable and never age them out.
+func TestQueryLogForUnknownUserReportsDefaults(t *testing.T) {
+	engine, _, _ := testEngine(t)
+	enabled, retention, err := engine.QueryLogFor(context.Background(), "no-such-user")
+	if err != nil || !enabled || retention != 0 {
+		t.Fatalf("enabled=%v retention=%s err=%v", enabled, retention, err)
 	}
 }

@@ -179,6 +179,8 @@ type Store struct {
 	mysql               *sql.DB
 	mysqlTimeout        time.Duration
 	mysqlPrunedAt       atomic.Int64
+	userPrunedAt        atomic.Int64
+	logPolicy           atomic.Pointer[UserLogPolicy]
 	queue               chan event
 	stop                chan struct{}
 	done                chan struct{}
@@ -236,7 +238,7 @@ func Open(opts Options) (*Store, error) {
 		return nil, err
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketMinutes, bucketUpstream, bucketQueries, bucketUserQ, bucketExpiry, bucketMeta} {
+		for _, name := range [][]byte{bucketMinutes, bucketUpstream, bucketQueries, bucketUserQ, bucketExpiry, bucketMeta, bucketUserQueryCounts} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return err
 			}
@@ -249,7 +251,7 @@ func Open(opts Options) (*Store, error) {
 				return err
 			}
 		}
-		return nil
+		return rebuildUserQueryCounts(tx)
 	}); err != nil {
 		db.Close()
 		return nil, err
@@ -543,10 +545,17 @@ func (s *Store) writeBatch(events []event) error {
 		return s.writeMySQLBatch(events)
 	}
 	now := s.now().UTC()
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	// Both lookups run before the write transaction, so no call into the
+	// control store holds the telemetry write lock.
+	detailed := s.detailedLogging(events)
+	cutoffs, pruneUsers, err := s.dueUserCutoffs(now)
+	if err != nil {
+		return err
+	}
+	err = s.db.Update(func(tx *bolt.Tx) error {
 		for _, e := range events {
 			if e.result != nil {
-				if err := s.writeResult(tx, e.time, *e.result); err != nil {
+				if err := s.writeResult(tx, e.time, *e.result, detailed[e.result.Principal.UserID]); err != nil {
 					return err
 				}
 			}
@@ -554,6 +563,11 @@ func (s *Store) writeBatch(events []event) error {
 				if err := s.writeAttempt(tx, e.time, *e.attempt); err != nil {
 					return err
 				}
+			}
+		}
+		if pruneUsers {
+			if err := pruneByUserRetention(tx, cutoffs); err != nil {
+				return err
 			}
 		}
 		if err := s.prune(tx, now); err != nil {
@@ -565,8 +579,29 @@ func (s *Store) writeBatch(events []event) error {
 	})
 	if err == nil {
 		s.updatedUnixNano.Store(now.UnixNano())
+		if pruneUsers {
+			s.userPrunedAt.Store(now.Truncate(time.Minute).Unix())
+		}
 	}
 	return err
+}
+
+// dueUserCutoffs returns each user's retention cutoff when a minute has passed
+// since the last per-user sweep. Retention is per user, so the sweep walks
+// every user holding records; once a minute bounds that cost while keeping
+// expiry within a minute of its deadline.
+func (s *Store) dueUserCutoffs(now time.Time) (map[string]time.Time, bool, error) {
+	if now.Truncate(time.Minute).Unix() <= s.userPrunedAt.Load() {
+		return nil, false, nil
+	}
+	var users []string
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		users = queryUsers(tx)
+		return nil
+	}); err != nil {
+		return nil, false, err
+	}
+	return s.retentionCutoffs(users, now), true, nil
 }
 
 func minuteKey(scope, userID string, minute time.Time, suffix string) []byte {
@@ -613,7 +648,7 @@ func latencyBucket(d time.Duration) int {
 	return i
 }
 
-func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) error {
+func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result, detailed bool) error {
 	settings := s.Settings()
 	minute := now.Truncate(time.Minute)
 	failed := r.ExecError || r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused
@@ -651,7 +686,9 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 			return err
 		}
 	}
-	if settings.QueryLogEnabled {
+	// Aggregates above are always written: quota and usage charts need them.
+	// Only the detailed record honors the user's choice.
+	if settings.QueryLogEnabled && detailed {
 		sequence, err := tx.Bucket(bucketQueries).NextSequence()
 		if err != nil {
 			return err
@@ -698,6 +735,9 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 			return err
 		}
 		if err := putMetaUint64(tx, keyQueryCount, metaUint64(tx, keyQueryCount)+1); err != nil {
+			return err
+		}
+		if err := putUserQueryCount(tx, r.Principal.UserID, userQueryCount(tx, r.Principal.UserID)+1); err != nil {
 			return err
 		}
 	}
@@ -770,11 +810,15 @@ func (s *Store) prune(tx *bolt.Tx, now time.Time) error {
 			return err
 		}
 	}
+	// Age is enforced per user by the minute sweep, since a user may keep
+	// records longer than the default. This pass only enforces the ceiling no
+	// choice can exceed, which also catches users whose choice could not be
+	// read.
 	q := tx.Bucket(bucketQueries)
-	cutoff := fmt.Sprintf("%020d", now.Add(-settings.QueryRetention).UnixNano())
+	ceiling := fmt.Sprintf("%020d", now.Add(-maxQueryRetention).UnixNano())
 	c = q.Cursor()
 	count := metaUint64(tx, keyQueryCount)
-	for k, v := c.First(); k != nil && (string(k[:20]) < cutoff || count > uint64(settings.MaxQueryRecords)); k, v = c.Next() {
+	for k, v := c.First(); len(k) >= 20 && string(k[:20]) < ceiling; k, v = c.Next() {
 		var record QueryRecord
 		_ = json.Unmarshal(v, &record)
 		if err := tx.Bucket(bucketUserQ).Delete([]byte(record.UserID + "\x00" + string(k))); err != nil {
@@ -783,9 +827,19 @@ func (s *Store) prune(tx *bolt.Tx, now time.Time) error {
 		if err := c.Delete(); err != nil {
 			return err
 		}
-		count--
+		if n := userQueryCount(tx, record.UserID); n > 0 {
+			if err := putUserQueryCount(tx, record.UserID, n-1); err != nil {
+				return err
+			}
+		}
+		if count > 0 {
+			count--
+		}
 	}
-	return putMetaUint64(tx, keyQueryCount, count)
+	if err := putMetaUint64(tx, keyQueryCount, count); err != nil {
+		return err
+	}
+	return evictOverCap(tx, settings.MaxQueryRecords)
 }
 
 func validateRange(from, to time.Time) error {
@@ -939,7 +993,7 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 	if err := validateRange(from, to); err != nil {
 		return result, err
 	}
-	retainedFrom := s.now().UTC().Add(-settings.QueryRetention)
+	retainedFrom := s.now().UTC().Add(-s.visibleRetention(ctx, userID, settings.QueryRetention))
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}

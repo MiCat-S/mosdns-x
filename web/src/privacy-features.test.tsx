@@ -444,3 +444,53 @@ describe("ECS 地址覆写", () => {
     );
   });
 });
+
+describe("日志", () => {
+  const patches = (calls: Call[]) =>
+    calls.filter((c) => c.method === "PATCH").map((c) => c.body);
+
+  it("关闭详细日志时提交 query_log_disabled", async () => {
+    const calls = mockApi(baseSettings);
+    render(<AdvancedPage />);
+    const toggle = (await screen.findByRole("checkbox", {
+      name: "记录详细查询日志",
+    })) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(patches(calls)).toContainEqual({ query_log_disabled: true }),
+    );
+  });
+
+  it("选择保留期后保存小时数", async () => {
+    const calls = mockApi(baseSettings);
+    render(<AdvancedPage />);
+    const select = (await screen.findByLabelText(
+      "保留期",
+    )) as HTMLSelectElement;
+    expect(select.value).toBe("0");
+    fireEvent.change(select, { target: { value: "168" } });
+    await waitFor(() =>
+      expect(patches(calls)).toContainEqual({ query_retention_hours: 168 }),
+    );
+  });
+
+  it("非预设的保留期如实显示，而不是误选其他项", async () => {
+    mockApi({ ...baseSettings, query_retention_hours: 100 } as never);
+    render(<AdvancedPage />);
+    const select = (await screen.findByLabelText(
+      "保留期",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("100"));
+    expect(select.selectedOptions[0].textContent).toBe("100 小时");
+  });
+
+  it("不再作为不可用占位项出现", async () => {
+    mockApi(baseSettings);
+    render(<AdvancedPage />);
+    await screen.findByLabelText("保留期");
+    for (const name of ["扩展查询日志", "长期日志保留"]) {
+      expect(screen.queryByRole("checkbox", { name })).toBeNull();
+    }
+  });
+});

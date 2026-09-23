@@ -166,9 +166,17 @@ type DNSPolicySettings struct {
 	// ECSIPv4 and ECSIPv6 replace the client subnet sent upstream, as masked
 	// CIDR prefixes, so CDNs answer as for that network. Empty sends none of
 	// that family. StripECS takes precedence and sends no subnet at all.
-	ECSIPv4   string    `json:"ecs_ipv4"`
-	ECSIPv6   string    `json:"ecs_ipv6"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ECSIPv4 string `json:"ecs_ipv4"`
+	ECSIPv6 string `json:"ecs_ipv6"`
+	// QueryLogDisabled stops detailed query records for this user. Usage
+	// aggregates are still kept, since quota and charts depend on them.
+	// Records already written age out under the retention below.
+	QueryLogDisabled bool `json:"query_log_disabled"`
+	// QueryRetentionHours keeps this user's detailed records that long; 0
+	// follows the server default. It may exceed the default, up to
+	// MaxQueryRetentionHours.
+	QueryRetentionHours uint32    `json:"query_retention_hours"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type DNSPolicySettingsPatch struct {
@@ -186,7 +194,12 @@ type DNSPolicySettingsPatch struct {
 	ShuffleAnswers       *bool         `json:"shuffle_answers,omitempty"`
 	ECSIPv4              *string       `json:"ecs_ipv4,omitempty"`
 	ECSIPv6              *string       `json:"ecs_ipv6,omitempty"`
+	QueryLogDisabled     *bool         `json:"query_log_disabled,omitempty"`
+	QueryRetentionHours  *uint32       `json:"query_retention_hours,omitempty"`
 }
+
+// MaxQueryRetentionHours matches the telemetry ceiling on query retention.
+const MaxQueryRetentionHours = 720
 
 // MaxPolicyTTL bounds the answer TTL clamps. Raising the floor delays a name's
 // change of address reaching the client by up to this long.
