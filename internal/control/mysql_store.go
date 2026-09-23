@@ -147,6 +147,10 @@ var mysqlControlMigrations = []string{
 		custom_rewrite_enabled BOOLEAN NOT NULL DEFAULT TRUE,
 		policy_paused_until_ns BIGINT NULL,
 		answer_family VARCHAR(8) NOT NULL DEFAULT '',
+		ttl_min INT UNSIGNED NOT NULL DEFAULT 0,
+		ttl_max INT UNSIGNED NOT NULL DEFAULT 0,
+		flatten_cname BOOLEAN NOT NULL DEFAULT FALSE,
+		shuffle_answers BOOLEAN NOT NULL DEFAULT FALSE,
 		updated_at_ns BIGINT NOT NULL,
 		CONSTRAINT fk_mosdns_dns_policy_settings_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
@@ -341,11 +345,11 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 			return mysqlStoreError(migrationErr)
 		}
 	}
-	// answer_family is additive and defaulted, so it is ensured on every start
-	// instead of behind a version bump. An older binary names its columns in
-	// every statement and never reads it, so it can still open this database,
-	// which keeps rolling back the binary possible.
-	if migrationErr := ensureMySQLAnswerFamilyColumn(ctx, conn); migrationErr != nil {
+	// These columns are additive and defaulted, so they are ensured on every
+	// start instead of behind a version bump. An older binary names its
+	// columns in every statement and never reads them, so it can still open
+	// this database, which keeps rolling back the binary possible.
+	if migrationErr := ensureMySQLAdditivePolicyColumns(ctx, conn); migrationErr != nil {
 		return mysqlStoreError(migrationErr)
 	}
 	switch {
@@ -429,24 +433,72 @@ func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn) error {
 	return err
 }
 
-const mysqlAnswerFamilyColumnQuery = `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mosdns_dns_policy_settings'
-	AND COLUMN_NAME = 'answer_family'`
+// mysqlAdditivePolicyColumns are per-user settings added after schema v5.
+// Each has a default, so a row written without it reads as that setting off.
+// Add new settings here rather than behind a schema version bump.
+var mysqlAdditivePolicyColumns = []struct {
+	name       string
+	definition string
+}{
+	{"answer_family", "answer_family VARCHAR(8) NOT NULL DEFAULT ''"},
+	{"ttl_min", "ttl_min INT UNSIGNED NOT NULL DEFAULT 0"},
+	{"ttl_max", "ttl_max INT UNSIGNED NOT NULL DEFAULT 0"},
+	{"flatten_cname", "flatten_cname BOOLEAN NOT NULL DEFAULT FALSE"},
+	{"shuffle_answers", "shuffle_answers BOOLEAN NOT NULL DEFAULT FALSE"},
+}
 
-// ensureMySQLAnswerFamilyColumn adds answer_family when it is missing. It reads
-// the live column list, so a table that already has the column, including one
-// created fresh or upgraded earlier, is left untouched. It runs under the
-// schema lock, so concurrent starts cannot both issue the ALTER.
-func ensureMySQLAnswerFamilyColumn(ctx context.Context, conn *sql.Conn) error {
-	var name string
-	err := conn.QueryRowContext(ctx, mysqlAnswerFamilyColumnQuery).Scan(&name)
-	if err == nil {
-		return nil
+func mysqlAdditivePolicyColumnsQuery() string {
+	names := make([]string, len(mysqlAdditivePolicyColumns))
+	for i, column := range mysqlAdditivePolicyColumns {
+		names[i] = "'" + column.name + "'"
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	return `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mosdns_dns_policy_settings'
+	AND COLUMN_NAME IN (` + strings.Join(names, ", ") + `)`
+}
+
+func mysqlAdditivePolicyAlter(existing map[string]struct{}) string {
+	var missing []string
+	for _, column := range mysqlAdditivePolicyColumns {
+		if _, ok := existing[column.name]; !ok {
+			missing = append(missing, "ADD COLUMN "+column.definition)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return `ALTER TABLE mosdns_dns_policy_settings ` + strings.Join(missing, ", ")
+}
+
+// ensureMySQLAdditivePolicyColumns adds whichever additive columns are missing
+// in one ALTER. It reads the live column list, so a table that already has
+// them, including one created fresh or upgraded earlier, is left untouched.
+// It runs under the schema lock, so concurrent starts cannot both alter.
+func ensureMySQLAdditivePolicyColumns(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, mysqlAdditivePolicyColumnsQuery())
+	if err != nil {
 		return err
 	}
-	_, err = conn.ExecContext(ctx, `ALTER TABLE mosdns_dns_policy_settings ADD COLUMN answer_family VARCHAR(8) NOT NULL DEFAULT ''`)
+	existing := make(map[string]struct{}, len(mysqlAdditivePolicyColumns))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	migration := mysqlAdditivePolicyAlter(existing)
+	if migration == "" {
+		return nil
+	}
+	_, err = conn.ExecContext(ctx, migration)
 	return err
 }
 

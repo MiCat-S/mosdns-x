@@ -971,3 +971,22 @@ func TestUserSettingsAnswerFamily(t *testing.T) {
 		t.Fatalf("unrelated update cleared the preference: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestUserSettingsAnswerOptimizations(t *testing.T) {
+	f := newFixture(t)
+	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
+	w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"ttl_min":60,"ttl_max":3600,"flatten_cname":true,"shuffle_answers":true}`, alice, csrf)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update=%d %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{`"ttl_min":60`, `"ttl_max":3600`, `"flatten_cname":true`, `"shuffle_answers":true`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Fatalf("response lacks %s: %s", want, w.Body.String())
+		}
+	}
+	for _, body := range []string{`{"ttl_min":90000}`, `{"ttl_min":7200}`} {
+		if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", body, alice, csrf); w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid ttl body=%s status=%d %s", body, w.Code, w.Body.String())
+		}
+	}
+}

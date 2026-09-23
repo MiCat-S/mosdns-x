@@ -320,3 +320,63 @@ describe("IPv4 / IPv6 响应偏好", () => {
     ).toBeNull();
   });
 });
+
+describe("响应记录优化", () => {
+  const patches = (calls: Call[]) =>
+    calls.filter((c) => c.method === "PATCH").map((c) => c.body);
+
+  it("展平 CNAME 与打乱顺序即时保存", async () => {
+    const calls = mockApi(baseSettings);
+    render(<LabsPage />);
+    fireEvent.click(
+      await screen.findByRole("checkbox", { name: "展平 CNAME 链" }),
+    );
+    await waitFor(() =>
+      expect(patches(calls)).toContainEqual({ flatten_cname: true }),
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: "打乱应答顺序" }));
+    await waitFor(() =>
+      expect(patches(calls)).toContainEqual({ shuffle_answers: true }),
+    );
+  });
+
+  it("TTL 修改后才能保存，并一次提交上下限", async () => {
+    const calls = mockApi(baseSettings);
+    render(<LabsPage />);
+    const save = (await screen.findByRole("button", {
+      name: "保存",
+    })) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("TTL 下限"), {
+      target: { value: "60" },
+    });
+    fireEvent.change(screen.getByLabelText("TTL 上限"), {
+      target: { value: "3600" },
+    });
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(patches(calls)).toContainEqual({ ttl_min: 60, ttl_max: 3600 }),
+    );
+    await waitFor(() => expect(save.disabled).toBe(true));
+  });
+
+  it("下限大于上限时提示错误且不提交", async () => {
+    const calls = mockApi(baseSettings);
+    render(<LabsPage />);
+    await screen.findByLabelText("TTL 下限");
+    fireEvent.change(screen.getByLabelText("TTL 下限"), {
+      target: { value: "600" },
+    });
+    fireEvent.change(screen.getByLabelText("TTL 上限"), {
+      target: { value: "60" },
+    });
+    expect(screen.getByRole("alert").textContent).toContain("下限不能大于上限");
+    const save = screen.getByRole("button", {
+      name: "保存",
+    }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(patches(calls)).toHaveLength(0);
+  });
+});

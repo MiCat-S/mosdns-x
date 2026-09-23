@@ -86,7 +86,8 @@ func initializeDNSPolicyData(tx *bbolt.Tx, previousVersion uint64) error {
 }
 
 func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySettingsPatch, now time.Time) (DNSPolicySettings, error) {
-	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil && patch.AnswerFamily == nil {
+	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil && patch.AnswerFamily == nil &&
+		patch.TTLMin == nil && patch.TTLMax == nil && patch.FlattenCNAME == nil && patch.ShuffleAnswers == nil {
 		return current, ErrInvalidInput
 	}
 	if patch.AnswerFamily != nil {
@@ -94,6 +95,26 @@ func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySetti
 			return current, fmt.Errorf("%w: answer_family must be empty, ipv4 or ipv6", ErrInvalidInput)
 		}
 		current.AnswerFamily = *patch.AnswerFamily
+	}
+	if patch.TTLMin != nil {
+		current.TTLMin = *patch.TTLMin
+	}
+	if patch.TTLMax != nil {
+		current.TTLMax = *patch.TTLMax
+	}
+	if current.TTLMin > MaxPolicyTTL || current.TTLMax > MaxPolicyTTL {
+		return current, fmt.Errorf("%w: ttl bounds must be between 0 and %d", ErrInvalidInput, MaxPolicyTTL)
+	}
+	// Checked on the merged result, so raising the floor above an existing
+	// ceiling is rejected even when only one bound is in the patch.
+	if current.TTLMin > 0 && current.TTLMax > 0 && current.TTLMin > current.TTLMax {
+		return current, fmt.Errorf("%w: ttl_min cannot exceed ttl_max", ErrInvalidInput)
+	}
+	if patch.FlattenCNAME != nil {
+		current.FlattenCNAME = *patch.FlattenCNAME
+	}
+	if patch.ShuffleAnswers != nil {
+		current.ShuffleAnswers = *patch.ShuffleAnswers
 	}
 	if patch.StripECS != nil {
 		current.StripECS = *patch.StripECS

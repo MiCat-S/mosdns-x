@@ -79,3 +79,40 @@ func TestResponsePolicyReferenceUsesChainWithoutAdmitOrPolicy(t *testing.T) {
 		t.Fatalf("policy ran before=%d after=%d, want 1 each: the reference re-entered policy", b, a)
 	}
 }
+
+// A response policy that edits the upstream answer in place, as answer
+// optimization does, must keep the upstream attribution. Only a different
+// response object is treated as a local replacement.
+func TestInPlaceResponseEditKeepsUpstreamAttribution(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		r := new(dns.Msg).SetReply(qCtx.Q())
+		r.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: qCtx.Q().Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 5}, A: net.ParseIP("192.0.2.1")}}
+		qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{
+			Source: query_context.ResponseSourceUpstream, SourceID: "forward_remote",
+			UpstreamID: "forward_remote/1", UpstreamStageStatus: query_context.UpstreamStageSelected,
+		})
+		return nil
+	})
+	h, err := NewEntryHandler(EntryHandlerOpts{
+		Entry: exec, CaptureQueryDetails: true,
+		Observe: func(result Result) { got = result },
+		AfterExecWithTrace: func(_ context.Context, _ query_context.Principal, _, resp *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
+			resp.Answer[0].Header().Ttl = 60
+			return resp, query_context.ResponseTrace{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := h.ServeDNS(context.Background(), new(dns.Msg).SetQuestion("example.test.", dns.TypeA), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Answer[0].Header().Ttl != 60 {
+		t.Fatal("the in-place edit did not reach the client")
+	}
+	if got.ResponseSource != query_context.ResponseSourceUpstream || got.UpstreamID != "forward_remote/1" || got.UpstreamStageStatus != query_context.UpstreamStageSelected {
+		t.Fatalf("attribution changed: source=%q upstream=%q stage=%q", got.ResponseSource, got.UpstreamID, got.UpstreamStageStatus)
+	}
+}

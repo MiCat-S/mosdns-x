@@ -45,6 +45,10 @@ export interface UserSettings {
   policy_paused_until: string | null;
   // Optional so a portal talking to an older server reads it as no preference.
   answer_family?: AnswerFamily;
+  ttl_min?: number;
+  ttl_max?: number;
+  flatten_cname?: boolean;
+  shuffle_answers?: boolean;
   updated_at: string;
 }
 export type AnswerFamily = "" | "ipv4" | "ipv6";

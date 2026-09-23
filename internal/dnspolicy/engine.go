@@ -158,6 +158,7 @@ func (e *Engine) AfterWithDecision(ctx context.Context, principal query_context.
 	if preferOtherFamily(ctx, p.settings.AnswerFamily, request, response) {
 		return noDataResponse(request), Decision{FamilyPreference: true}, nil
 	}
+	optimizeResponse(p.settings, request, response)
 	return response, Decision{}, nil
 }
 

@@ -2252,6 +2252,10 @@ type NormalizedUserSettings = Omit<
   | "custom_rewrite_enabled"
   | "policy_paused_until"
   | "answer_family"
+  | "ttl_min"
+  | "ttl_max"
+  | "flatten_cname"
+  | "shuffle_answers"
 > & {
   blocked_qtypes: string[];
   custom_block_enabled: boolean;
@@ -2259,6 +2263,10 @@ type NormalizedUserSettings = Omit<
   custom_rewrite_enabled: boolean;
   policy_paused_until: string;
   answer_family: AnswerFamily;
+  ttl_min: number;
+  ttl_max: number;
+  flatten_cname: boolean;
+  shuffle_answers: boolean;
 };
 
 function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
@@ -2270,6 +2278,10 @@ function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
     custom_rewrite_enabled: settings.custom_rewrite_enabled ?? true,
     policy_paused_until: settings.policy_paused_until || zeroTime,
     answer_family: settings.answer_family ?? "",
+    ttl_min: settings.ttl_min ?? 0,
+    ttl_max: settings.ttl_max ?? 0,
+    flatten_cname: settings.flatten_cname ?? false,
+    shuffle_answers: settings.shuffle_answers ?? false,
   };
 }
 
@@ -4064,15 +4076,13 @@ export function LabsPage() {
       />
       <SafeModeCard />
       <FamilyPreferenceCard />
+      <ResponseOptimizationCard />
       <UnavailableGroup
         title="Web3 与替代根"
         items={["ENS / Web3 域名解析", "替代 DNS 根"]}
       />
       <UnavailableGroup title="自定义上游" items={["自定义实验上游"]} />
-      <UnavailableGroup
-        title="网络与响应优化"
-        items={["ECS 实验模式", "响应记录优化"]}
-      />
+      <UnavailableGroup title="网络与响应优化" items={["ECS 实验模式"]} />
       <UnavailableGroup title="实验查询类型" items={["新兴 qtype 分流"]} />
     </>
   );
@@ -4233,6 +4243,145 @@ function FamilyPreferenceCard() {
             ))}
           </select>
         </Field>
+      ) : null}
+    </Card>
+  );
+}
+
+// Mirrors control.MaxPolicyTTL; the server enforces it, this only gives an
+// early message.
+const maxPolicyTTL = 86400;
+
+function ttlError(min: number, max: number) {
+  for (const value of [min, max]) {
+    if (!Number.isInteger(value) || value < 0 || value > maxPolicyTTL) {
+      return `TTL 需为 0 到 ${maxPolicyTTL} 之间的整数。`;
+    }
+  }
+  if (min > 0 && max > 0 && min > max) return "下限不能大于上限。";
+  return "";
+}
+
+// ResponseOptimizationCard rewrites answers for this user only. The shared
+// cache keeps the upstream answer; each rewrite applies on the way out.
+function ResponseOptimizationCard() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [ttl, setTTL] = useState<{ min: string; max: string }>();
+  const settings = data ? normalizeSettings(data) : undefined;
+  const draft = ttl ?? {
+    min: String(settings?.ttl_min ?? 0),
+    max: String(settings?.ttl_max ?? 0),
+  };
+  const draftMin = Number(draft.min);
+  const draftMax = Number(draft.max);
+  const draftError = ttlError(draftMin, draftMax);
+  const ttlChanged =
+    settings !== undefined &&
+    (draftMin !== settings.ttl_min || draftMax !== settings.ttl_max);
+
+  async function update(patch: Partial<UserSettings>) {
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", patch),
+      );
+      setData(normalizeSettings(updated));
+      return true;
+    } catch (reason) {
+      setError(message(reason));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveTTL() {
+    if (draftError) return;
+    if (await update({ ttl_min: draftMin, ttl_max: draftMax })) {
+      setTTL(undefined);
+    }
+  }
+
+  return (
+    <Card title="响应记录优化" className="settings-list">
+      <p className="safe-mode-intro">
+        仅改写发给你的应答，服务端共享缓存中保留上游原始结果。
+      </p>
+      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {settings ? (
+        <>
+          <SettingsRow
+            title="展平 CNAME 链"
+            description="只返回最终地址，并归到所查询的域名下。少数依赖 CNAME 的客户端可能受影响。"
+            checked={settings.flatten_cname}
+            disabled={busy}
+            onChange={(value) => void update({ flatten_cname: value })}
+          />
+          <SettingsRow
+            title="打乱应答顺序"
+            description="随机排列多个地址，把连接分散到不同服务器。"
+            checked={settings.shuffle_answers}
+            disabled={busy}
+            onChange={(value) => void update({ shuffle_answers: value })}
+          />
+          <div className="settings-row ttl-row">
+            <div>
+              <strong>TTL 上下限（秒）</strong>
+              <small>
+                0
+                表示不限制。调高下限能减少重复查询，代价是域名更换地址后要更久才生效；只影响应答记录，否定缓存仍按上游。
+              </small>
+            </div>
+            <div className="ttl-fields">
+              <Field label="TTL 下限">
+                <input
+                  type="number"
+                  min={0}
+                  max={maxPolicyTTL}
+                  inputMode="numeric"
+                  value={draft.min}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setTTL({ ...draft, min: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label="TTL 上限">
+                <input
+                  type="number"
+                  min={0}
+                  max={maxPolicyTTL}
+                  inputMode="numeric"
+                  value={draft.max}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setTTL({ ...draft, max: event.target.value })
+                  }
+                />
+              </Field>
+              <button
+                className="primary"
+                disabled={busy || !ttlChanged || Boolean(draftError)}
+                onClick={() => void saveTTL()}
+              >
+                保存
+              </button>
+            </div>
+            {draftError ? (
+              <small className="field-error" role="alert">
+                {draftError}
+              </small>
+            ) : null}
+          </div>
+        </>
       ) : null}
     </Card>
   );

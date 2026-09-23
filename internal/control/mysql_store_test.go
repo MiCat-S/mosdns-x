@@ -82,7 +82,7 @@ func TestInitializeMySQLControlUpgradesV1Schema(t *testing.T) {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	expectMySQLPublicListV5Upgrade(mock)
-	expectMySQLAnswerFamilyColumnAdded(mock)
+	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -108,7 +108,7 @@ func TestInitializeMySQLControlUpgradesV2PolicySettings(t *testing.T) {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	expectMySQLPublicListV5Upgrade(mock)
-	expectMySQLAnswerFamilyColumnAdded(mock)
+	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -132,7 +132,7 @@ func TestInitializeMySQLControlUpgradesV3PublicLists(t *testing.T) {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	expectMySQLPublicListV5Upgrade(mock)
-	expectMySQLAnswerFamilyColumnAdded(mock)
+	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -161,7 +161,7 @@ func TestInitializeMySQLControlResumesV3UpgradeAfterAlter(t *testing.T) {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	expectMySQLPublicListV5Upgrade(mock)
-	expectMySQLAnswerFamilyColumnAdded(mock)
+	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -185,7 +185,7 @@ func TestInitializeMySQLControlConvergesSchemaWhenVersionRowIsMissing(t *testing
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
 	expectMySQLPublicListV5Upgrade(mock)
-	expectMySQLAnswerFamilyColumnAdded(mock)
+	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_schema_migrations (component, version) VALUES ('control', ?)`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
@@ -238,9 +238,9 @@ func TestMySQLAuthenticateSessionAfterCloseIsUnavailable(t *testing.T) {
 	}
 }
 
-func expectMySQLAnswerFamilyColumnAdded(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery(regexp.QuoteMeta(mysqlAnswerFamilyColumnQuery)).WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
-	mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE mosdns_dns_policy_settings ADD COLUMN answer_family VARCHAR(8) NOT NULL DEFAULT ''`)).WillReturnResult(sqlmock.NewResult(0, 0))
+func expectMySQLAdditivePolicyColumnsAdded(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(regexp.QuoteMeta(mysqlAdditivePolicyColumnsQuery())).WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
+	mock.ExpectExec(regexp.QuoteMeta(mysqlAdditivePolicyAlter(nil))).WillReturnResult(sqlmock.NewResult(0, 0))
 }
 
 // A database already at the current version gains answer_family and nothing
@@ -260,7 +260,7 @@ func TestInitializeMySQLControlAddsAnswerFamilyWithoutVersionBump(t *testing.T) 
 	for _, statement := range mysqlControlMigrations[1:] {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
-	expectMySQLAnswerFamilyColumnAdded(mock)
+	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
 		t.Fatal(err)
@@ -284,12 +284,43 @@ func TestInitializeMySQLControlSkipsExistingAnswerFamilyColumn(t *testing.T) {
 	for _, statement := range mysqlControlMigrations[1:] {
 		mock.ExpectExec(regexp.QuoteMeta(statement)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
-	mock.ExpectQuery(regexp.QuoteMeta(mysqlAnswerFamilyColumnQuery)).WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("answer_family"))
+	existing := sqlmock.NewRows([]string{"COLUMN_NAME"})
+	for _, column := range mysqlAdditivePolicyColumns {
+		existing.AddRow(column.name)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(mysqlAdditivePolicyColumnsQuery())).WillReturnRows(existing)
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := initializeMySQLControl(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A table that received only some columns, from an earlier release or an
+// interrupted start, gets exactly the missing ones and nothing twice.
+func TestMySQLAdditivePolicyAlterAddsOnlyMissingColumns(t *testing.T) {
+	if got := mysqlAdditivePolicyAlter(map[string]struct{}{}); !strings.Contains(got, "ADD COLUMN answer_family") || !strings.Contains(got, "ADD COLUMN shuffle_answers") {
+		t.Fatalf("empty table alter = %q", got)
+	}
+	existing := map[string]struct{}{"answer_family": {}, "ttl_min": {}}
+	got := mysqlAdditivePolicyAlter(existing)
+	for _, name := range []string{"answer_family", "ttl_min"} {
+		if strings.Contains(got, "ADD COLUMN "+name+" ") {
+			t.Fatalf("existing column %s added again: %q", name, got)
+		}
+	}
+	for _, name := range []string{"ttl_max", "flatten_cname", "shuffle_answers"} {
+		if !strings.Contains(got, "ADD COLUMN "+name+" ") {
+			t.Fatalf("missing column %s not added: %q", name, got)
+		}
+	}
+	all := map[string]struct{}{}
+	for _, column := range mysqlAdditivePolicyColumns {
+		all[column.name] = struct{}{}
+	}
+	if got := mysqlAdditivePolicyAlter(all); got != "" {
+		t.Fatalf("complete table alter = %q, want none", got)
 	}
 }

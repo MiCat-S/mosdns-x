@@ -57,6 +57,8 @@ DNS 请求通过凭证鉴权并完成配额受理后才应用用户策略，因�
 
 `answer_family` 为空表示不偏好，`ipv4` 或 `ipv6` 表示偏好对应地址族。偏好 IPv4 时，AAAA 查询有应答的情况下会用同一执行链额外查询 A；A 存在才把 AAAA 置为空应答，因此只有 IPv6 地址的域名仍可访问。IPv6 偏好对称处理。这次额外查询不经过配额受理和用户策略，不计入额度，通常直接命中缓存。查询失败或上游错误时保留原应答。被置空的查询在查询明细中来源为 `family_preference`。
 
+响应记录优化按用户生效，只改写发给该用户的应答，共享缓存保留上游原始结果。`flatten_cname` 去掉 CNAME 链，把剩余记录归到所查询的域名下；没有地址记录或含 DNAME 时保持原样。`shuffle_answers` 只在 A/AAAA 查询中打乱地址记录的顺序，CNAME 保持在前。`ttl_min`、`ttl_max` 限定应答区记录的 TTL，0 表示不限制，上限 86400 秒，同时设置时下限不得大于上限；授权区不受影响，SOA 仍决定否定缓存时长。改写直接作用于原应答，查询明细中的来源仍记为上游或缓存。暂停策略期间这些改写同样不生效。
+
 用户公共列表响应不会返回来源 URL、配置 SHA-256、快照 SHA-256 或原始刷新错误；这些字段只对管理员接口可见，避免签名 URL 和上游细节泄漏。用户仍可看到名称、分类、格式、条目数、发布与快照状态、刷新时间，以及自己的显式或继承选择。
 
 管理员用 `GET/POST /admin/public-lists` 和 `GET/PATCH/DELETE /admin/public-lists/{id}` 管理 HTTPS 列表目录。直接 POST 保存草稿；`POST /admin/public-lists/validate` 返回内容预览和绑定候选快照的令牌，随后用 `POST /admin/public-lists/publish` 或 `POST /admin/public-lists/{id}/publish` 发布该快照。`POST /admin/public-lists/{id}/refresh` 刷新一项，`POST /admin/public-lists/refresh-all` 刷新全部已发布项。列表项分别包含 `published`、`default_enabled`、刷新结果及快照状态；下载失败时继续使用上一份有效快照。`GET /admin/data-providers` 只读返回主配置中的节点数据源，不会把它们导入为用户拦截规则。

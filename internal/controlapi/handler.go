@@ -1386,7 +1386,11 @@ type dnsPolicySettingsPatchRequest struct {
 	PolicyPausedUntil    json.RawMessage `json:"policy_paused_until"`
 	// Declared here because the decoder rejects unknown fields: omitting it
 	// would turn every answer_family update into a 400.
-	AnswerFamily *control.AnswerFamily `json:"answer_family"`
+	AnswerFamily   *control.AnswerFamily `json:"answer_family"`
+	TTLMin         *uint32               `json:"ttl_min"`
+	TTLMax         *uint32               `json:"ttl_max"`
+	FlattenCNAME   *bool                 `json:"flatten_cname"`
+	ShuffleAnswers *bool                 `json:"shuffle_answers"`
 }
 
 func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (control.DNSPolicySettingsPatch, error) {
@@ -1395,6 +1399,10 @@ func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (contro
 		CustomBlockEnabled: request.CustomBlockEnabled, CustomAllowEnabled: request.CustomAllowEnabled,
 		CustomRewriteEnabled: request.CustomRewriteEnabled,
 		AnswerFamily:         request.AnswerFamily,
+		TTLMin:               request.TTLMin,
+		TTLMax:               request.TTLMax,
+		FlattenCNAME:         request.FlattenCNAME,
+		ShuffleAnswers:       request.ShuffleAnswers,
 	}
 	if request.PolicyPausedUntil == nil {
 		return patch, nil

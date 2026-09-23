@@ -1472,6 +1472,25 @@ summary {
   border-bottom: 1px solid #e8ebee;
 }
 
+.ttl-row {
+  flex-wrap: wrap;
+}
+
+.ttl-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.ttl-fields input {
+  width: 7rem;
+}
+
+.field-error {
+  flex-basis: 100%;
+  color: var(--danger);
+}
+
 .safe-mode-intro {
   margin: 0 0 0.75rem;
   color: var(--muted);

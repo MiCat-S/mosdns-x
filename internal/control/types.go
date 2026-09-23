@@ -154,7 +154,16 @@ type DNSPolicySettings struct {
 	// AnswerFamilyIPv6. A preferred family suppresses the other family's
 	// records when the name also resolves in the preferred one.
 	AnswerFamily AnswerFamily `json:"answer_family"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	// TTLMin and TTLMax clamp answer record TTLs; 0 leaves that bound open.
+	// Only the answer section is touched, so negative caching via the SOA in
+	// the authority section keeps the upstream's lifetime.
+	TTLMin uint32 `json:"ttl_min"`
+	TTLMax uint32 `json:"ttl_max"`
+	// FlattenCNAME returns only the final addresses, owned by the queried name.
+	FlattenCNAME bool `json:"flatten_cname"`
+	// ShuffleAnswers randomizes the order of address records.
+	ShuffleAnswers bool      `json:"shuffle_answers"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type DNSPolicySettingsPatch struct {
@@ -166,7 +175,15 @@ type DNSPolicySettingsPatch struct {
 	CustomRewriteEnabled *bool         `json:"custom_rewrite_enabled,omitempty"`
 	PolicyPausedUntil    *time.Time    `json:"policy_paused_until,omitempty"`
 	AnswerFamily         *AnswerFamily `json:"answer_family,omitempty"`
+	TTLMin               *uint32       `json:"ttl_min,omitempty"`
+	TTLMax               *uint32       `json:"ttl_max,omitempty"`
+	FlattenCNAME         *bool         `json:"flatten_cname,omitempty"`
+	ShuffleAnswers       *bool         `json:"shuffle_answers,omitempty"`
 }
+
+// MaxPolicyTTL bounds the answer TTL clamps. Raising the floor delays a name's
+// change of address reaching the client by up to this long.
+const MaxPolicyTTL = 86400
 
 // AnswerFamily selects which address family a user prefers in answers.
 type AnswerFamily string
