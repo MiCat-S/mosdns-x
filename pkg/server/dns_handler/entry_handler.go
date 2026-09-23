@@ -243,6 +243,9 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		err = h.opts.Entry.Exec(ctx, qCtx, nil)
 		respMsg = qCtx.R()
 	}
+	if err == nil && respMsg != nil && (h.opts.AfterExecWithTrace != nil || h.opts.AfterExec != nil) {
+		ctx = query_context.WithReferenceResolver(ctx, h.referenceResolver(meta))
+	}
 	if err == nil && respMsg != nil && h.opts.AfterExecWithTrace != nil {
 		previousResponse := respMsg
 		var trace query_context.ResponseTrace
@@ -328,6 +331,20 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		}
 	}
 	return respMsg, nil
+}
+
+// referenceResolver runs an internal lookup through this handler's own entry
+// chain. It deliberately skips Admit and the request and response policies:
+// the lookup informs a policy decision, so it must not be charged to the user
+// or rewritten by their rules, and it cannot recurse into this handler.
+func (h *EntryHandler) referenceResolver(meta *query_context.RequestMeta) query_context.ReferenceResolver {
+	return func(ctx context.Context, request *dns.Msg) (*dns.Msg, error) {
+		qCtx := query_context.NewContext(request, meta)
+		if err := h.opts.Entry.Exec(ctx, qCtx, nil); err != nil {
+			return nil, err
+		}
+		return qCtx.R(), nil
+	}
 }
 
 func (h *EntryHandler) captureFinalResponse(result *Result, response *dns.Msg) {

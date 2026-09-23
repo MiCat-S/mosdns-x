@@ -1384,6 +1384,9 @@ type dnsPolicySettingsPatchRequest struct {
 	CustomAllowEnabled   *bool           `json:"custom_allow_enabled"`
 	CustomRewriteEnabled *bool           `json:"custom_rewrite_enabled"`
 	PolicyPausedUntil    json.RawMessage `json:"policy_paused_until"`
+	// Declared here because the decoder rejects unknown fields: omitting it
+	// would turn every answer_family update into a 400.
+	AnswerFamily *control.AnswerFamily `json:"answer_family"`
 }
 
 func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (control.DNSPolicySettingsPatch, error) {
@@ -1391,6 +1394,7 @@ func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (contro
 		StripECS: request.StripECS, BlockPrivateAnswers: request.BlockPrivateAnswers, BlockedQTypes: request.BlockedQTypes,
 		CustomBlockEnabled: request.CustomBlockEnabled, CustomAllowEnabled: request.CustomAllowEnabled,
 		CustomRewriteEnabled: request.CustomRewriteEnabled,
+		AnswerFamily:         request.AnswerFamily,
 	}
 	if request.PolicyPausedUntil == nil {
 		return patch, nil

@@ -945,3 +945,29 @@ func TestStaticAndAPINotFound(t *testing.T) {
 		t.Fatalf("unknown=%d", w.Code)
 	}
 }
+
+// answer_family travels through the settings API. The patch decoder rejects
+// unknown fields, so a missing declaration would surface here as a 400.
+func TestUserSettingsAnswerFamily(t *testing.T) {
+	f := newFixture(t)
+	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
+
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/settings", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"answer_family":""`) {
+		t.Fatalf("default settings=%d %s", w.Code, w.Body.String())
+	}
+	for _, family := range []string{"ipv4", "ipv6", ""} {
+		body := `{"answer_family":"` + family + `"}`
+		w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", body, alice, csrf)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"answer_family":"`+family+`"`) {
+			t.Fatalf("set %q: %d %s", family, w.Code, w.Body.String())
+		}
+	}
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"answer_family":"ipv5"}`, alice, csrf); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid family status=%d %s", w.Code, w.Body.String())
+	}
+	// An unrelated update must not clear the preference.
+	req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"answer_family":"ipv4"}`, alice, csrf)
+	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"strip_ecs":true}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"answer_family":"ipv4"`) {
+		t.Fatalf("unrelated update cleared the preference: %d %s", w.Code, w.Body.String())
+	}
+}

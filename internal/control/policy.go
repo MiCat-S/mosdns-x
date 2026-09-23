@@ -86,8 +86,14 @@ func initializeDNSPolicyData(tx *bbolt.Tx, previousVersion uint64) error {
 }
 
 func applyDNSPolicySettingsPatch(current DNSPolicySettings, patch DNSPolicySettingsPatch, now time.Time) (DNSPolicySettings, error) {
-	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil {
+	if patch.StripECS == nil && patch.BlockPrivateAnswers == nil && patch.BlockedQTypes == nil && patch.CustomBlockEnabled == nil && patch.CustomAllowEnabled == nil && patch.CustomRewriteEnabled == nil && patch.PolicyPausedUntil == nil && patch.AnswerFamily == nil {
 		return current, ErrInvalidInput
+	}
+	if patch.AnswerFamily != nil {
+		if !patch.AnswerFamily.valid() {
+			return current, fmt.Errorf("%w: answer_family must be empty, ipv4 or ipv6", ErrInvalidInput)
+		}
+		current.AnswerFamily = *patch.AnswerFamily
 	}
 	if patch.StripECS != nil {
 		current.StripECS = *patch.StripECS

@@ -43,8 +43,11 @@ export interface UserSettings {
   custom_allow_enabled: boolean;
   custom_rewrite_enabled: boolean;
   policy_paused_until: string | null;
+  // Optional so a portal talking to an older server reads it as no preference.
+  answer_family?: AnswerFamily;
   updated_at: string;
 }
+export type AnswerFamily = "" | "ipv4" | "ipv6";
 export type RuleAction = "allow" | "block" | "rewrite";
 export type RuleMatch = "exact" | "suffix" | "keyword" | "regexp";
 export type RuleRecordType = "A" | "AAAA" | "CNAME";

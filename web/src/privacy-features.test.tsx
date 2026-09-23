@@ -271,3 +271,52 @@ describe("一键安全模式", () => {
     expect(list.textContent).toContain("暂不可用");
   });
 });
+
+describe("IPv4 / IPv6 响应偏好", () => {
+  it("默认不偏好，选择后保存到设置", async () => {
+    const calls = mockApi({ ...baseSettings, answer_family: "" } as never);
+    render(<LabsPage />);
+    const select = (await screen.findByLabelText(
+      "地址族偏好",
+    )) as HTMLSelectElement;
+    expect(select.value).toBe("");
+    fireEvent.change(select, { target: { value: "ipv4" } });
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "PATCH" &&
+            (c.body as { answer_family?: string }).answer_family === "ipv4",
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(select.value).toBe("ipv4"));
+  });
+
+  it("读取已保存的偏好", async () => {
+    mockApi({ ...baseSettings, answer_family: "ipv6" } as never);
+    render(<LabsPage />);
+    const select = (await screen.findByLabelText(
+      "地址族偏好",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("ipv6"));
+  });
+
+  it("旧版服务端不返回该字段时视为不偏好", async () => {
+    mockApi(baseSettings);
+    render(<LabsPage />);
+    const select = (await screen.findByLabelText(
+      "地址族偏好",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe(""));
+  });
+
+  it("不再作为不可用占位项出现", async () => {
+    mockApi(baseSettings);
+    render(<LabsPage />);
+    await screen.findByLabelText("地址族偏好");
+    expect(
+      screen.queryByRole("checkbox", { name: "IPv4 / IPv6 响应偏好" }),
+    ).toBeNull();
+  });
+});

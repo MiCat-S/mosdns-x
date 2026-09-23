@@ -31,6 +31,7 @@ import { useSession } from "./session";
 import { HealthPanel } from "./health-panel";
 export { RuntimeConfigPage } from "./runtime-config";
 import type {
+  AnswerFamily,
   Audit,
   Credential,
   DeviceUsagePoint,
@@ -1156,6 +1157,7 @@ const responseSourceNames: Record<string, string> = {
   hosts: "Hosts",
   sequence: "执行链",
   servfail: "SERVFAIL",
+  family_preference: "地址族偏好",
 };
 
 function responseSourceName(source?: string) {
@@ -1215,9 +1217,13 @@ function missingEDNSMessage(record: QueryRecord, stage: EDNSStage) {
         return "本次响应来自缓存，无对应上游快照";
       }
       if (
-        ["custom_block", "custom_rewrite", "public_list", "hosts"].includes(
-          record.response_source ?? "",
-        )
+        [
+          "custom_block",
+          "custom_rewrite",
+          "public_list",
+          "hosts",
+          "family_preference",
+        ].includes(record.response_source ?? "")
       ) {
         return "本次由本地策略生成响应，无对应上游快照";
       }
@@ -2245,12 +2251,14 @@ type NormalizedUserSettings = Omit<
   | "custom_allow_enabled"
   | "custom_rewrite_enabled"
   | "policy_paused_until"
+  | "answer_family"
 > & {
   blocked_qtypes: string[];
   custom_block_enabled: boolean;
   custom_allow_enabled: boolean;
   custom_rewrite_enabled: boolean;
   policy_paused_until: string;
+  answer_family: AnswerFamily;
 };
 
 function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
@@ -2261,6 +2269,7 @@ function normalizeSettings(settings: UserSettings): NormalizedUserSettings {
     custom_allow_enabled: settings.custom_allow_enabled ?? true,
     custom_rewrite_enabled: settings.custom_rewrite_enabled ?? true,
     policy_paused_until: settings.policy_paused_until || zeroTime,
+    answer_family: settings.answer_family ?? "",
   };
 }
 
@@ -4054,6 +4063,7 @@ export function LabsPage() {
         description="部分功能需要节点提供额外实现，未启用的项目会注明原因。"
       />
       <SafeModeCard />
+      <FamilyPreferenceCard />
       <UnavailableGroup
         title="Web3 与替代根"
         items={["ENS / Web3 域名解析", "替代 DNS 根"]}
@@ -4061,7 +4071,7 @@ export function LabsPage() {
       <UnavailableGroup title="自定义上游" items={["自定义实验上游"]} />
       <UnavailableGroup
         title="网络与响应优化"
-        items={["ECS 实验模式", "IPv4 / IPv6 响应偏好", "响应记录优化"]}
+        items={["ECS 实验模式", "响应记录优化"]}
       />
       <UnavailableGroup title="实验查询类型" items={["新兴 qtype 分流"]} />
     </>
@@ -4160,6 +4170,69 @@ function SafeModeCard() {
             {complete ? "已全部开启" : busy ? "正在开启…" : "一键开启"}
           </button>
         </>
+      ) : null}
+    </Card>
+  );
+}
+
+const familyOptions: Array<{ value: AnswerFamily; label: string }> = [
+  { value: "", label: "不偏好" },
+  { value: "ipv4", label: "优先 IPv4" },
+  { value: "ipv6", label: "优先 IPv6" },
+];
+
+// FamilyPreferenceCard sets which address family answers favor. The server
+// only drops the other family when the name also resolves in the preferred
+// one, so a single-stack name stays reachable.
+function FamilyPreferenceCard() {
+  const load = useCallback(
+    (signal: AbortSignal) => request<UserSettings>("/me/settings", { signal }),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const settings = data ? normalizeSettings(data) : undefined;
+
+  async function choose(value: AnswerFamily) {
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await request<UserSettings>(
+        "/me/settings",
+        json("PATCH", { answer_family: value }),
+      );
+      setData(normalizeSettings(updated));
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title="IPv4 / IPv6 响应偏好">
+      <p className="safe-mode-intro">
+        域名同时拥有两种地址时，只返回所选的一种；只有另一种地址的域名不受影响，仍可正常访问。
+        开启后，这类查询会额外解析一次另一种地址，通常直接命中缓存。
+      </p>
+      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {settings ? (
+        <Field label="地址族偏好">
+          <select
+            value={settings.answer_family}
+            disabled={busy}
+            onChange={(event) =>
+              void choose(event.target.value as AnswerFamily)
+            }
+          >
+            {familyOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </Field>
       ) : null}
     </Card>
   );

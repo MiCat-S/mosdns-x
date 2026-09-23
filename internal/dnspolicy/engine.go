@@ -55,6 +55,9 @@ type Decision struct {
 	Action       control.DNSPolicyAction `json:"action,omitempty"`
 	RuleID       string                  `json:"rule_id,omitempty"`
 	PublicListID string                  `json:"public_list_id,omitempty"`
+	// FamilyPreference is set when the answer was emptied in favor of the
+	// user's preferred address family.
+	FamilyPreference bool `json:"family_preference,omitempty"`
 }
 
 func New(store control.Service) *Engine {
@@ -145,15 +148,66 @@ func (e *Engine) AfterWithDecision(ctx context.Context, principal query_context.
 	if policyPaused(p.settings, e.now()) {
 		return response, Decision{}, nil
 	}
-	if !p.settings.BlockPrivateAnswers {
-		return response, Decision{}, nil
-	}
-	for _, answer := range response.Answer {
-		if answerHasPrivateAddress(answer) {
-			return blockedResponse(request), Decision{Action: control.DNSPolicyBlock}, nil
+	if p.settings.BlockPrivateAnswers {
+		for _, answer := range response.Answer {
+			if answerHasPrivateAddress(answer) {
+				return blockedResponse(request), Decision{Action: control.DNSPolicyBlock}, nil
+			}
 		}
 	}
+	if preferOtherFamily(ctx, p.settings.AnswerFamily, request, response) {
+		return noDataResponse(request), Decision{FamilyPreference: true}, nil
+	}
 	return response, Decision{}, nil
+}
+
+// preferOtherFamily reports whether an A or AAAA answer should be emptied
+// because the user prefers the other family and the name resolves in it. It
+// looks the other family up through the reference resolver, which serves it
+// from the same chain and usually from cache, since clients ask for A and
+// AAAA together.
+//
+// It fails open: with no resolver, a lookup error, or no record in the
+// preferred family, the original answer stands. A missed preference costs
+// nothing; suppressing the only family a name has would make it unreachable.
+func preferOtherFamily(ctx context.Context, family control.AnswerFamily, request, response *dns.Msg) bool {
+	if family == control.AnswerFamilyAny || response == nil || response.Rcode != dns.RcodeSuccess || len(request.Question) != 1 {
+		return false
+	}
+	qtype := request.Question[0].Qtype
+	var preferred uint16
+	switch {
+	case family == control.AnswerFamilyIPv4 && qtype == dns.TypeAAAA:
+		preferred = dns.TypeA
+	case family == control.AnswerFamilyIPv6 && qtype == dns.TypeA:
+		preferred = dns.TypeAAAA
+	default:
+		return false
+	}
+	// Nothing to suppress: skip the reference lookup entirely.
+	if !answerHasType(response, qtype) {
+		return false
+	}
+	resolve := query_context.ReferenceResolverFrom(ctx)
+	if resolve == nil {
+		return false
+	}
+	reference := request.Copy()
+	reference.Question[0].Qtype = preferred
+	answer, err := resolve(ctx, reference)
+	if err != nil || answer == nil || answer.Rcode != dns.RcodeSuccess {
+		return false
+	}
+	return answerHasType(answer, preferred)
+}
+
+func answerHasType(msg *dns.Msg, qtype uint16) bool {
+	for _, rr := range msg.Answer {
+		if rr.Header().Rrtype == qtype {
+			return true
+		}
+	}
+	return false
 }
 
 func policyPaused(settings control.DNSPolicySettings, now time.Time) bool {

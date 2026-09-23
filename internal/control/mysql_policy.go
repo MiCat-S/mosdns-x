@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	mysqlDNSPolicySettingsColumns = `user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns`
+	mysqlDNSPolicySettingsColumns = `user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, answer_family, updated_at_ns`
 	mysqlDNSPolicyRuleColumns     = `id, user_id, enabled, priority, action, match_kind, pattern, record_type, rewrite_value, created_at_ns, updated_at_ns`
 )
 
@@ -25,10 +25,10 @@ func insertMySQLDNSPolicySettings(ctx context.Context, tx *sql.Tx, settings DNSP
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_dns_policy_settings
 		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled,
-		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, settings.UserID, settings.StripECS, settings.BlockPrivateAnswers, encoded,
+		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, answer_family, updated_at_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, settings.UserID, settings.StripECS, settings.BlockPrivateAnswers, encoded,
 		settings.CustomBlockEnabled, settings.CustomAllowEnabled, settings.CustomRewriteEnabled,
-		mysqlPolicyPauseValue(settings.PolicyPausedUntil), settings.UpdatedAt.UnixNano())
+		mysqlPolicyPauseValue(settings.PolicyPausedUntil), string(settings.AnswerFamily), settings.UpdatedAt.UnixNano())
 	return err
 }
 
@@ -43,12 +43,14 @@ func scanMySQLDNSPolicySettings(row sqlScanner) (DNSPolicySettings, error) {
 	var out DNSPolicySettings
 	var encoded []byte
 	var paused sql.NullInt64
+	var family string
 	var updated int64
 	err := row.Scan(&out.UserID, &out.StripECS, &out.BlockPrivateAnswers, &encoded,
-		&out.CustomBlockEnabled, &out.CustomAllowEnabled, &out.CustomRewriteEnabled, &paused, &updated)
+		&out.CustomBlockEnabled, &out.CustomAllowEnabled, &out.CustomRewriteEnabled, &paused, &family, &updated)
 	if err != nil {
 		return out, err
 	}
+	out.AnswerFamily = AnswerFamily(family)
 	if err := json.Unmarshal(encoded, &out.BlockedQTypes); err != nil {
 		return out, fmt.Errorf("decode blocked qtypes: %w", err)
 	}
@@ -113,9 +115,9 @@ func (s *MySQLStore) UpdateDNSPolicySettings(ctx context.Context, actor, userID 
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, updated_at_ns=? WHERE user_id=?`,
+		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, answer_family=?, updated_at_ns=? WHERE user_id=?`,
 			out.StripECS, out.BlockPrivateAnswers, encoded, out.CustomBlockEnabled, out.CustomAllowEnabled,
-			out.CustomRewriteEnabled, mysqlPolicyPauseValue(out.PolicyPausedUntil), now.UnixNano(), userID); err != nil {
+			out.CustomRewriteEnabled, mysqlPolicyPauseValue(out.PolicyPausedUntil), string(out.AnswerFamily), now.UnixNano(), userID); err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "update_dns_policy_settings", "dns_policy_settings", userID, map[string]any{"before": current, "after": out}, now)

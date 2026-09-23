@@ -92,6 +92,9 @@ const (
 	ResponseSourceHosts         = "hosts"
 	ResponseSourceSequence      = "sequence"
 	ResponseSourceServfail      = "servfail"
+	// ResponseSourceFamilyPreference marks an answer emptied because the user
+	// prefers the other address family and the name resolves in it.
+	ResponseSourceFamilyPreference = "family_preference"
 )
 
 const (

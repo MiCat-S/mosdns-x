@@ -150,17 +150,35 @@ type DNSPolicySettings struct {
 	CustomAllowEnabled   bool       `json:"custom_allow_enabled"`
 	CustomRewriteEnabled bool       `json:"custom_rewrite_enabled"`
 	PolicyPausedUntil    *time.Time `json:"policy_paused_until"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	// AnswerFamily is "" for no preference, or AnswerFamilyIPv4 or
+	// AnswerFamilyIPv6. A preferred family suppresses the other family's
+	// records when the name also resolves in the preferred one.
+	AnswerFamily AnswerFamily `json:"answer_family"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 type DNSPolicySettingsPatch struct {
-	StripECS             *bool      `json:"strip_ecs,omitempty"`
-	BlockPrivateAnswers  *bool      `json:"block_private_answers,omitempty"`
-	BlockedQTypes        *[]string  `json:"blocked_qtypes,omitempty"`
-	CustomBlockEnabled   *bool      `json:"custom_block_enabled,omitempty"`
-	CustomAllowEnabled   *bool      `json:"custom_allow_enabled,omitempty"`
-	CustomRewriteEnabled *bool      `json:"custom_rewrite_enabled,omitempty"`
-	PolicyPausedUntil    *time.Time `json:"policy_paused_until,omitempty"`
+	StripECS             *bool         `json:"strip_ecs,omitempty"`
+	BlockPrivateAnswers  *bool         `json:"block_private_answers,omitempty"`
+	BlockedQTypes        *[]string     `json:"blocked_qtypes,omitempty"`
+	CustomBlockEnabled   *bool         `json:"custom_block_enabled,omitempty"`
+	CustomAllowEnabled   *bool         `json:"custom_allow_enabled,omitempty"`
+	CustomRewriteEnabled *bool         `json:"custom_rewrite_enabled,omitempty"`
+	PolicyPausedUntil    *time.Time    `json:"policy_paused_until,omitempty"`
+	AnswerFamily         *AnswerFamily `json:"answer_family,omitempty"`
+}
+
+// AnswerFamily selects which address family a user prefers in answers.
+type AnswerFamily string
+
+const (
+	AnswerFamilyAny  AnswerFamily = ""
+	AnswerFamilyIPv4 AnswerFamily = "ipv4"
+	AnswerFamilyIPv6 AnswerFamily = "ipv6"
+)
+
+func (f AnswerFamily) valid() bool {
+	return f == AnswerFamilyAny || f == AnswerFamilyIPv4 || f == AnswerFamilyIPv6
 }
 
 type DNSPolicyRule struct {

@@ -23,7 +23,13 @@ const (
 	policyMySQLControlSchemaVersion = 2
 	policySwitchMySQLSchemaVersion  = 3
 	publicListMySQLSchemaVersion    = 4
-	mysqlControlSchemaVersion       = 5
+	// publicListV5MySQLSchemaVersion is the version whose data migration
+	// rewrites public list publication state. It must run only on the way to
+	// v5, never again: rerunning it resets what administrators published. It
+	// is named apart from mysqlControlSchemaVersion so a later version bump
+	// cannot silently make it run again.
+	publicListV5MySQLSchemaVersion = 5
+	mysqlControlSchemaVersion      = 5
 )
 
 type MySQLOptions struct {
@@ -140,6 +146,7 @@ var mysqlControlMigrations = []string{
 		custom_allow_enabled BOOLEAN NOT NULL DEFAULT TRUE,
 		custom_rewrite_enabled BOOLEAN NOT NULL DEFAULT TRUE,
 		policy_paused_until_ns BIGINT NULL,
+		answer_family VARCHAR(8) NOT NULL DEFAULT '',
 		updated_at_ns BIGINT NOT NULL,
 		CONSTRAINT fk_mosdns_dns_policy_settings_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
@@ -326,13 +333,20 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 			return mysqlStoreError(err)
 		}
 	}
-	if errors.Is(err, sql.ErrNoRows) || version < mysqlControlSchemaVersion {
+	if errors.Is(err, sql.ErrNoRows) || version < publicListV5MySQLSchemaVersion {
 		if migrationErr := ensureMySQLControlV5PublicListColumns(ctx, conn); migrationErr != nil {
 			return mysqlStoreError(migrationErr)
 		}
 		if _, migrationErr := conn.ExecContext(ctx, `UPDATE mosdns_public_lists SET default_enabled=enabled, published=TRUE, snapshot_status=IF(last_refresh_status='success','current',IF(entry_count>0,'stale','missing')), snapshot_sha256='', last_successful_at_ns=IF(last_refresh_status='success',last_refreshed_at_ns,NULL)`); migrationErr != nil {
 			return mysqlStoreError(migrationErr)
 		}
+	}
+	// answer_family is additive and defaulted, so it is ensured on every start
+	// instead of behind a version bump. An older binary names its columns in
+	// every statement and never reads it, so it can still open this database,
+	// which keeps rolling back the binary possible.
+	if migrationErr := ensureMySQLAnswerFamilyColumn(ctx, conn); migrationErr != nil {
+		return mysqlStoreError(migrationErr)
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -412,6 +426,27 @@ func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn) error {
 		return nil
 	}
 	_, err = conn.ExecContext(ctx, migration)
+	return err
+}
+
+const mysqlAnswerFamilyColumnQuery = `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+	WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mosdns_dns_policy_settings'
+	AND COLUMN_NAME = 'answer_family'`
+
+// ensureMySQLAnswerFamilyColumn adds answer_family when it is missing. It reads
+// the live column list, so a table that already has the column, including one
+// created fresh or upgraded earlier, is left untouched. It runs under the
+// schema lock, so concurrent starts cannot both issue the ALTER.
+func ensureMySQLAnswerFamilyColumn(ctx context.Context, conn *sql.Conn) error {
+	var name string
+	err := conn.QueryRowContext(ctx, mysqlAnswerFamilyColumnQuery).Scan(&name)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, `ALTER TABLE mosdns_dns_policy_settings ADD COLUMN answer_family VARCHAR(8) NOT NULL DEFAULT ''`)
 	return err
 }
 

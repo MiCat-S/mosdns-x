@@ -25,6 +25,9 @@ func policyAfterWithTrace(engine *dnspolicy.Engine) func(context.Context, query_
 }
 
 func policyDecisionTrace(decision dnspolicy.Decision) query_context.ResponseTrace {
+	if decision.FamilyPreference {
+		return query_context.ResponseTrace{Source: query_context.ResponseSourceFamilyPreference}
+	}
 	if decision.PublicListID != "" {
 		return query_context.ResponseTrace{
 			Source:              query_context.ResponseSourcePublicList,
