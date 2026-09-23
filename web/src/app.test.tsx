@@ -73,21 +73,32 @@ describe("前端访问与秘密处理", () => {
       blocked_qtypes: ["TXT"],
       updated_at: "2026-09-12T00:00:00Z",
     };
-    const fetcher = vi
-      .fn()
-      .mockResolvedValueOnce(response(settings))
-      .mockResolvedValueOnce(response({ ...settings, strip_ecs: true }));
+    // Routed by URL: the page also loads public lists for the threat
+    // intelligence switch, so call order is not a stable contract.
+    const fetcher = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/me/public-lists"))
+          return response({ items: [], next_cursor: "" });
+        return init?.method === "PATCH"
+          ? response({ ...settings, strip_ecs: true })
+          : response(settings);
+      },
+    );
     vi.stubGlobal("fetch", fetcher);
     render(<PrivacyPage />);
     const stripECS = await screen.findByRole("checkbox", {
       name: "停用 ECS",
     });
     fireEvent.click(stripECS);
-    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
-    expect(String(fetcher.mock.calls[1][0])).toContain("/me/settings");
-    const init = fetcher.mock.calls[1][1] as RequestInit;
-    expect(init.method).toBe("PATCH");
-    expect(JSON.parse(String(init.body))).toEqual({
+    const patches = () =>
+      fetcher.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      );
+    await waitFor(() => expect(patches()).toHaveLength(1));
+    const [url, init] = patches()[0];
+    expect(String(url)).toContain("/me/settings");
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       strip_ecs: true,
     });
   });

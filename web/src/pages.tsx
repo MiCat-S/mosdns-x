@@ -2288,6 +2288,7 @@ export function PrivacyPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const settings = data ? normalizeSettings(data) : undefined;
+  const threat = useThreatIntel();
   async function update(patch: Partial<UserSettings>) {
     if (!settings) return;
     setBusy(true);
@@ -2311,7 +2312,11 @@ export function PrivacyPage() {
         title="安全与隐私保护"
         description="每项切换会立即保存并应用到你的 DNS 请求。"
       />
-      {loading ? <Spinner /> : <Alert error={loadError || error} />}
+      {loading ? (
+        <Spinner />
+      ) : (
+        <Alert error={loadError || error || threat.error} />
+      )}
       {settings ? (
         <Card title="可用保护" className="settings-list">
           <SettingsRow
@@ -2369,9 +2374,14 @@ export function PrivacyPage() {
           />
           <SettingsRow
             title="恶意域名情报"
-            description="节点未配置此能力。"
-            checked={false}
-            disabled
+            description={
+              threat.available
+                ? `拦截已知的恶意、钓鱼与挖矿域名（${threat.count} 个情报源）。`
+                : `管理员发布「${THREAT_INTEL_CATEGORY}」分类的公共列表后可用。`
+            }
+            checked={threat.enabled}
+            disabled={!threat.available || threat.busy || threat.loading}
+            onChange={(value) => void threat.setEnabled(value)}
           />
         </Card>
       ) : null}
@@ -3272,6 +3282,75 @@ function dataProviderFileStateLabel(status?: string) {
   );
 }
 
+// Public lists in this category back the threat intelligence switch. The
+// category is free text, so this one value is the contract: an administrator
+// publishes a malicious-domain feed under it and the switch turns it on.
+export const THREAT_INTEL_CATEGORY = "恶意域名";
+
+function isThreatIntelList(item: UserPublicList) {
+  return (
+    publicListPublished(item.list) &&
+    item.list.category?.trim() === THREAT_INTEL_CATEGORY
+  );
+}
+
+// useThreatIntel exposes the threat intelligence lists as one switch. The
+// switch is on only when every such list is enabled, and it is unavailable
+// rather than silently inert when no list is published under the category.
+export function useThreatIntel() {
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      allPages<UserPublicList>("/me/public-lists", signal),
+    [],
+  );
+  const { data, error: loadError, loading, setData } = useLoad(load, [load]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const lists = useMemo(() => (data ?? []).filter(isThreatIntelList), [data]);
+  const available = lists.length > 0;
+  const enabled = available && lists.every((item) => item.enabled);
+
+  async function setEnabled(value: boolean) {
+    const pending = lists.filter((item) => item.enabled !== value);
+    if (pending.length === 0) return;
+    setBusy(true);
+    setError("");
+    const done = new Set<string>();
+    try {
+      for (const item of pending) {
+        await request(
+          `/me/public-lists/${encodeURIComponent(item.list.id)}`,
+          json("PATCH", { enabled: value }),
+        );
+        done.add(item.list.id);
+      }
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      // Reflect only the lists that were actually saved, so a failure midway
+      // leaves the switch showing the true state.
+      setData((current) =>
+        current?.map((item) =>
+          done.has(item.list.id)
+            ? { ...item, enabled: value, overridden: true }
+            : item,
+        ),
+      );
+      setBusy(false);
+    }
+  }
+
+  return {
+    available,
+    enabled,
+    count: lists.length,
+    loading,
+    busy,
+    error: loadError || error,
+    setEnabled,
+  };
+}
+
 function publicListPublished(list: PublicList) {
   return list.published ?? true;
 }
@@ -3467,8 +3546,16 @@ function PublicListForm({
             placeholder="例如：广告与追踪…"
             maxLength={64}
             autoComplete="off"
+            list="public-list-category-suggestions"
           />
         </Field>
+        {/* Outside the Field label: option text inside a label would join its
+            accessible name, announcing the category field with this hint. */}
+        <datalist id="public-list-category-suggestions">
+          <option value={THREAT_INTEL_CATEGORY}>
+            用户端「恶意域名情报」开关控制此分类
+          </option>
+        </datalist>
       </div>
       <Field label="HTTPS URL">
         <input
@@ -3978,10 +4065,7 @@ export function LabsPage() {
         title="网络与响应优化"
         items={["ECS 实验模式", "IPv4 / IPv6 响应偏好", "响应记录优化"]}
       />
-      <UnavailableGroup
-        title="实验查询类型"
-        items={["新兴 qtype 分流"]}
-      />
+      <UnavailableGroup title="实验查询类型" items={["新兴 qtype 分流"]} />
     </>
   );
 }
