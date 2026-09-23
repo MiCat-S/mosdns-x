@@ -58,7 +58,15 @@ func TestShutdownRejectsNewAndWaitsForActiveQuery(t *testing.T) {
 	}
 	var finished atomic.Bool
 	done := make(chan error, 1)
-	go func() { done <- s.Shutdown(context.Background()); finished.Store(true) }()
+	// Set finished before sending: the receive below then happens after the
+	// store, so the check at the end cannot observe it unset. Storing after the
+	// send let the main goroutine read finished first, failing about 1% of
+	// runs under -race.
+	go func() {
+		err := s.Shutdown(context.Background())
+		finished.Store(true)
+		done <- err
+	}()
 	for !s.Closed() {
 		time.Sleep(time.Millisecond)
 	}
