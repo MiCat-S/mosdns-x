@@ -208,3 +208,95 @@ func TestLongerRetentionIsVisibleToItsOwner(t *testing.T) {
 		t.Fatalf("admin view hid the record: %d", got)
 	}
 }
+
+// bbolt rejects a zero-length key. A result without a user must not fail the
+// batch, which would drop every other user's data in it.
+func TestResultWithoutUserDoesNotFailTheBatch(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	s := openClocked(t, &now, 0)
+	err := s.writeBatch([]event{
+		{time: now, result: ptrResult(result("", "c", dns.RcodeSuccess))},
+		{time: now, result: ptrResult(result("alice", "c", dns.RcodeSuccess))},
+	})
+	if err != nil {
+		t.Fatalf("batch failed: %v", err)
+	}
+	if got := userRecordCount(t, s, "alice"); got != 1 {
+		t.Fatalf("alice's record lost alongside the userless one: %d", got)
+	}
+}
+
+// After a rollback, the older release keeps the total but not the per-user
+// counts. Eviction must notice and recount, or the cap stops being enforced.
+func TestEvictionRecoversFromDriftedCounts(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	s, err := Open(Options{Path: filepath.Join(t.TempDir(), "t.db"), QueryLogEnabled: true, BatchSize: 256,
+		QueueSize: 4096, MaxQueryRecords: 1000, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	events := func(user string, n int) []event {
+		out := make([]event, n)
+		for i := range out {
+			out[i] = event{time: now, result: ptrResult(result(user, "c", dns.RcodeSuccess))}
+		}
+		return out
+	}
+	if err := s.writeBatch(append(events("light", 5), events("heavy", 900)...)); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the older release: counts wiped, total still accurate.
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(bucketUserQueryCounts); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucket(bucketUserQueryCounts)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeBatch(events("heavy", 200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		if got := metaUint64(tx, keyQueryCount); got != 1000 {
+			t.Fatalf("total = %d, want the cap of 1000 enforced", got)
+		}
+		if got := tx.Bucket(bucketQueries).Stats().KeyN; got != 1000 {
+			t.Fatalf("records = %d, want 1000", got)
+		}
+		if got := userQueryCount(tx, "light"); got != 5 {
+			t.Fatalf("light = %d, want 5 kept", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type countingPolicy struct{ calls int }
+
+func (c *countingPolicy) QueryLogFor(context.Context, string) (bool, time.Duration, error) {
+	c.calls++
+	return true, 0, nil
+}
+
+// With query_log off, the default, nothing detailed is written, so no user's
+// choice should be looked up on every batch.
+func TestNoPolicyLookupsWhileQueryLogIsOff(t *testing.T) {
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	s, err := Open(Options{Path: filepath.Join(t.TempDir(), "t.db"), QueryLogEnabled: false, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	policy := &countingPolicy{}
+	s.SetUserLogPolicy(policy)
+	if err := s.writeBatch([]event{{time: now, result: ptrResult(result("alice", "c", dns.RcodeSuccess))}}); err != nil {
+		t.Fatal(err)
+	}
+	if policy.calls != 0 {
+		t.Fatalf("made %d lookups with query_log off", policy.calls)
+	}
+}

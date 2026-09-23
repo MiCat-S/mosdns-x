@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 // UserLogPolicy reports each user's own query log choices.
@@ -56,8 +58,13 @@ func (s *Store) userLogPolicy() UserLogPolicy {
 // Missing one record is recoverable; recording a user who turned logging off,
 // because a lookup briefly failed, is not.
 func (s *Store) detailedLogging(events []event) map[string]bool {
-	policy := s.userLogPolicy()
 	allowed := make(map[string]bool)
+	// Nothing detailed is written with query_log off, the default, so asking
+	// each user would only cost control store lookups on every batch.
+	if !s.Settings().QueryLogEnabled {
+		return allowed
+	}
+	policy := s.userLogPolicy()
 	for _, e := range events {
 		if e.result == nil {
 			continue
@@ -128,8 +135,25 @@ func queryUsers(tx *bolt.Tx) []string {
 	return users
 }
 
+// countKey is the counts bucket key for userID. bbolt rejects a zero-length
+// key, and a record without a user would otherwise fail its whole batch, so
+// the empty user is stored under a single NUL, which no real id contains.
+func countKey(userID string) []byte {
+	if userID == "" {
+		return []byte{0}
+	}
+	return []byte(userID)
+}
+
+func countKeyUser(key []byte) string {
+	if len(key) == 1 && key[0] == 0 {
+		return ""
+	}
+	return string(key)
+}
+
 func userQueryCount(tx *bolt.Tx, userID string) uint64 {
-	if v := tx.Bucket(bucketUserQueryCounts).Get([]byte(userID)); len(v) == 8 {
+	if v := tx.Bucket(bucketUserQueryCounts).Get(countKey(userID)); len(v) == 8 {
 		return binary.BigEndian.Uint64(v)
 	}
 	return 0
@@ -138,11 +162,11 @@ func userQueryCount(tx *bolt.Tx, userID string) uint64 {
 func putUserQueryCount(tx *bolt.Tx, userID string, count uint64) error {
 	b := tx.Bucket(bucketUserQueryCounts)
 	if count == 0 {
-		return b.Delete([]byte(userID))
+		return b.Delete(countKey(userID))
 	}
 	var v [8]byte
 	binary.BigEndian.PutUint64(v[:], count)
-	return b.Put([]byte(userID), v[:])
+	return b.Put(countKey(userID), v[:])
 }
 
 // rebuildUserQueryCounts derives the per-user counts from the records. It runs
@@ -150,6 +174,21 @@ func putUserQueryCount(tx *bolt.Tx, userID string, count uint64) error {
 func rebuildUserQueryCounts(tx *bolt.Tx) error {
 	if tx.Bucket(bucketMeta).Get(keyUserCountsBuilt) != nil {
 		return nil
+	}
+	if _, err := recountUserQueries(tx); err != nil {
+		return err
+	}
+	return tx.Bucket(bucketMeta).Put(keyUserCountsBuilt, []byte{1})
+}
+
+// recountUserQueries replaces the per-user counts and the total with values
+// derived from the record index, and returns the counts.
+func recountUserQueries(tx *bolt.Tx) (map[string]uint64, error) {
+	if err := tx.DeleteBucket(bucketUserQueryCounts); err != nil && !errors.Is(err, bolterrors.ErrBucketNotFound) {
+		return nil, err
+	}
+	if _, err := tx.CreateBucket(bucketUserQueryCounts); err != nil {
+		return nil, err
 	}
 	counts := make(map[string]uint64)
 	err := tx.Bucket(bucketUserQ).ForEach(func(k, _ []byte) error {
@@ -159,14 +198,16 @@ func rebuildUserQueryCounts(tx *bolt.Tx) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var total uint64
 	for userID, count := range counts {
 		if err := putUserQueryCount(tx, userID, count); err != nil {
-			return err
+			return nil, err
 		}
+		total += count
 	}
-	return tx.Bucket(bucketMeta).Put(keyUserCountsBuilt, []byte{1})
+	return counts, putMetaUint64(tx, keyQueryCount, total)
 }
 
 // deleteUserRecords removes up to limit of a user's oldest records that fall
@@ -297,13 +338,34 @@ func evictOverCap(tx *bolt.Tx, limit int) error {
 		return nil
 	}
 	counts := make(map[string]uint64)
+	var sum uint64
 	if err := tx.Bucket(bucketUserQueryCounts).ForEach(func(k, v []byte) error {
 		if len(v) == 8 {
-			counts[string(k)] = binary.BigEndian.Uint64(v)
+			n := binary.BigEndian.Uint64(v)
+			counts[countKeyUser(k)] = n
+			sum += n
 		}
 		return nil
 	}); err != nil {
 		return err
+	}
+	// The counts drift if an older release wrote or pruned records, for
+	// example after a rollback and a return to this one; it keeps the total
+	// but not these. A plan built from counts that fall short would remove
+	// too little and leave the cap unenforced from then on, so recount from
+	// the index. This costs one pass, only when they disagree.
+	if sum != total {
+		recounted, err := recountUserQueries(tx)
+		if err != nil {
+			return err
+		}
+		counts, total = recounted, 0
+		for _, n := range counts {
+			total += n
+		}
+		if total <= uint64(limit) {
+			return nil
+		}
 	}
 	for userID, take := range fairShareEviction(counts, total-uint64(limit)) {
 		if _, err := deleteUserRecords(tx, userID, nil, take); err != nil {
