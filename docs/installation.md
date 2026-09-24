@@ -13,7 +13,8 @@ curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | 
 3. 安装 `/usr/local/bin/mosdns`。
 4. 如果 `/etc/mosdns/config.yaml` 不存在，安装 Release 自带的默认配置；已有配置保持原样。
 5. 首次安装时调用 `mosdns service install` 创建 systemd 服务；在启用或启动服务前检查控制存储。控制模式未启用或管理员已存在时正常启动；未初始化时会在交互终端询问管理员用户名和两次密码，并通过标准输入初始化。非交互运行且未初始化时，脚本不启动服务，并输出可直接执行的初始化命令。
-6. 再次运行时升级二进制并重启已有服务。如果旧服务仍引用 `/etc/mosdns/mosdns` 等过期路径，脚本会重新安装服务，使 `ExecStart` 和 `ConditionFileIsExecutable` 指向 `/usr/local/bin/mosdns`。
+6. 写入 `/etc/systemd/system/mosdns.service.d/10-mosdns-x.conf`：让 mosdns 在网络和本机 MySQL（`mysqld`/`mysql`/`mariadb`，不存在的会被忽略）之后启动，并把重启间隔设为 5 秒。`mosdns service install` 生成的 unit 两者都没有，开机时 mosdns 可能先于 MySQL 启动、打不开控制库，然后按固定的 120 秒间隔才重试。
+7. 再次运行时升级二进制并重启已有服务。如果旧服务仍引用 `/etc/mosdns/mosdns` 等过期路径，脚本会重新安装服务，使 `ExecStart` 和 `ConditionFileIsExecutable` 指向 `/usr/local/bin/mosdns`。
 
 它不会安装 Caddy、软件包或防火墙规则，也不会创建服务账户、域名或管理员密码。运行前确保主机已有 `bash`、`curl`、`unzip`、`sha256sum` 和 systemd。
 

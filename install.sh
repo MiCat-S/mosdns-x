@@ -9,6 +9,7 @@ readonly BINARY_PATH="/usr/local/bin/mosdns"
 readonly CONFIG_DIR="/etc/mosdns"
 readonly CONFIG_PATH="${CONFIG_DIR}/config.yaml"
 SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+SYSTEMD_DROPIN_DIR="${SYSTEMD_DROPIN_DIR:-/etc/systemd/system/mosdns.service.d}"
 readonly CONTROL_STATUS_DISABLED=10
 readonly CONTROL_STATUS_UNINITIALIZED=11
 readonly CONTROL_STATUS_STORAGE_ERROR=12
@@ -201,6 +202,30 @@ unit_uses_installed_binary() {
 }
 run_systemctl() {
   "$SYSTEMCTL_BIN" "$@"
+}
+# write_service_dropin orders mosdns after the database and network, and
+# shortens the restart delay. The unit that "mosdns service install" writes
+# has neither: at boot mosdns could start before a local MySQL, fail to open
+# its control store, and then wait the unit's fixed 120 seconds before the
+# next try, leaving DNS down that long. After= naming a unit that does not
+# exist is ignored, so one file serves bbolt hosts and every MySQL unit name.
+write_service_dropin() {
+  local dir=$SYSTEMD_DROPIN_DIR
+  local path="$dir/10-mosdns-x.conf"
+  local staged
+  install -d -m 0755 "$dir"
+  staged=$(mktemp "$dir/.10-mosdns-x.conf.XXXXXX") || die "无法写入 $dir"
+  cat > "$staged" <<'DROPIN'
+# Installed by mosdns-x install.sh.
+[Unit]
+After=network-online.target mysqld.service mysql.service mariadb.service
+Wants=network-online.target
+
+[Service]
+RestartSec=5
+DROPIN
+  chmod 0644 "$staged"
+  mv -f -- "$staged" "$path"
 }
 control_storage_status() {
   local binary=$1
@@ -437,6 +462,8 @@ main() {
   unit_text=$(run_systemctl cat mosdns.service 2>/dev/null) || die '无法读取 mosdns.service'
   unit_uses_installed_binary <<< "$unit_text" ||
     die "mosdns.service 未使用 $BINARY_PATH"
+  write_service_dropin
+  run_systemctl daemon-reload || die 'systemctl daemon-reload 失败'
   start_mosdns_service "$unit_exists"
   printf 'Mosdns-x %s 已安装到 %s，mosdns.service 正在运行。\n' "$version" "$BINARY_PATH"
 }

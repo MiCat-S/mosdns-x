@@ -201,17 +201,29 @@ func openControlStore(ctx context.Context, c *ControlConfig) (control.Service, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// Each constructor returns a concrete pointer. Returned directly, a nil
+	// *Store on failure becomes a non-nil control.Service, so shutdown's nil
+	// check passes and Close runs on a nil receiver. That panicked on boot
+	// whenever MySQL was not up yet. Return an untyped nil on error.
 	if effectiveControlDriver(c) == "bbolt" {
-		return control.Open(c.Database, control.Options{
+		store, err := control.Open(c.Database, control.Options{
 			HealthScanLimit: c.HealthScanLimit,
 			AdmitQueueSize:  c.Admit.QueueSize,
 			AdmitWait:       time.Duration(c.Admit.WaitMS) * time.Millisecond,
 			BatchDelay:      time.Duration(c.Admit.BatchDelayMS) * time.Millisecond,
 			BatchSize:       c.Admit.BatchSize,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return store, nil
 	}
 	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
-	return control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})
+	store, err := control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
 }
 
 func openTelemetryStore(ctx context.Context, c *ControlConfig) (telemetry.Service, error) {
@@ -219,12 +231,21 @@ func openTelemetryStore(ctx context.Context, c *ControlConfig) (telemetry.Servic
 		return nil, err
 	}
 	settings := telemetrySettings(c)
+	// Untyped nil on error, for the reason given in openControlStore.
 	if effectiveTelemetryDriver(c) == "bbolt" {
-		return telemetry.Open(telemetry.Options{Path: c.StatsDatabase, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+		store, err := telemetry.Open(telemetry.Options{Path: c.StatsDatabase, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+		if err != nil {
+			return nil, err
+		}
+		return store, nil
 	}
 	mysqlCfg := effectiveTelemetryMySQL(c)
 	lifetime, timeout := mysqlDurations(mysqlCfg)
-	return telemetry.OpenMySQLContext(ctx, telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+	store, err := telemetry.OpenMySQLContext(ctx, telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
 }
 
 func telemetrySettings(c *ControlConfig) telemetry.Settings {

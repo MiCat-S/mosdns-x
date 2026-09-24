@@ -226,3 +226,19 @@ assert_eq "https://proxy.example/$FAKE_UNREACHABLE/v1/SHA256SUMS" "$(tail -n 1 "
 
 unset -f curl
 printf 'install.sh checksum tests passed\n'
+
+# The drop-in must order mosdns after MySQL and shorten the restart delay, and
+# rewriting it must be idempotent.
+dropin_dir=$(mktemp -d)
+SYSTEMD_DROPIN_DIR="$dropin_dir/mosdns.service.d"
+write_service_dropin
+write_service_dropin
+dropin="$SYSTEMD_DROPIN_DIR/10-mosdns-x.conf"
+[[ -f $dropin ]] || fail 'drop-in not written'
+grep -qx 'After=network-online.target mysqld.service mysql.service mariadb.service' "$dropin" ||
+  fail 'drop-in does not order mosdns after MySQL'
+grep -qx 'RestartSec=5' "$dropin" || fail 'drop-in does not shorten RestartSec'
+assert_eq 1 "$(find "$SYSTEMD_DROPIN_DIR" -type f | wc -l | tr -d ' ')" 'rewriting left extra files behind'
+assert_eq 644 "$(stat -c %a "$dropin" 2>/dev/null || stat -f %Lp "$dropin")" 'drop-in mode'
+rm -rf "$dropin_dir"
+printf 'install.sh service drop-in tests passed\n'
