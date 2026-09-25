@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly DEFAULT_VERSION="v26.09.24"
+readonly DEFAULT_VERSION="v26.09.25"
 readonly RELEASE_REPOSITORY="MiCat-S/mosdns-x"
 readonly DEFAULT_GITHUB_PROXY="https://gh-proxy.com/"
 readonly CLOUDFLARE_TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
@@ -28,7 +28,7 @@ usage() {
 缺失的默认配置，然后安装或重启 mosdns systemd 服务。
 
 选项：
-  --version TAG          安装指定 Release；默认 v26.09.24
+  --version TAG          安装指定 Release；默认 v26.09.25
   --no-github-proxy     禁用中国 IP 自动使用的 GitHub 下载代理
   --github-proxy PREFIX 指定并强制使用 HTTPS GitHub 下载代理前缀
   --print-asset ARCH    输出 ARCH 对应的 Release 资产；省略 ARCH 时使用 uname -m
@@ -36,7 +36,7 @@ usage() {
 
 示例：
   curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | sudo bash
-  sudo bash install.sh --version v26.09.24
+  sudo bash install.sh --version v26.09.25
   sudo bash install.sh --github-proxy https://gh-proxy.com/
 EOF
 }
