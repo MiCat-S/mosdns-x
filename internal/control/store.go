@@ -964,7 +964,7 @@ func (s *Store) RevokeSession(ctx context.Context, actor, id string) error {
 		if err := marshalPut(tx.Bucket(bSessions), []byte(id), r); err != nil {
 			return err
 		}
-		return s.audit(tx, actor, "revoke_session", "session", id, nil, now)
+		return s.audit(tx, actor, "revoke_session", "session", id, map[string]any{"user_id": r.UserID}, now)
 	})
 }
 
@@ -1032,7 +1032,7 @@ func (s *Store) CreateCredential(ctx context.Context, actor, userID, name string
 		if e = marshalPut(tx.Bucket(bUsers), []byte(userID), u); e != nil {
 			return e
 		}
-		if e = s.audit(tx, actor, "create_credential", "credential", id, map[string]any{"name": name}, now); e != nil {
+		if e = s.audit(tx, actor, "create_credential", "credential", id, map[string]any{"name": name, "user_id": userID}, now); e != nil {
 			return e
 		}
 		issued = IssuedCredential{Credential: c, Token: token}
@@ -1100,7 +1100,7 @@ func (s *Store) RotateCredential(ctx context.Context, actor, userID, id string) 
 		if e := tx.Bucket(bCredentialTokens).Put(tokenHash[:], []byte(id)); e != nil {
 			return e
 		}
-		if e := s.audit(tx, actor, "rotate_credential", "credential", id, nil, now); e != nil {
+		if e := s.audit(tx, actor, "rotate_credential", "credential", id, map[string]any{"user_id": userID}, now); e != nil {
 			return e
 		}
 		issued = IssuedCredential{Credential: r.Credential, Token: token}
@@ -1147,7 +1147,7 @@ func (s *Store) RevokeCredential(ctx context.Context, actor, userID, id string) 
 				}
 			}
 		}
-		return s.audit(tx, actor, "revoke_credential", "credential", id, nil, now)
+		return s.audit(tx, actor, "revoke_credential", "credential", id, map[string]any{"user_id": userID}, now)
 	})
 }
 

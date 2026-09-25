@@ -909,7 +909,10 @@ export function UserDetail() {
 function UserDetailContent({ id }: { id: string }) {
   const [version, setVersion] = useState(0),
     [edit, setEdit] = useState(false),
-    [resetPassword, setResetPassword] = useState(false);
+    [resetPassword, setResetPassword] = useState(false),
+    [removing, setRemoving] = useState(false);
+  const { session } = useSession();
+  const nav = useNavigate();
   const params = useMemo(range, [id]);
   const base = `/admin/users/${encodeURIComponent(id)}`;
   const load = useCallback(
@@ -938,6 +941,11 @@ function UserDetailContent({ id }: { id: string }) {
             <div className="actions">
               <button onClick={() => setResetPassword(true)}>重置密码</button>
               <button onClick={() => setEdit(true)}>编辑账户</button>
+              {session?.user.id !== id ? (
+                <button className="danger" onClick={() => setRemoving(true)}>
+                  删除用户
+                </button>
+              ) : null}
             </div>
           ) : null
         }
@@ -996,9 +1004,72 @@ function UserDetailContent({ id }: { id: string }) {
               />
             </Modal>
           ) : null}
+          {removing ? (
+            <Modal title="删除用户" onClose={() => setRemoving(false)}>
+              <DeleteUser
+                base={base}
+                username={account.user.username}
+                onCancel={() => setRemoving(false)}
+                onDone={() => nav("/admin/users", { replace: true })}
+              />
+            </Modal>
+          ) : null}
         </>
       ) : null}
     </>
+  );
+}
+
+export function deleteUserError(e: unknown) {
+  if (e instanceof APIError && e.status === 409)
+    return "不能删除自己，也不能删除最后一个启用的管理员。";
+  if (e instanceof APIError && e.status === 404) return "该用户已不存在。";
+  if (e instanceof APIError && e.status === 503)
+    return "账户可能已删除，但查询日志未能清除。请稍后再次删除以完成清理。";
+  return message(e);
+}
+
+function DeleteUser({
+  base,
+  username,
+  onCancel,
+  onDone,
+}: {
+  base: string;
+  username: string;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function remove() {
+    setBusy(true);
+    setError("");
+    try {
+      await request(base, { method: "DELETE" });
+      onDone();
+    } catch (e) {
+      setError(deleteUserError(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <div>
+      <p>
+        永久删除 <strong>{username}</strong>
+        及其全部数据：设备凭证、登录会话、解析策略与规则、公共列表设置、用量记录、查询日志，以及与该用户相关的审计记录。
+      </p>
+      <p>使用该用户凭证的设备会立即停止解析。此操作无法撤销。</p>
+      <Alert error={error} />
+      <div className="actions">
+        <button onClick={onCancel} disabled={busy}>
+          取消
+        </button>
+        <button className="danger" onClick={remove} disabled={busy}>
+          {busy ? "正在删除…" : "永久删除"}
+        </button>
+      </div>
+    </div>
   );
 }
 

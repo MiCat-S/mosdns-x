@@ -1002,3 +1002,66 @@ func TestUserSettingsECSOverride(t *testing.T) {
 		t.Fatalf("wrong family status=%d %s", w.Code, w.Body.String())
 	}
 }
+
+type erasingTelemetry struct {
+	*fakeTelemetry
+	erased []string
+	err    error
+}
+
+func (e *erasingTelemetry) DeleteUser(_ context.Context, userID string) error {
+	e.erased = append(e.erased, userID)
+	return e.err
+}
+
+func TestAdminDeleteUser(t *testing.T) {
+	f := newFixture(t)
+	eraser := &erasingTelemetry{fakeTelemetry: f.telemetry}
+	lists := &fakePublicLists{}
+	var invalidated []string
+	f.handler.opts.Telemetry = eraser
+	f.handler.opts.PublicLists = lists
+	f.handler.opts.InvalidatePolicy = func(userID string) { invalidated = append(invalidated, userID) }
+	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
+	alice, aliceCSRF := login(t, f.handler, "alice", "password-for-alice")
+
+	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.user2.ID, "", alice, aliceCSRF); w.Code != http.StatusForbidden {
+		t.Fatalf("non-admin delete=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.user1.ID, "", admin, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("delete without csrf=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.admin.ID, "", admin, csrf); w.Code != http.StatusConflict {
+		t.Fatalf("self delete=%d %s", w.Code, w.Body.String())
+	}
+	if len(eraser.erased) != 0 {
+		t.Fatalf("refused deletes erased logs: %v", eraser.erased)
+	}
+
+	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.user1.ID, "", admin, csrf); w.Code != http.StatusNoContent {
+		t.Fatalf("delete=%d %s", w.Code, w.Body.String())
+	}
+	if len(eraser.erased) != 1 || eraser.erased[0] != f.user1.ID || len(invalidated) != 1 || invalidated[0] != f.user1.ID || len(lists.invalidations) != 1 || lists.invalidations[0] != f.user1.ID {
+		t.Fatalf("erased=%v policy=%v lists=%v", eraser.erased, invalidated, lists.invalidations)
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/me", "", alice, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("deleted user's session=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/admin/users/"+f.user1.ID, "", admin, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("get deleted user=%d", w.Code)
+	}
+
+	// A failed erase is reported, and retrying erases the logs of the user
+	// that is already gone before answering not found.
+	eraser.err = errors.New("disk full")
+	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.user2.ID, "", admin, csrf); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed erase=%d %s", w.Code, w.Body.String())
+	}
+	eraser.err = nil
+	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.user2.ID, "", admin, csrf); w.Code != http.StatusNotFound {
+		t.Fatalf("retry=%d %s", w.Code, w.Body.String())
+	}
+	if n := len(eraser.erased); n != 3 || eraser.erased[2] != f.user2.ID {
+		t.Fatalf("erased=%v", eraser.erased)
+	}
+}

@@ -1035,7 +1035,7 @@ func (s *MySQLStore) RevokeSession(ctx context.Context, actor, id string) error 
 		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_sessions SET revoked_at_ns=? WHERE id=?`, now.UnixNano(), id); err != nil {
 			return err
 		}
-		return mysqlAudit(ctx, tx, actor, "revoke_session", "session", id, nil, now)
+		return mysqlAudit(ctx, tx, actor, "revoke_session", "session", id, map[string]any{"user_id": userID}, now)
 	})
 }
 
@@ -1224,7 +1224,7 @@ func (s *MySQLStore) CreateCredential(ctx context.Context, actor, userID, name s
 			VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, ?, 1)`, id, userID, name, mysqlTimeValue(expires), now.UnixNano(), now.UnixNano(), tokenHash[:]); err != nil {
 			return err
 		}
-		return mysqlAudit(ctx, tx, actor, "create_credential", "credential", id, map[string]any{"name": name}, now)
+		return mysqlAudit(ctx, tx, actor, "create_credential", "credential", id, map[string]any{"name": name, "user_id": userID}, now)
 	})
 	return IssuedCredential{Credential: c, Token: token}, err
 }
@@ -1260,7 +1260,7 @@ func (s *MySQLStore) RotateCredential(ctx context.Context, actor, userID, id str
 		r.Version++
 		r.UpdatedAt = now
 		out = r.Credential
-		return mysqlAudit(ctx, tx, actor, "rotate_credential", "credential", id, nil, now)
+		return mysqlAudit(ctx, tx, actor, "rotate_credential", "credential", id, map[string]any{"user_id": userID}, now)
 	})
 	return IssuedCredential{Credential: out, Token: token}, err
 }
@@ -1283,7 +1283,7 @@ func (s *MySQLStore) RevokeCredential(ctx context.Context, actor, userID, id str
 				return err
 			}
 		}
-		return mysqlAudit(ctx, tx, actor, "revoke_credential", "credential", id, nil, now)
+		return mysqlAudit(ctx, tx, actor, "revoke_credential", "credential", id, map[string]any{"user_id": userID}, now)
 	})
 }
 

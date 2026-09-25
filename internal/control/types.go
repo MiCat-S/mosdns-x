@@ -373,6 +373,7 @@ type Service interface {
 	InitializeAdmin(ctx context.Context, spec UserSpec) (User, error)
 	CreateUser(ctx context.Context, actorID string, spec UserSpec) (User, error)
 	UpdateUser(ctx context.Context, actorID, userID string, patch UserPatch) (User, error)
+	DeleteUser(ctx context.Context, actorID, userID string) error
 	SetPassword(ctx context.Context, actorID, userID, password string) error
 	ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error
 	AuthenticatePassword(ctx context.Context, username, password string) (User, error)

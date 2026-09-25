@@ -741,6 +741,10 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 			writeJSON(w, http.StatusOK, v)
 			return
 		}
+		if r.Method == http.MethodDelete {
+			h.deleteUser(w, r, admin.ID, userID)
+			return
+		}
 		methodNotAllowed(w)
 		return
 	}
@@ -1495,6 +1499,33 @@ func (h *Handler) rules(w http.ResponseWriter, r *http.Request, userID, ruleID s
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+// deleteUser removes the account and its control data, then erases the
+// user's query logs. A user that is already gone still has its logs erased,
+// so an admin can retry after the erase failed.
+func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, actorID, userID string) {
+	err := h.opts.Control.DeleteUser(r.Context(), actorID, userID)
+	if err != nil && !errors.Is(err, control.ErrNotFound) {
+		h.serviceError(w, err)
+		return
+	}
+	h.invalidatePolicy(userID)
+	if h.opts.PublicLists != nil {
+		h.opts.PublicLists.Invalidate(userID)
+	}
+	if eraser, ok := h.opts.Telemetry.(telemetry.UserEraser); ok {
+		if eraseErr := eraser.DeleteUser(r.Context(), userID); eraseErr != nil {
+			h.opts.Logger.Error("failed to erase deleted user's query logs", zap.String("user_id", userID), zap.Error(eraseErr))
+			writeError(w, http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+	}
+	if err != nil {
+		h.serviceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) invalidatePolicy(userID string) {

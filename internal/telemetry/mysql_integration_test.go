@@ -62,6 +62,23 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 	if err != nil || len(filtered.Items) != 1 {
 		t.Fatalf("filtered queries=%+v err=%v", filtered, err)
 	}
+	other := query_context.Principal{UserID: "user-2", CredentialID: "credential-2", CredentialVersion: 1}
+	store.Observe(dns_handler.Result{Admitted: true, Principal: other, QuestionName: "other.test.", QuestionType: dns.TypeA, Rcode: dns.RcodeSuccess})
+	if err := store.DeleteUser(ctx, userID(principal)); err != nil {
+		t.Fatal(err)
+	}
+	queries, err = store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{}, Page{})
+	if err != nil || len(queries.Items) != 0 {
+		t.Fatalf("deleted user's queries=%+v err=%v", queries, err)
+	}
+	snapshot, err = store.Snapshot(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute))
+	if err != nil || snapshot.Completed != 0 || len(snapshot.Upstreams) != 0 || len(snapshot.RcodeCounts) != 0 {
+		t.Fatalf("deleted user's snapshot=%+v err=%v", snapshot, err)
+	}
+	queries, err = store.Queries(ctx, userID(other), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{}, Page{})
+	if err != nil || len(queries.Items) != 1 {
+		t.Fatalf("other user's queries=%+v err=%v", queries, err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +88,7 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	snapshot, err = reopened.Snapshot(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute))
+	snapshot, err = reopened.Snapshot(ctx, userID(other), now.Add(-time.Hour), now.Add(time.Minute))
 	if err != nil || snapshot.Completed != 1 {
 		t.Fatalf("reopened snapshot=%+v err=%v", snapshot, err)
 	}

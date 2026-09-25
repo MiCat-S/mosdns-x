@@ -29,11 +29,16 @@
 | POST | `/admin/users` | `UserSpec` → `User` |
 | GET | `/admin/users/{id}` | `{user: User, quota: QuotaStatus}` |
 | PATCH | `/admin/users/{id}` | `UserPatch` → `User`；额度修改保留已用量 |
+| DELETE | `/admin/users/{id}` | 永久删除用户及其全部数据，成功 204；不能删除自己（409） |
 | POST | `/admin/users/{id}/password` | `{new_password}`，撤销该用户全部会话 |
 | GET/POST | `/admin/users/{id}/credentials` | 与 `/me/credentials` 相同 |
 | POST/DELETE | `/admin/users/{id}/credentials/{credential_id}[/rotate]` | 与用户端对应操作相同 |
 
 `IssuedCredential` 的 token 是规范小写 RFC 4122 UUIDv4，只展示一次，并与 `Credential.id` 分离。数据库只保存完整 token 的 SHA-256；升级前签发的 `id.secret` token 继续有效，轮换后改为 UUIDv4。`doh_url` 是服务器配置的公共 DNS 基础 URL 加凭证路径；固定基础 URL 可搭配 `Authorization: Bearer <token>` 使用。创建完成后，列表只显示 Credential 元数据。零值到期时间表示未单独设置，由账户服务到期约束；前端对 `0001-01-01T00:00:00Z` 显示为未单独设置。
+
+删除用户会在一个事务中移除账户、会话、设备凭证、DNS 策略设置与规则、公共列表覆盖、计费用量，以及该用户执行的或以该用户、其会话、凭证、规则为对象的审计记录；随后清除该用户的查询明细和按用户统计的聚合。全站聚合不含用户标识，予以保留。删除后只留下一条 `delete_user` 审计，记录执行删除的管理员和被删除的用户 ID，不含用户名。管理员不能删除自己，最后一个启用的管理员因此始终保留。若账户已删除但查询日志清除失败，接口返回 503；对同一 ID 再次调用会补做清除，然后返回 404。
+
+审计记录只能按对象 ID 关联到用户。维护任务按保留期清理过期会话和凭证后，更早的、只以这些会话或凭证为对象的审计便无法再关联到用户，删除用户时不会一并移除，直到 90 天审计保留期到期。本版起，凭证和会话审计的 `metadata` 附带 `user_id`，之后产生的记录不受此限制。
 
 ## 用户 DNS 策略与诊断
 

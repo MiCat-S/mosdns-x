@@ -220,3 +220,74 @@ func TestMySQLIntegrationAnswerFamilyKeepsRollbackCompatible(t *testing.T) {
 		t.Fatalf("row from previous release: settings=%+v err=%v", settings, err)
 	}
 }
+
+func TestMySQLIntegrationDeleteUser(t *testing.T) {
+	dsn := os.Getenv("MOSDNS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MOSDNS_TEST_MYSQL_DSN is not set")
+	}
+	ctx := context.Background()
+	cleanupMySQLControlTables(t, dsn)
+	t.Cleanup(func() { cleanupMySQLControlTables(t, dsn) })
+	store, err := OpenMySQL(MySQLOptions{DSN: dsn, OperationTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	started := time.Now().Add(-time.Hour)
+	f := populateForDeletion(t, store)
+	if err := store.DeleteUser(ctx, f.admin.ID, f.admin.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("self delete err=%v", err)
+	}
+	if err := store.DeleteUser(ctx, f.victim.ID, f.other.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-admin delete err=%v", err)
+	}
+	if err := store.DeleteUser(ctx, f.admin.ID, f.victim.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteUser(ctx, f.admin.ID, f.victim.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete err=%v", err)
+	}
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, table := range []string{"mosdns_users", "mosdns_sessions", "mosdns_credentials", "mosdns_usage_minutes", "mosdns_audit_logs", "mosdns_dns_policy_settings", "mosdns_dns_policy_rules", "mosdns_public_lists", "mosdns_user_public_lists"} {
+		rows, err := db.QueryContext(ctx, `SELECT * FROM `+table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		values := make([]sql.RawBytes, len(columns))
+		dest := make([]any, len(columns))
+		for i := range values {
+			dest[i] = &values[i]
+		}
+		for rows.Next() {
+			if err := rows.Scan(dest...); err != nil {
+				t.Fatal(err)
+			}
+			row := strings.Builder{}
+			for _, v := range values {
+				row.Write(v)
+				row.WriteByte('|')
+			}
+			if !strings.Contains(row.String(), f.victim.ID) {
+				continue
+			}
+			if table == "mosdns_audit_logs" && strings.Contains(row.String(), "|delete_user|") {
+				continue
+			}
+			t.Errorf("%s still holds %q", table, row.String())
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkUserDeleted(t, store, f, started)
+}
