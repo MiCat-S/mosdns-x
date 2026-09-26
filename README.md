@@ -1,5 +1,7 @@
 # Mosdns-x（多用户 DoH 服务版）
 
+**简体中文** | [English](README.en.md) | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
+
 [![Release](https://img.shields.io/github/v/release/MiCat-S/mosdns-x?include_prereleases&label=release)](https://github.com/MiCat-S/mosdns-x/releases)
 
 本仓库 Fork 自 [pmkol/mosdns-x](https://github.com/pmkol/mosdns-x)。Mosdns-x 是用 Go 编写的高性能 DNS 转发器，通过插件流水线定制 DNS 处理逻辑，支持 UDP、TCP、DoT、DoQ、DoH 和 DoH3。
