@@ -14,6 +14,15 @@ import zipfile
 
 PROJECT_NAME = "mosdns"
 RELEASE_DIR = Path("release")
+CHECKSUM_FILE = "SHA256SUMS"
+# A single-target build (-i) writes its checksum under a different name so the
+# upload list in docs/releasing.md, which is read from SHA256SUMS, cannot pick
+# up a one-archive build by accident.
+PARTIAL_CHECKSUM_FILE = "SHA256SUMS.partial"
+# Files this script writes into release/. --clean deletes exactly these names
+# (plus mosdns-*.zip) and never removes the directory or any other file in it.
+KNOWN_ARTIFACT_NAMES = (CHECKSUM_FILE, PARTIAL_CHECKSUM_FILE, "config.yaml")
+ARCHIVE_GLOB = PROJECT_NAME + "-*.zip"
 VERSION_RE = re.compile(r"(?:v)?(\d{2}\.\d{2}\.\d{2})(?:\.([1-9]\d*))?\Z")
 LOGGER = logging.getLogger(__name__)
 
@@ -71,9 +80,55 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def write_checksums(release_dir: Path, archives) -> None:
+def write_checksums(release_dir: Path, archives, name: str = CHECKSUM_FILE) -> Path:
     lines = [f"{sha256_file(path)}  {path.name}\n" for path in sorted(archives, key=lambda p: p.name)]
-    (release_dir / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+    path = release_dir / name
+    path.write_text("".join(lines), encoding="utf-8")
+    return path
+
+
+def stale_artifacts(release_dir: Path):
+    """Return the files a previous run of this script left in release_dir."""
+    if not release_dir.is_dir():
+        return []
+    found = {path for path in release_dir.glob(ARCHIVE_GLOB)}
+    found.update(release_dir / name for name in KNOWN_ARTIFACT_NAMES)
+    return sorted((path for path in found if path.is_file() or path.is_symlink()), key=lambda p: p.name)
+
+
+class StaleArtifactsError(Exception):
+    pass
+
+
+def prepare_release_dir(release_dir: Path, clean: bool) -> None:
+    """Create release_dir, refusing to mix in artefacts from an earlier run.
+
+    With clean=True only the known artefact names are unlinked; the directory
+    itself and any unrelated file in it are left alone.
+    """
+    stale = stale_artifacts(release_dir)
+    if stale and not clean:
+        listing = "".join(f"\n  {path}" for path in stale)
+        raise StaleArtifactsError(
+            f"{release_dir} already contains artefacts from a previous run:{listing}\n"
+            "Refusing to mix them into this build. Re-run with --clean to delete "
+            "exactly these files, or move them away first."
+        )
+    for path in stale:
+        LOGGER.info("--clean: removing %s", path)
+        path.unlink()
+    release_dir.mkdir(exist_ok=True)
+
+
+def partial_build_warning(archive_name: str) -> str:
+    bar = "!" * 72
+    return (
+        f"\n{bar}\n"
+        f"PARTIAL BUILD (-i): only {archive_name} is built.\n"
+        "This is NOT a release. Do not upload the release/ directory to GitHub Releases.\n"
+        f"Its checksum is written to {PARTIAL_CHECKSUM_FILE}, not {CHECKSUM_FILE}.\n"
+        f"{bar}"
+    )
 
 
 def build_archive(repo: Path, release_dir: Path, target, version: str, commit: str,
@@ -118,10 +173,20 @@ def build_archive(repo: Path, release_dir: Path, target, version: str, commit: s
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, type=parse_version)
     parser.add_argument("-upx", action="store_true")
-    parser.add_argument("-i", type=int, choices=range(len(TARGETS)))
+    parser.add_argument(
+        "-i",
+        type=int,
+        choices=range(len(TARGETS)),
+        help=f"build only this target index (partial build, never a release; checksum goes to {PARTIAL_CHECKSUM_FILE})",
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help=f"delete {ARCHIVE_GLOB}, {', '.join(KNOWN_ARTIFACT_NAMES)} left in release/ by a previous run before building",
+    )
     parser.add_argument(
         "--headless",
         action="store_true",
@@ -135,9 +200,16 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO)
     repo = Path(__file__).resolve().parent
     release_dir = repo / RELEASE_DIR
-    release_dir.mkdir(exist_ok=True)
-    checksum_path = release_dir / "SHA256SUMS"
-    checksum_path.unlink(missing_ok=True)
+    try:
+        prepare_release_dir(release_dir, args.clean)
+    except StaleArtifactsError as exc:
+        LOGGER.error("%s", exc)
+        return 1
+    partial = args.i is not None
+    checksum_path = release_dir / (PARTIAL_CHECKSUM_FILE if partial else CHECKSUM_FILE)
+    warning = partial_build_warning(target_name(TARGETS[args.i]) + ".zip") if partial else ""
+    if partial:
+        LOGGER.warning("%s", warning)
 
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
@@ -154,7 +226,7 @@ def main(argv=None) -> int:
         cwd=release_dir,
         check=True,
     )
-    targets = (TARGETS[args.i],) if args.i is not None else TARGETS
+    targets = (TARGETS[args.i],) if partial else TARGETS
     archives = []
     try:
         for target in targets:
@@ -163,7 +235,9 @@ def main(argv=None) -> int:
         checksum_path.unlink(missing_ok=True)
         LOGGER.exception("release build failed")
         return 1
-    write_checksums(release_dir, archives)
+    write_checksums(release_dir, archives, checksum_path.name)
+    if partial:
+        LOGGER.warning("%s", warning)
     return 0
 
 

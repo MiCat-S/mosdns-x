@@ -27,7 +27,7 @@ sudo apt install -y bash sudo curl python3 ca-certificates unzip coreutils
 | 管理端回源 | `127.0.0.1:18081` | Mosdns-x | 仅本机 |
 | DoH 明文回源 | `127.0.0.1:18443` | Mosdns-x | 仅本机 |
 
-多用户控制功能的代码基线是 `e2f134d`。部署时使用明确的 `<RELEASE_TAG>`，并按机器架构选择资产：
+部署时使用明确的 `<RELEASE_TAG>`，代码版本以该 Release 为准；每个 zip 内的 `BUILD-INFO.txt` 记录了构建所用的确切版本和提交。按机器架构选择资产：
 
 | Linux 架构 | Release 资产 |
 | --- | --- |

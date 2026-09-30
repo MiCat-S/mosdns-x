@@ -17,20 +17,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: get latest go version
-        id: go
-        run: |
-          echo version=$(curl -s https://raw.githubusercontent.com/actions/go-versions/update-versions-manifest-file/versions-manifest.json | grep -oE '"version": "[0-9]{1}.[0-9]{1,}(.[0-9]{1,})?"' | head -1 | cut -d':' -f2 | sed 's/ //g; s/"//g') >> $GITHUB_OUTPUT
-
-      - name: Set up Go
-        uses: actions/setup-go@v5.5.0
-        with:
-          go-version: ${{steps.go.outputs.version}}
-          cache: false
-
       - uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
+
+      # Pin the toolchain to go.mod, the same as the MySQL job and the release
+      # build, instead of whatever a mutable upstream manifest says is newest.
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -43,9 +40,15 @@ jobs:
         working-directory: web
         run: |
           npm ci
+          npm run format:check
           npm run typecheck
           npm test
           npm run build
+
+      # go.sum is committed, so go build/test/vet already run with
+      # -mod=readonly by default and fail on a go.mod that needs updating.
+      - name: Vet Go
+        run: go vet ./...
 
       - name: Test Go
         run: go test ./...
@@ -64,6 +67,17 @@ jobs:
 
       - name: Build with embedded frontend
         run: go build -tags ui
+
+      - name: Test release script
+        run: python3 release_test.py
+
+      # Needs neither root nor network: systemctl and curl are replaced by
+      # fakes and the drop-in is written under a temporary SYSTEMD_DROPIN_DIR.
+      - name: Test installer helpers
+        run: bash install_test.sh
+
+      - name: Test monitoring report
+        run: python3 -m unittest discover -s security-review -p 'monitoring_report_test.py'
 
   mysql:
     name: MySQL ${{ matrix.mysql }}

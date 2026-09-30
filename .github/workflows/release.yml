@@ -52,15 +52,29 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
             --paginate --jq '.[].name')"
 
-          for asset in "${expected[@]}" SHA256SUMS; do
-            if ! grep -Fqx -- "$asset" <<<"$asset_names"; then
-              echo "Missing release asset: $asset" >&2
-              exit 1
-            fi
-          done
-
           artifact_dir="${RUNNER_TEMP}/release-assets"
           mkdir -p "$artifact_dir"
+
+          # The release must carry exactly the 13 archives and SHA256SUMS:
+          # a missing asset and an extra one (a stale zip, a partial build's
+          # SHA256SUMS.partial, a stray config.yaml) both fail here.
+          printf '%s\n' "${expected[@]}" SHA256SUMS \
+            | LC_ALL=C sort >"$artifact_dir/expected-assets"
+          printf '%s\n' "$asset_names" | sed '/^$/d' \
+            | LC_ALL=C sort >"$artifact_dir/actual-assets"
+          if ! diff -u "$artifact_dir/expected-assets" "$artifact_dir/actual-assets"; then
+            missing="$(LC_ALL=C comm -23 "$artifact_dir/expected-assets" "$artifact_dir/actual-assets")"
+            extra="$(LC_ALL=C comm -13 "$artifact_dir/expected-assets" "$artifact_dir/actual-assets")"
+            if [ -n "$missing" ]; then
+              printf 'Missing release asset: %s\n' $missing >&2
+            fi
+            if [ -n "$extra" ]; then
+              printf 'Unexpected release asset: %s\n' $extra >&2
+            fi
+            echo "Release assets must be exactly the 13 archives and SHA256SUMS" >&2
+            exit 1
+          fi
+
           for asset in "${expected[@]}" SHA256SUMS; do
             gh release download "$RELEASE_TAG" \
               --dir "$artifact_dir" --pattern "$asset"
