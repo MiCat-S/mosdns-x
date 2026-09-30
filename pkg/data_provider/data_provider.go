@@ -22,6 +22,7 @@ package data_provider
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -162,28 +163,43 @@ func (ds *DataProvider) loadFromDisk() ([]byte, error) {
 	return os.ReadFile(ds.file)
 }
 
+// startFsWatcher watches the parent directory of ds.file and reloads the file
+// after changes. The directory is watched instead of the file itself, so
+// replacements via rename (as done by most editors and deploy tools) keep
+// working after the old inode is gone.
 func (ds *DataProvider) startFsWatcher() error {
+	file := filepath.Clean(ds.file)
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
-	if err := w.Add(ds.file); err != nil {
+	if err := w.Add(filepath.Dir(file)); err != nil {
+		w.Close()
 		return err
 	}
 
-	go func() {
+	ds.sc.Attach(func(done func(), closeSignal <-chan struct{}) {
+		defer done()
 		defer w.Close()
 
+		// The timer is owned by this goroutine only.
 		var delayReloadTimer *time.Timer
+		var delayReloadC <-chan time.Time
+		defer func() {
+			if delayReloadTimer != nil {
+				delayReloadTimer.Stop()
+			}
+		}()
+
 		for {
 			select {
 			case e, ok := <-w.Events:
 				if !ok {
-					if delayReloadTimer != nil {
-						delayReloadTimer.Stop()
-						delayReloadTimer = nil
-					}
 					return
+				}
+				if filepath.Clean(e.Name) != file ||
+					!(e.Has(fsnotify.Create) || e.Has(fsnotify.Write) || e.Has(fsnotify.Rename) || e.Has(fsnotify.Remove)) {
+					continue
 				}
 				ds.logger.Info(
 					"fs event",
@@ -191,64 +207,72 @@ func (ds *DataProvider) startFsWatcher() error {
 					zap.String("file", e.Name),
 				)
 
-				if delayReloadTimer != nil {
-					delayReloadTimer.Reset(time.Second)
+				if delayReloadTimer == nil {
+					delayReloadTimer = time.NewTimer(time.Second)
 				} else {
-					delayReloadTimer = time.AfterFunc(time.Second, func() {
-						if hasOp(e, fsnotify.Remove) {
-							_ = w.Remove(ds.file)
-							if err := w.Add(ds.file); err != nil {
-								ds.logger.Error(
-									"failed to re-watch file, auto reload may not work anymore",
-									zap.String("file", ds.file),
-									zap.Error(err),
-								)
-							}
+					if !delayReloadTimer.Stop() {
+						select {
+						case <-delayReloadTimer.C:
+						default:
 						}
-
-						ds.logger.Info(
-							"reloading file",
-							zap.String("file", ds.file),
-						)
-						if v, err := ds.loadFromDisk(); err != nil {
-							ds.logger.Error(
-								"failed to reload file",
-								zap.String("file", ds.file),
-								zap.Error(err),
-							)
-						} else {
-							ds.logger.Info(
-								"file reloaded",
-								zap.String("file", ds.file),
-							)
-							ds.pushData(v)
-						}
-
-						delayReloadTimer = nil
-					})
+					}
+					delayReloadTimer.Reset(time.Second)
 				}
+				delayReloadC = delayReloadTimer.C
+
+			case <-delayReloadC:
+				delayReloadC = nil
+				ds.reloadFromDisk(closeSignal)
 
 			case err, ok := <-w.Errors:
-				if delayReloadTimer != nil {
-					delayReloadTimer.Stop()
-					delayReloadTimer = nil
-				}
 				if !ok {
 					return
 				}
 				ds.logger.Error("fs notify error", zap.Error(err))
-			case <-ds.sc.ReceiveCloseSignal():
-				if delayReloadTimer != nil {
-					delayReloadTimer.Stop()
-					delayReloadTimer = nil
-				}
+
+			case <-closeSignal:
 				return
 			}
 		}
-	}()
+	})
 	return nil
 }
 
-func hasOp(e fsnotify.Event, op fsnotify.Op) bool {
-	return e.Op&op == op
+// reloadFromDisk reloads ds.file and pushes it to listeners, unless closeSignal
+// has been received. A missing file is logged and skipped, the next fs event
+// will trigger another reload.
+func (ds *DataProvider) reloadFromDisk(closeSignal <-chan struct{}) {
+	if _, err := os.Stat(ds.file); err != nil {
+		ds.logger.Info(
+			"file is not available, waiting for the next fs event",
+			zap.String("file", ds.file),
+			zap.Error(err),
+		)
+		return
+	}
+
+	ds.logger.Info(
+		"reloading file",
+		zap.String("file", ds.file),
+	)
+	v, err := ds.loadFromDisk()
+	if err != nil {
+		ds.logger.Error(
+			"failed to reload file",
+			zap.String("file", ds.file),
+			zap.Error(err),
+		)
+		return
+	}
+
+	select {
+	case <-closeSignal:
+		return
+	default:
+	}
+	ds.logger.Info(
+		"file reloaded",
+		zap.String("file", ds.file),
+	)
+	ds.pushData(v)
 }
