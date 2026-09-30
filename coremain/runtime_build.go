@@ -50,9 +50,9 @@ func listenerIdentity(cfg *ServerListenerConfig) runtimeListenerIdentity {
 // validateRuntimeConfig checks the data provider and plugin entries of cfg.
 // Every entry must be complete: an empty tag, type or file is almost always a
 // typo, and skipping it would start the process with a feature silently
-// missing. Plugin tags must be unique across plugins, preset plugins and data
-// providers, and must be usable as a single HTTP path segment because plugins
-// are served under /plugins/<tag>/.
+// missing. Plugin tags must be unique across plugins and preset plugins, and
+// must be usable as a single HTTP path segment because plugins are served
+// under /plugins/<tag>/. Data providers are a separate namespace.
 //
 // Indexes refer to the merged config, after include expansion.
 func validateRuntimeConfig(cfg *Config) error {
@@ -84,9 +84,6 @@ func validateRuntimeConfig(cfg *Config) error {
 		}
 		if _, ok := presetFuncs[pc.Tag]; ok {
 			return fmt.Errorf("plugins[%d]: tag %q is reserved by a preset plugin", i, pc.Tag)
-		}
-		if provider, ok := providerTags[pc.Tag]; ok {
-			return fmt.Errorf("plugins[%d]: tag %q collides with data_providers[%d]", i, pc.Tag, provider)
 		}
 		if first, ok := pluginTags[pc.Tag]; ok {
 			return fmt.Errorf("plugins[%d]: tag %q duplicates plugins[%d]", i, pc.Tag, first)

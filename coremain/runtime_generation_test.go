@@ -533,10 +533,6 @@ func TestRuntimeConfigValidationRejectsIncompleteEntries(t *testing.T) {
 		{"tag with space", &Config{Plugins: []PluginConfig{{Tag: "a b", Type: pluginType}}}, `plugins[0]: tag "a b" must not contain '/' or whitespace`},
 		{"tag with tab", &Config{Plugins: []PluginConfig{{Tag: "a\tb", Type: pluginType}}}, "plugins[0]: tag"},
 		{"preset tag", &Config{Plugins: []PluginConfig{{Tag: "_default_cache", Type: pluginType}}}, `plugins[0]: tag "_default_cache" is reserved by a preset plugin`},
-		{"provider tag", &Config{
-			DataProviders: []data_provider.DataProviderConfig{{Tag: "geosite", File: "geosite.dat"}},
-			Plugins:       []PluginConfig{valid, {Tag: "geosite", Type: pluginType}},
-		}, `plugins[1]: tag "geosite" collides with data_providers[0]`},
 		{"duplicated plugin", &Config{Plugins: []PluginConfig{valid, valid}}, `plugins[1]: tag "valid" duplicates plugins[0]`},
 	}
 	for _, tt := range tests {
