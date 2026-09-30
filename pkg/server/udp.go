@@ -86,12 +86,13 @@ func (s *Server) ServeUDP(c net.PacketConn) error {
 			continue
 		}
 
-		// handle query
-		if !s.beginQuery() {
+		// handle query. Queries over the concurrency limit are dropped
+		// silently; the client will retry or fail over.
+		if err := s.beginQuery(C.ProtocolUDP); err != nil {
 			continue
 		}
 		go func() {
-			defer s.queryWG.Done()
+			defer s.endQuery()
 			meta := C.NewRequestMeta(clientAddr)
 			meta.SetProtocol(C.ProtocolUDP)
 

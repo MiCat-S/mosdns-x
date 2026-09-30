@@ -53,7 +53,7 @@ func TestShutdownDoesNotHoldServerMutexWhileClosing(t *testing.T) {
 
 func TestShutdownRejectsNewAndWaitsForActiveQuery(t *testing.T) {
 	s := NewServer(ServerOpts{})
-	if !s.beginQuery() {
+	if s.beginQuery("test") != nil {
 		t.Fatal("initial query rejected")
 	}
 	var finished atomic.Bool
@@ -70,7 +70,7 @@ func TestShutdownRejectsNewAndWaitsForActiveQuery(t *testing.T) {
 	for !s.Closed() {
 		time.Sleep(time.Millisecond)
 	}
-	if s.beginQuery() {
+	if s.beginQuery("test") == nil {
 		t.Fatal("query accepted after shutdown")
 	}
 	select {
@@ -78,7 +78,7 @@ func TestShutdownRejectsNewAndWaitsForActiveQuery(t *testing.T) {
 		t.Fatal("shutdown returned before active query")
 	case <-time.After(20 * time.Millisecond):
 	}
-	s.queryWG.Done()
+	s.endQuery()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -96,10 +96,10 @@ func TestCloseInterruptsConcurrentGracefulHTTPShutdown(t *testing.T) {
 	s := NewServer(ServerOpts{})
 	entered := make(chan struct{})
 	hs := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.beginQuery() {
+		if s.beginQuery("test") != nil {
 			return
 		}
-		defer s.queryWG.Done()
+		defer s.endQuery()
 		close(entered)
 		<-r.Context().Done()
 	})}

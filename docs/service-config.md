@@ -98,3 +98,25 @@ control:
 这些参数只对 bbolt 存储生效。`storage.driver: mysql` 的受理路径由连接池参数（`max_open_conns` 等）控制。
 
 改动后请按 [性能验证](performance.md) 的方法在目标机器和磁盘上实测，不要沿用别处的数字。
+
+## 监听并发上限（`max_concurrent_queries` / `max_connections`）
+
+每个 listener 可以单独设置两个上限，写在 `idle_timeout` 旁边。两者默认均为 `0`，表示不限制，行为与未配置时完全相同。
+
+```yaml
+servers:
+  - exec: forward_google
+    listeners:
+      - protocol: tcp
+        addr: 127.0.0.1:5533
+        idle_timeout: 10
+        max_concurrent_queries: 1024  # 在途查询上限，0 为不限制
+        max_connections: 256          # 同时打开的连接上限，0 为不限制
+```
+
+- **`max_concurrent_queries`**：限制该 listener 同时处理中的查询数，适用于 UDP、TCP、DoT、DoQ、DoH 和 DoH3。达到上限时立即拒绝而不排队：UDP 直接丢弃报文（只按周期汇总记一条 debug 日志）；TCP/DoT 关闭该连接；DoQ 以 `DOQ_EXCESSIVE_LOAD` 重置该流；DoH/DoH3 返回 `503` 并带 `Retry-After: 1`。
+- **`max_connections`**：限制 TCP、DoT、DoQ 同时打开的连接数。超出的连接在 accept 后立即关闭，DoQ 以 `DOQ_EXCESSIVE_LOAD` 关闭连接（握手尚未完成的客户端只能看到传输层 `APPLICATION_ERROR`）。DoH/DoH3 的连接由 HTTP 服务自行管理，不计入此项，其请求数由 `max_concurrent_queries` 约束。
+
+控制模式下 DoH/DoH3 已经经过 `control.admit` 受理队列，原生 listener 也只能绑定回环地址，这两项属于额外加固，按需开启即可。二者在 listener 启动时生效。运行代热重载不会重建 listener，修改这两项会被视为 listener 拓扑变化而拒绝热重载，需重启服务。
+
+`/metrics` 中对应指标带 `listener="协议://地址"` 标签：`mosdns_server_inflight_queries`（在途查询数）、`mosdns_server_rejected_queries_total{protocol}`（因上限被拒的查询）、`mosdns_server_open_connections`（TCP/DoT/DoQ 打开的连接数）、`mosdns_server_rejected_connections_total{protocol}`（因上限被关闭的连接）。

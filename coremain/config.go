@@ -146,6 +146,11 @@ type ServerListenerConfig struct {
 	ProxyProtocol       bool   `yaml:"proxy_protocol"`          // accepting the PROXYProtocol
 
 	IdleTimeout uint `yaml:"idle_timeout"` // (sec) used by tcp, dot, doh as connection idle timeout.
+
+	// MaxConcurrentQueries caps in-flight queries of this listener. 0 means unlimited.
+	MaxConcurrentQueries uint `yaml:"max_concurrent_queries"`
+	// MaxConnections caps open tcp, dot and doq connections of this listener. 0 means unlimited.
+	MaxConnections uint `yaml:"max_connections"`
 }
 
 type APIConfig struct {

@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pires/go-proxyproto"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
 	"github.com/pmkol/mosdns-x/coremain/listen"
@@ -122,8 +124,12 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		IdleTimeout:      idleTimeout,
 		DisableEarlyData: m.control != nil,
 		Logger:           m.logger,
+
+		MaxConcurrentQueries: clampLimit(cfg.MaxConcurrentQueries),
+		MaxConnections:       clampLimit(cfg.MaxConnections),
 	}
 	s := server.NewServer(opts)
+	m.registerServerMetrics(cfg, s)
 
 	// helper func for proxy protocol listener
 	requirePP := func(proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
@@ -262,6 +268,35 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 	})
 
 	return nil
+}
+
+// clampLimit converts a configured limit to int, saturating instead of
+// wrapping on platforms where int is narrower than uint.
+func clampLimit(v uint) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
+}
+
+// registerServerMetrics exposes the listener's concurrency metrics as
+// mosdns_server_* with a "listener" label of the form "protocol://addr".
+// A registration failure only loses metrics, so it is logged, not fatal.
+func (m *Mosdns) registerServerMetrics(cfg *ServerListenerConfig, s *server.Server) {
+	if m.metricsReg == nil {
+		return
+	}
+	protocol := strings.ToLower(cfg.Protocol)
+	if protocol == "" {
+		protocol = "udp"
+	}
+	reg := prometheus.WrapRegistererWith(prometheus.Labels{"listener": protocol + "://" + cfg.Addr}, m.GetMetricsReg())
+	for _, c := range s.Metrics() {
+		if err := reg.Register(c); err != nil {
+			m.logger.Warn("failed to register server metrics", zap.String("proto", cfg.Protocol), zap.String("addr", cfg.Addr), zap.Error(err))
+			return
+		}
+	}
 }
 
 func removeUnixSocket(path string) error {

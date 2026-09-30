@@ -21,6 +21,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,22 +34,17 @@ import (
 	"github.com/pmkol/mosdns-x/pkg/utils"
 )
 
+// quicCloser closes a DoQ connection. quic-go's CloseWithError is
+// idempotent, so repeated closes need no extra bookkeeping.
 type quicCloser struct {
-	closed bool
-	conn   *quic.Conn
+	conn *quic.Conn
 }
 
 func (c *quicCloser) Close() error {
-	if c.closed {
-		return nil
-	}
 	return c.conn.CloseWithError(1, "")
 }
 
 func (c *quicCloser) close(code quic.ApplicationErrorCode) error {
-	if c.closed {
-		return nil
-	}
 	return c.conn.CloseWithError(code, "")
 }
 
@@ -86,10 +82,17 @@ func (s *Server) ServeQUIC(l *quic.EarlyListener) error {
 			return fmt.Errorf("unexpected listener err: %w", err)
 		}
 
+		// Connections over the limit are refused without blocking the accept loop.
+		if !s.beginConn(C.ProtocolQUIC) {
+			c.CloseWithError(doqExcessiveLoad, "")
+			continue
+		}
+
 		// handle connection
 		quicConnCtx, cancelConn := context.WithCancel(listenerCtx)
 		closer := &quicCloser{conn: c}
 		go func() {
+			defer s.endConn()
 			defer closer.close(0)
 			defer cancelConn()
 			if !s.trackCloser(closer, true) {
@@ -111,13 +114,17 @@ func (s *Server) ServeQUIC(l *quic.EarlyListener) error {
 					return
 				}
 				// handle stream
-				if !s.beginQuery() {
-					stream.CancelRead(1)
-					stream.CancelWrite(1)
+				if err := s.beginQuery(C.ProtocolQUIC); err != nil {
+					code := quic.StreamErrorCode(1)
+					if errors.Is(err, errQueryLimitReached) {
+						code = doqExcessiveLoad
+					}
+					stream.CancelRead(code)
+					stream.CancelWrite(code)
 					continue
 				}
 				go func() {
-					defer s.queryWG.Done()
+					defer s.endQuery()
 					req, _, err := dnsutils.ReadMsgFromTCP(stream)
 					timeout.Reset(idleTimeout)
 					if err != nil {

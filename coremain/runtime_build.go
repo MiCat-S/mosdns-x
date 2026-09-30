@@ -28,6 +28,8 @@ type runtimeListenerIdentity struct {
 	userIPHeader     string
 	proxyProtocol    bool
 	idleTimeout      uint
+	maxQueries       uint
+	maxConnections   uint
 }
 
 func listenerIdentity(cfg *ServerListenerConfig) runtimeListenerIdentity {
@@ -43,6 +45,8 @@ func listenerIdentity(cfg *ServerListenerConfig) runtimeListenerIdentity {
 		userIPHeader:     cfg.GetUserIPFromHeader,
 		proxyProtocol:    cfg.ProxyProtocol,
 		idleTimeout:      cfg.IdleTimeout,
+		maxQueries:       cfg.MaxConcurrentQueries,
+		maxConnections:   cfg.MaxConnections,
 	}
 }
 
