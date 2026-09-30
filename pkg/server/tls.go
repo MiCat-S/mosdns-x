@@ -24,12 +24,15 @@ import (
 	"crypto/x509"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/quic-go/quic-go"
 	eTLS "gitlab.com/go-extension/tls"
+	"go.uber.org/zap"
 )
 
 type cert[T tls.Certificate | eTLS.Certificate] struct {
@@ -50,28 +53,52 @@ func calculateTimeUntilMidnight() time.Duration {
 	return next.Sub(now)
 }
 
-func tryCreateWatchCert[T tls.Certificate | eTLS.Certificate](certFile, keyFile string, load func(string, string) (T, error)) (*cert[T], error) {
+// tryCreateWatchCert loads the certificate and key and watches them for changes.
+//
+// The parent directories are watched instead of the files themselves, because
+// the common renewal flow (certbot, acme.sh, Caddy, Kubernetes secrets) writes a
+// temp file and renames it over the old one. Watching the file would only see
+// events on the old inode, and the watch would die with it.
+func tryCreateWatchCert[T tls.Certificate | eTLS.Certificate](certFile, keyFile string, load func(string, string) (T, error), logger *zap.Logger) (*cert[T], error) {
+	if logger == nil {
+		logger = nopLogger
+	}
 	loaded, err := load(certFile, keyFile)
 	if err != nil {
 		return nil, err
 	}
+	certPath, keyPath := filepath.Clean(certFile), filepath.Clean(keyFile)
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
-	if err = w.Add(certFile); err != nil {
-		w.Close()
-		return nil, err
+	dirs := []string{filepath.Dir(certPath)}
+	if d := filepath.Dir(keyPath); d != dirs[0] {
+		dirs = append(dirs, d)
 	}
-	if err = w.Add(keyFile); err != nil {
-		w.Close()
-		return nil, err
+	for _, d := range dirs {
+		if err = w.Add(d); err != nil {
+			w.Close()
+			return nil, err
+		}
 	}
 	c := &cert[T]{c: &loaded, stop: make(chan struct{}), done: make(chan struct{})}
+	fields := []zap.Field{zap.String("cert", certFile), zap.String("key", keyFile)}
 	reload := func() {
-		if v, err := load(certFile, keyFile); err == nil {
-			c.set(v)
+		for _, f := range [...]string{certPath, keyPath} {
+			if _, err := os.Stat(f); err != nil {
+				// Probably in the middle of a replacement. The next event will retry.
+				logger.Info("certificate file not ready, skip reloading", append(fields, zap.Error(err))...)
+				return
+			}
 		}
+		v, err := load(certFile, keyFile)
+		if err != nil {
+			logger.Warn("failed to reload certificate, keep using the current one", append(fields, zap.Error(err))...)
+			return
+		}
+		c.set(v)
+		logger.Info("certificate reloaded", fields...)
 	}
 	check := func() {
 		current := c.get()
@@ -87,6 +114,16 @@ func tryCreateWatchCert[T tls.Certificate | eTLS.Certificate](certFile, keyFile 
 				reload()
 			}
 		}
+	}
+	// shouldReload reports whether a directory event may have changed the cert or key.
+	shouldReload := func(event fsnotify.Event) bool {
+		name := filepath.Clean(event.Name)
+		if name == certPath || name == keyPath {
+			return event.Has(fsnotify.Create) || event.Has(fsnotify.Write) || event.Has(fsnotify.Rename) || event.Has(fsnotify.Remove)
+		}
+		// A temp file (or a symlinked data dir, as in Kubernetes secrets) being
+		// renamed or created may replace the targets without naming them.
+		return event.Has(fsnotify.Create) || event.Has(fsnotify.Rename)
 	}
 	go func() {
 		defer close(c.done)
@@ -106,7 +143,7 @@ func tryCreateWatchCert[T tls.Certificate | eTLS.Certificate](certFile, keyFile 
 				if !ok {
 					return
 				}
-				if event.Has(fsnotify.Chmod) || event.Has(fsnotify.Remove) {
+				if !shouldReload(event) {
 					continue
 				}
 				if debounce == nil {
@@ -127,7 +164,11 @@ func tryCreateWatchCert[T tls.Certificate | eTLS.Certificate](certFile, keyFile 
 			case <-daily.C:
 				check()
 				daily.Reset(calculateTimeUntilMidnight())
-			case <-w.Errors:
+			case err, ok := <-w.Errors:
+				if !ok {
+					return
+				}
+				logger.Warn("certificate watcher error", append(fields, zap.Error(err))...)
 			case <-c.stop:
 				return
 			}
@@ -140,7 +181,7 @@ func (s *Server) CreateQUICListner(conn net.PacketConn, nextProtos []string) (*q
 	if s.opts.Cert == "" || s.opts.Key == "" {
 		return nil, errors.New("missing certificate for tls listener")
 	}
-	c, err := tryCreateWatchCert(s.opts.Cert, s.opts.Key, tls.LoadX509KeyPair)
+	c, err := tryCreateWatchCert(s.opts.Cert, s.opts.Key, tls.LoadX509KeyPair, s.opts.Logger)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +205,7 @@ func (s *Server) CreateETLSListner(l net.Listener, nextProtos []string) (net.Lis
 	if s.opts.Cert == "" || s.opts.Key == "" {
 		return nil, errors.New("missing certificate for tls listener")
 	}
-	c, err := tryCreateWatchCert(s.opts.Cert, s.opts.Key, eTLS.LoadX509KeyPair)
+	c, err := tryCreateWatchCert(s.opts.Cert, s.opts.Key, eTLS.LoadX509KeyPair, s.opts.Logger)
 	if err != nil {
 		return nil, err
 	}
