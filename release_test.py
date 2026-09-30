@@ -1,8 +1,10 @@
 import argparse
 import hashlib
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import release
 
@@ -39,6 +41,83 @@ class ReleaseTest(unittest.TestCase):
                 f"{hashlib.sha256(b'z').hexdigest()}  z.zip\n"
             )
             self.assertEqual((root / "SHA256SUMS").read_text(), expected)
+
+
+    def test_refuses_stale_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = root / "mosdns-linux-amd64.zip"
+            stale.write_bytes(b"old")
+            with self.assertRaises(release.StaleArtifactsError) as caught:
+                release.prepare_release_dir(root, clean=False)
+            self.assertIn(str(stale), str(caught.exception))
+            self.assertIn("--clean", str(caught.exception))
+            self.assertTrue(stale.exists())
+
+    def test_main_refuses_stale_archive_before_building(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "SHA256SUMS").write_text("old\n")
+            with mock.patch.object(release, "RELEASE_DIR", root), \
+                    mock.patch.object(release.subprocess, "run") as run, \
+                    self.assertLogs(release.LOGGER, "ERROR") as logs:
+                self.assertEqual(release.main(["--version", "26.09.30", "--headless"]), 1)
+            run.assert_not_called()
+            self.assertIn("SHA256SUMS", "\n".join(logs.output))
+            self.assertTrue((root / "SHA256SUMS").exists())
+
+    def test_clean_removes_only_known_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            known = [
+                root / "mosdns-linux-amd64.zip",
+                root / "mosdns-windows-amd64.zip",
+                root / "SHA256SUMS",
+                root / "SHA256SUMS.partial",
+                root / "config.yaml",
+            ]
+            unrelated = [root / "notes.txt", root / "other.zip", root / "mosdns-linux-amd64.zip.bak"]
+            for path in known + unrelated:
+                path.write_bytes(b"x")
+            release.prepare_release_dir(root, clean=True)
+            for path in known:
+                self.assertFalse(path.exists(), path.name)
+            for path in unrelated:
+                self.assertTrue(path.exists(), path.name)
+            self.assertTrue(root.is_dir())
+
+    def test_empty_or_missing_release_dir_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "release"
+            release.prepare_release_dir(root, clean=False)
+            self.assertTrue(root.is_dir())
+            (root / "unrelated.txt").write_text("keep")
+            release.prepare_release_dir(root, clean=False)
+
+    def test_partial_build_warns_and_writes_partial_checksums(self):
+        def fake_build(repo, release_dir, target, *args):
+            archive = release_dir / f"{release.target_name(target)}.zip"
+            archive.write_bytes(b"archive")
+            return archive
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            completed = subprocess.CompletedProcess([], 0, stdout="0" * 40 + "\n")
+            with mock.patch.object(release, "RELEASE_DIR", root), \
+                    mock.patch.object(release.subprocess, "run", return_value=completed), \
+                    mock.patch.object(release, "build_archive", side_effect=fake_build), \
+                    self.assertLogs(release.LOGGER, "WARNING") as logs:
+                self.assertEqual(release.main(["--version", "26.09.30", "-i", "2", "--headless"]), 0)
+            warnings = [line for line in logs.output if line.startswith("WARNING")]
+            self.assertEqual(len(warnings), 2)
+            for line in warnings:
+                self.assertIn("PARTIAL BUILD (-i): only mosdns-linux-amd64.zip is built.", line)
+                self.assertIn("This is NOT a release. Do not upload", line)
+            self.assertFalse((root / "SHA256SUMS").exists())
+            self.assertEqual(
+                (root / "SHA256SUMS.partial").read_text(),
+                f"{hashlib.sha256(b'archive').hexdigest()}  mosdns-linux-amd64.zip\n",
+            )
 
 
 if __name__ == "__main__":

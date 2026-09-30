@@ -35,13 +35,17 @@ test -s "$RELEASE_NOTES_FILE"
 
 ## 生成并检查资产
 
-从仓库根目录运行本地发布脚本。`release/` 必须尚不存在，避免旧资产混入本次发布：
+从仓库根目录运行本地发布脚本。正式发布应从不存在的 `release/` 开始，避免旧资产混入本次发布：
 
 ```bash
 test ! -e release
 RELEASE_COMMIT=$(git rev-parse HEAD)
 python3 release.py --version "${RELEASE_TAG#v}"
 ```
+
+脚本启动时也会自行检查：只要 `release/` 中还留有上次运行产生的 `mosdns-*.zip`、`SHA256SUMS`、`SHA256SUMS.partial` 或 `config.yaml`，就会列出这些文件并拒绝构建。确认它们可以丢弃时，加 `--clean` 重新运行；该选项只删除上述已知文件，不删除 `release/` 目录本身，也不触碰其中的其他文件。
+
+`-i N` 只构建第 N 个目标，仅用于本地调试。此时脚本只写出这一个 zip，并把它的校验和写入 `SHA256SUMS.partial`（不是 `SHA256SUMS`），开始和结束时都会打印醒目的 `PARTIAL BUILD` 警告。部分构建的产物不得上传为 Release；正式发布前先用 `--clean` 清理后完整构建。
 
 脚本应产生以下 13 个 zip：
 
@@ -126,7 +130,19 @@ rm -f /tmp/mosdns-checksum-assets /tmp/mosdns-actual-assets
 
 ## 创建 Release
 
-下面的命令会创建或发布 Git tag 和公开 GitHub Release，并上传所有资产。这是对外发布步骤；只在版本、提交、说明、矩阵、包内容和校验和均已审核后执行：
+上传清单直接从 `release/SHA256SUMS` 生成，不使用 `release/mosdns-*.zip` 通配符，确保上传的集合恰好是校验文件覆盖的 13 个 zip 加 `SHA256SUMS` 本身，`release/` 中的其他文件不会被带上：
+
+```bash
+release_assets=()
+while IFS= read -r asset; do
+  test -f "$asset"
+  release_assets+=("$asset")
+done < <(awk '{ name=$2; sub(/^\*/, "", name); print "release/" name }' release/SHA256SUMS)
+test "${#release_assets[@]}" -eq 13
+printf '%s\n' "${release_assets[@]}" release/SHA256SUMS
+```
+
+下面的命令会创建或发布 Git tag 和公开 GitHub Release，并上传上面列出的资产。这是对外发布步骤；只在版本、提交、说明、矩阵、包内容和校验和均已审核后执行：
 
 ```bash
 gh release create "$RELEASE_TAG" \
@@ -135,9 +151,9 @@ gh release create "$RELEASE_TAG" \
   --title "$RELEASE_TITLE" \
   --notes-file "$RELEASE_NOTES_FILE" \
   --prerelease \
-  release/mosdns-*.zip release/SHA256SUMS
+  "${release_assets[@]}" release/SHA256SUMS
 ```
 
-首个多用户版本先按 prerelease 发布；完成生产验收后，可在 GitHub 上提升为正式 Release。只读的 `Verify release assets` 工作流监听 `release.published`，用于再次检查 13 个包和校验文件。若平台没有自动产生任务或需要重新运行，可执行 `gh workflow run release.yml --repo MiCat-S/mosdns-x -f tag="$RELEASE_TAG"`；该工作流只下载和验证已有资产，不在 GitHub 上构建。
+首个多用户版本先按 prerelease 发布；完成生产验收后，可在 GitHub 上提升为正式 Release。只读的 `Verify release assets` 工作流监听 `release.published`，用于再次检查 13 个包和校验文件，并要求 Release 的资产名集合恰好等于这 13 个 zip 加 `SHA256SUMS`，多出或缺少任何资产都会失败。若平台没有自动产生任务或需要重新运行，可执行 `gh workflow run release.yml --repo MiCat-S/mosdns-x -f tag="$RELEASE_TAG"`；该工作流只下载和验证已有资产，不在 GitHub 上构建。
 
 完成后打开该 Release，确认 tag 指向本次记录的 `origin/main` 提交、13 个 zip 和 `SHA256SUMS` 均可下载。再从一个空临时目录按[部署教程](deployment.md)的单文件校验方式下载一个资产，确认公开下载的校验结果为 `OK`。
