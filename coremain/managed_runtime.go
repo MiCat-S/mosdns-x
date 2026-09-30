@@ -239,6 +239,9 @@ func (s *ManagedRuntimeService) Reload(ctx context.Context) (ManagedRuntimeReloa
 	if err != nil {
 		return ManagedRuntimeReloadResult{}, err
 	}
+	if err := validateRuntimeConfig(freshBase); err != nil {
+		return ManagedRuntimeReloadResult{}, err
+	}
 	restartRequired, err := immutableConfigChanges(s.base, freshBase)
 	if err != nil {
 		return ManagedRuntimeReloadResult{}, err
@@ -468,6 +471,9 @@ func (s *ManagedRuntimeService) applyLocked(ctx context.Context, expectedRevisio
 func (s *ManagedRuntimeService) prepareCandidateLocked(desired runtimeconfig.Config) (*Config, runtimeconfig.Config, error) {
 	effective, err := applyManagedConfig(s.base, desired)
 	if err != nil {
+		return nil, runtimeconfig.Config{}, err
+	}
+	if err := validateRuntimeConfig(effective); err != nil {
 		return nil, runtimeconfig.Config{}, err
 	}
 	if _, _, err := validateControlConfig(effective); err != nil {

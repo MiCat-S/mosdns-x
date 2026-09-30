@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -46,6 +47,55 @@ func listenerIdentity(cfg *ServerListenerConfig) runtimeListenerIdentity {
 	}
 }
 
+// validateRuntimeConfig checks the data provider and plugin entries of cfg.
+// Every entry must be complete: an empty tag, type or file is almost always a
+// typo, and skipping it would start the process with a feature silently
+// missing. Plugin tags must be unique across plugins, preset plugins and data
+// providers, and must be usable as a single HTTP path segment because plugins
+// are served under /plugins/<tag>/.
+//
+// Indexes refer to the merged config, after include expansion.
+func validateRuntimeConfig(cfg *Config) error {
+	providerTags := make(map[string]int, len(cfg.DataProviders))
+	for i, dpc := range cfg.DataProviders {
+		if dpc.Tag == "" {
+			return fmt.Errorf("data_providers[%d]: tag is required", i)
+		}
+		if dpc.File == "" {
+			return fmt.Errorf("data_providers[%d]: file is required", i)
+		}
+		if first, ok := providerTags[dpc.Tag]; ok {
+			return fmt.Errorf("data_providers[%d]: tag %q duplicates data_providers[%d]", i, dpc.Tag, first)
+		}
+		providerTags[dpc.Tag] = i
+	}
+
+	presetFuncs := LoadNewPersetPluginFuncs()
+	pluginTags := make(map[string]int, len(cfg.Plugins))
+	for i, pc := range cfg.Plugins {
+		if pc.Tag == "" {
+			return fmt.Errorf("plugins[%d]: tag is required", i)
+		}
+		if pc.Type == "" {
+			return fmt.Errorf("plugins[%d]: type is required", i)
+		}
+		if strings.ContainsFunc(pc.Tag, func(r rune) bool { return r == '/' || unicode.IsSpace(r) }) {
+			return fmt.Errorf("plugins[%d]: tag %q must not contain '/' or whitespace", i, pc.Tag)
+		}
+		if _, ok := presetFuncs[pc.Tag]; ok {
+			return fmt.Errorf("plugins[%d]: tag %q is reserved by a preset plugin", i, pc.Tag)
+		}
+		if provider, ok := providerTags[pc.Tag]; ok {
+			return fmt.Errorf("plugins[%d]: tag %q collides with data_providers[%d]", i, pc.Tag, provider)
+		}
+		if first, ok := pluginTags[pc.Tag]; ok {
+			return fmt.Errorf("plugins[%d]: tag %q duplicates plugins[%d]", i, pc.Tag, first)
+		}
+		pluginTags[pc.Tag] = i
+	}
+	return nil
+}
+
 func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (generation *RuntimeGeneration, retErr error) {
 	owner := &Mosdns{
 		logger:      m.logger,
@@ -67,16 +117,12 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 	if err := ctx.Err(); err != nil {
 		return generation, err
 	}
-	providerTags := make(map[string]struct{})
+	// Reject empty, duplicated or colliding entries before any provider or
+	// plugin is initialized. The loops below rely on this.
+	if err := validateRuntimeConfig(cfg); err != nil {
+		return generation, err
+	}
 	for _, dpc := range cfg.DataProviders {
-		if len(dpc.Tag) == 0 {
-			continue
-		}
-		if _, ok := providerTags[dpc.Tag]; ok {
-			return generation, fmt.Errorf("duplicated provider tag %s", dpc.Tag)
-		}
-		providerTags[dpc.Tag] = struct{}{}
-
 		dp, err := data_provider.NewDataProvider(m.logger, dpc)
 		if err != nil {
 			return generation, fmt.Errorf("failed to init data provider %s, %w", dpc.Tag, err)
@@ -86,20 +132,6 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 	}
 
 	presetFuncs := LoadNewPersetPluginFuncs()
-	pluginTags := make(map[string]struct{}, len(presetFuncs)+len(cfg.Plugins))
-	for tag := range presetFuncs {
-		pluginTags[tag] = struct{}{}
-	}
-	for _, pc := range cfg.Plugins {
-		if len(pc.Type) == 0 || len(pc.Tag) == 0 {
-			continue
-		}
-		if _, duplicate := pluginTags[pc.Tag]; duplicate {
-			return generation, fmt.Errorf("duplicated plugin tag %s", pc.Tag)
-		}
-		pluginTags[pc.Tag] = struct{}{}
-	}
-
 	for tag, factory := range presetFuncs {
 		if err := ctx.Err(); err != nil {
 			return generation, err
@@ -112,9 +144,6 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 	}
 
 	for i, pc := range cfg.Plugins {
-		if len(pc.Type) == 0 || len(pc.Tag) == 0 {
-			continue
-		}
 		if err := ctx.Err(); err != nil {
 			return generation, err
 		}

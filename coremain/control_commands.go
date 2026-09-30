@@ -74,7 +74,7 @@ func newControlStatusCommand() *cobra.Command {
 func inspectControlStatus(ctx context.Context, configFile string) string {
 	cfg, fileUsed, err := loadConfig(configFile)
 	if err == nil {
-		err = mergeInclude(cfg, 0, []string{fileUsed})
+		err = mergeInclude(cfg, fileUsed)
 	}
 	if err != nil || cfg.Control == nil {
 		if err == nil {
@@ -131,7 +131,7 @@ func resolveControlStorage(configFile, database, mysqlDSN string) (string, strin
 		if err != nil {
 			return "", "", err
 		}
-		if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
+		if err := mergeInclude(cfg, fileUsed); err != nil {
 			return "", "", err
 		}
 		if cfg.Control == nil {

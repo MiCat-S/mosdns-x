@@ -98,6 +98,11 @@ func RunMosdns(cfg *Config) error {
 }
 
 func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
+	// Fail on incomplete provider or plugin entries before anything is opened
+	// or initialized.
+	if err := validateRuntimeConfig(cfg); err != nil {
+		return err
+	}
 	effectiveCfg, baseCfg, managedStore, managedView, managedRevision, err := prepareManagedRuntimeConfig(cfg)
 	if err != nil {
 		return err
@@ -207,6 +212,12 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 
 	// Start http api server. Bind synchronously so initialization failures roll back.
 	if httpAddr := cfg.API.HTTP; len(httpAddr) > 0 {
+		if cfg.Control == nil && !loopbackEndpoint(httpAddr) {
+			m.logger.Warn("api.http listens on a non-loopback address without a control section; "+
+				"metrics, /debug/pprof/ and /plugins/ routes are exposed without authentication. "+
+				"Bind it to loopback and publish it through an authenticating reverse proxy, or enable control",
+				zap.String("addr", httpAddr))
+		}
 		var apiHandler http.Handler = m.httpAPIMux
 		if cfg.Control != nil {
 			startedAt := time.Now()

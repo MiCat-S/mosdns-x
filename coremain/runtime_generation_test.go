@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
+	"github.com/pmkol/mosdns-x/pkg/data_provider"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	D "github.com/pmkol/mosdns-x/pkg/server/dns_handler"
@@ -502,5 +506,92 @@ func TestRuntimeResourcesClosePluginsInReverseOrder(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "second" || order[1] != "first" {
 		t.Fatalf("close order = %v, want [second first]", order)
+	}
+}
+
+func TestRuntimeConfigValidationRejectsIncompleteEntries(t *testing.T) {
+	const pluginType = "runtime_validation_test_counter"
+	var constructed atomic.Int32
+	RegNewPluginFunc(pluginType, func(bp *BP, _ interface{}) (Plugin, error) {
+		constructed.Add(1)
+		return &runtimeBuildPlugin{BP: bp, closed: new(atomic.Int32)}, nil
+	}, nil)
+	defer DelPluginType(pluginType)
+
+	valid := PluginConfig{Tag: "valid", Type: pluginType}
+	tests := []struct {
+		name string
+		cfg  *Config
+		want string
+	}{
+		{"plugin without type", &Config{Plugins: []PluginConfig{{Tag: "foo"}}}, "plugins[0]: type is required"},
+		{"plugin without tag", &Config{Plugins: []PluginConfig{valid, {Type: "cache"}}}, "plugins[1]: tag is required"},
+		{"provider without tag", &Config{DataProviders: []data_provider.DataProviderConfig{{File: "x"}}}, "data_providers[0]: tag is required"},
+		{"provider without file", &Config{DataProviders: []data_provider.DataProviderConfig{{Tag: "a", File: "a"}, {Tag: "b"}}}, "data_providers[1]: file is required"},
+		{"duplicated provider", &Config{DataProviders: []data_provider.DataProviderConfig{{Tag: "a", File: "a"}, {Tag: "a", File: "b"}}}, `data_providers[1]: tag "a" duplicates data_providers[0]`},
+		{"tag with slash", &Config{Plugins: []PluginConfig{valid, {Tag: "a/b", Type: pluginType}}}, `plugins[1]: tag "a/b" must not contain '/' or whitespace`},
+		{"tag with space", &Config{Plugins: []PluginConfig{{Tag: "a b", Type: pluginType}}}, `plugins[0]: tag "a b" must not contain '/' or whitespace`},
+		{"tag with tab", &Config{Plugins: []PluginConfig{{Tag: "a\tb", Type: pluginType}}}, "plugins[0]: tag"},
+		{"preset tag", &Config{Plugins: []PluginConfig{{Tag: "_default_cache", Type: pluginType}}}, `plugins[0]: tag "_default_cache" is reserved by a preset plugin`},
+		{"provider tag", &Config{
+			DataProviders: []data_provider.DataProviderConfig{{Tag: "geosite", File: "geosite.dat"}},
+			Plugins:       []PluginConfig{valid, {Tag: "geosite", Type: pluginType}},
+		}, `plugins[1]: tag "geosite" collides with data_providers[0]`},
+		{"duplicated plugin", &Config{Plugins: []PluginConfig{valid, valid}}, `plugins[1]: tag "valid" duplicates plugins[0]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRuntimeConfig(tt.cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateRuntimeConfig = %v, want error containing %q", err, tt.want)
+			}
+
+			// The builder must reject the config before any provider or
+			// plugin is initialized.
+			constructed.Store(0)
+			owner := &Mosdns{logger: zap.NewNop()}
+			stage, err := NewRuntimeManager().Stage(context.Background(), func(ctx context.Context) (*RuntimeGeneration, error) {
+				return owner.buildRuntimeGeneration(ctx, tt.cfg)
+			})
+			if stage != nil || err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Stage = (%v, %v), want error containing %q", stage, err, tt.want)
+			}
+			if got := constructed.Load(); got != 0 {
+				t.Fatalf("%d plugins initialized before validation failed", got)
+			}
+
+			if err := RunMosdnsContext(context.Background(), tt.cfg); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("RunMosdnsContext = %v, want error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeConfigValidationAcceptsValidConfig(t *testing.T) {
+	providerFile := filepath.Join(t.TempDir(), "domains.txt")
+	if err := os.WriteFile(providerFile, []byte("example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		DataProviders: []data_provider.DataProviderConfig{{Tag: "domains", File: providerFile}},
+		Plugins: []PluginConfig{
+			{Tag: "answer", Type: "blackhole", Args: map[string]any{"rcode": 0}},
+			{Tag: "cache-1.v2_x", Type: "cache", Args: map[string]any{"size": 128}},
+		},
+		Servers: []ServerConfig{{Exec: "answer", Listeners: []*ServerListenerConfig{{Protocol: "udp", Addr: "127.0.0.1:5353"}}}},
+	}
+	if err := validateRuntimeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	owner := &Mosdns{logger: zap.NewNop()}
+	manager := NewRuntimeManager()
+	stage, err := manager.Stage(context.Background(), func(ctx context.Context) (*RuntimeGeneration, error) {
+		return owner.buildRuntimeGeneration(ctx, cfg)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Discard(context.Background(), stage); err != nil {
+		t.Fatal(err)
 	}
 }

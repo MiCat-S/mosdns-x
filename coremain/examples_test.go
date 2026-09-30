@@ -30,6 +30,9 @@ func TestShippedExamplesLoad(t *testing.T) {
 			if got := cfg.Control.Admit; got != (AdmitConfig{QueueSize: 1024, WaitMS: 250, BatchDelayMS: 1, BatchSize: 128}) {
 				t.Fatalf("%s: admit = %+v, does not match the documented defaults", path, got)
 			}
+			if err := validateRuntimeConfig(cfg); err != nil {
+				t.Fatalf("%s: runtime validation: %v", path, err)
+			}
 			if _, _, err := validateControlConfig(cfg); err != nil {
 				t.Fatalf("%s: validation: %v", path, err)
 			}

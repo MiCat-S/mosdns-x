@@ -134,7 +134,7 @@ func loadMergedConfig(filePath string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fail to load config, %w", err)
 	}
-	if err := mergeInclude(cfg, 0, []string{fileUsed}); err != nil {
+	if err := mergeInclude(cfg, fileUsed); err != nil {
 		return nil, fmt.Errorf("failed to load sub config file, %w", err)
 	}
 	absPath, err := filepath.Abs(fileUsed)
@@ -174,21 +174,81 @@ func loadConfig(filePath string) (*Config, string, error) {
 	return cfg, v.ConfigFileUsed(), nil
 }
 
-func mergeInclude(cfg *Config, depth int, paths []string) error {
+// maxIncludeDepth bounds how deep include chains may nest. Cycles are
+// detected explicitly; this is only a safety net against pathological trees.
+const maxIncludeDepth = 8
+
+// includeWalker carries the state of one include expansion.
+type includeWalker struct {
+	// visiting holds the canonical paths on the current recursion stack.
+	visiting map[string]struct{}
+	// loaded holds the canonical paths already merged anywhere in the tree.
+	loaded map[string]struct{}
+}
+
+// mergeInclude expands cfg.Include recursively. filePath is the file cfg was
+// read from and anchors relative includes. Relative include paths resolve
+// against the directory of the file that contains the include (as it was
+// reached, before symlink evaluation); absolute paths are used as-is.
+//
+// Every file is identified by its canonical path (absolute, symlinks
+// evaluated). A file that is already on the current include stack is a cycle
+// and fails. A file reached again through another branch is merged only once:
+// the first occurrence wins and later references are skipped.
+//
+// Included items are placed before the including file's own items, in include
+// order.
+func mergeInclude(cfg *Config, filePath string) error {
+	absPath, canonical, err := canonicalConfigPath(filePath)
+	if err != nil {
+		return err
+	}
+	w := &includeWalker{
+		visiting: map[string]struct{}{canonical: {}},
+		loaded:   map[string]struct{}{canonical: {}},
+	}
+	return w.merge(cfg, absPath, 0, []string{filePath})
+}
+
+// merge merges the includes of cfg, which was read from absPath. chain holds
+// the original spellings of the files on the stack, including absPath's.
+func (w *includeWalker) merge(cfg *Config, absPath string, depth int, chain []string) error {
 	depth++
-	if depth > 8 {
-		return fmt.Errorf("maximun include depth reached, include path is %s", strings.Join(paths, " -> "))
+	if depth > maxIncludeDepth {
+		return fmt.Errorf("maximum include depth reached, include path is %s", strings.Join(chain, " -> "))
 	}
 
+	baseDir := filepath.Dir(absPath)
 	includedCfg := new(Config)
 	for _, subCfgFile := range cfg.Include {
-		subPaths := append(paths, subCfgFile)
-		mlog.L().Info("reading sub config", zap.String("file", subCfgFile))
-		subCfg, _, err := loadConfig(subCfgFile)
-		if err != nil {
-			return fmt.Errorf("failed to load sub config, %w", err)
+		subChain := append(chain[:len(chain):len(chain)], subCfgFile)
+		resolved := subCfgFile
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(baseDir, resolved)
 		}
-		if err := mergeInclude(subCfg, depth, subPaths); err != nil {
+		subAbs, subCanonical, err := canonicalConfigPath(resolved)
+		if err != nil {
+			return err
+		}
+		if _, ok := w.visiting[subCanonical]; ok {
+			return fmt.Errorf("include cycle: %s", strings.Join(subChain, " -> "))
+		}
+		if _, ok := w.loaded[subCanonical]; ok {
+			mlog.L().Info("skipping sub config that is already included",
+				zap.String("file", subCfgFile), zap.String("path", subCanonical))
+			continue
+		}
+
+		mlog.L().Info("reading sub config", zap.String("file", subCfgFile), zap.String("path", subAbs))
+		subCfg, _, err := loadConfig(subAbs)
+		if err != nil {
+			return fmt.Errorf("failed to load sub config %s, %w", subCfgFile, err)
+		}
+		w.loaded[subCanonical] = struct{}{}
+		w.visiting[subCanonical] = struct{}{}
+		err = w.merge(subCfg, subAbs, depth, subChain)
+		delete(w.visiting, subCanonical)
+		if err != nil {
 			return err
 		}
 
@@ -201,4 +261,20 @@ func mergeInclude(cfg *Config, depth int, paths []string) error {
 	cfg.Plugins = append(includedCfg.Plugins, cfg.Plugins...)
 	cfg.Servers = append(includedCfg.Servers, cfg.Servers...)
 	return nil
+}
+
+// canonicalConfigPath returns the absolute form of path and its canonical form
+// with symlinks evaluated. When the file cannot be resolved (for example it
+// does not exist yet), the canonical form falls back to the absolute path so
+// that the subsequent read reports the real error.
+func canonicalConfigPath(path string) (string, string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve config path %s: %w", path, err)
+	}
+	canonical, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		canonical = absPath
+	}
+	return absPath, canonical, nil
 }

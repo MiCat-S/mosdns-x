@@ -4,6 +4,8 @@
 
 `api.http` 是管理 API 与面板监听地址，必须绑定回环地址。生产环境由本机反向代理提供 HTTPS。`public_dns_url` 的路径必须与每个 DoH/DoH3 listener 的 `url_path` 相同，省略时均为 `/dns-query`。公开 DNS listener 只允许 DoH/DoH3；UDP、TCP、DoT、DoQ 仅可绑定回环地址用于诊断，且不进入账户计量。控制模式不支持 PROXY protocol；可信代理地址通过 `trusted_proxies` 明确配置。
 
+`api.http` 的暴露面取决于是否配置 `control`：配置后该地址只允许回环，`/metrics` 与 `/plugins/` 需要管理员登录，`/debug/pprof/` 仅在 `enable_pprof: true` 时由管理员访问；未配置时 `/metrics`、`/debug/pprof/` 与 `/plugins/` 均无认证，绑定非回环地址时启动日志会给出警告，应改为回环地址并通过带认证的反向代理对外提供，或启用 `control`。
+
 `development: true` 只允许管理 API、面板、公共 DNS URL 和所有 DNS listener 使用回环地址。该模式允许本地明文 HTTP。生产模式保持 `development: false`：DNS 可使用原生 TLS listener，或由同机 TLS 反向代理转发到回环 HTTP listener；管理 API 由反向代理提供 HTTPS。后一种方式的完整步骤见 [部署教程](deployment.md)，配套配置为 [control-production-proxy.yaml](../examples/control-production-proxy.yaml)。选择一种公网监听方式，避免 Mosdns 与代理争用同一 IP 的 443 端口。
 
 ```yaml

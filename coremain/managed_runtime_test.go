@@ -407,6 +407,58 @@ func TestManagedRuntimeReloadReportsImmutableChanges(t *testing.T) {
 	}
 }
 
+func TestManagedRuntimeReloadRejectsIncompleteEntries(t *testing.T) {
+	config := managedRuntimeTestConfig(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	config.sourcePath = configPath
+	encoded, err := yaml.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, host := newManagedRuntimeTestService(t, config)
+	broken, err := cloneConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken.Plugins = append(broken.Plugins, PluginConfig{Type: "cache"})
+	encoded, err = yaml.Marshal(broken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Reload(context.Background()); err == nil || !strings.Contains(err.Error(), "plugins[3]: tag is required") {
+		t.Fatalf("Reload = %v, want plugins[3] validation error", err)
+	}
+	request := new(dns.Msg).SetQuestion("still-current.test.", dns.TypeA)
+	response, err := host.runtimeManager.DNSHandler(0, 0).ServeDNS(context.Background(), request, query_context.NewRequestMeta(netip.Addr{}))
+	if err != nil || response.Rcode != dns.RcodeSuccess {
+		t.Fatalf("current generation changed after rejected reload: response=%v err=%v", response, err)
+	}
+}
+
+func TestManagedRuntimeValidateRejectsIncompleteCandidate(t *testing.T) {
+	config := managedRuntimeTestConfig(t)
+	service, _ := newManagedRuntimeTestService(t, config)
+	state, err := service.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A candidate is built from the loaded base; an incomplete base entry must
+	// be reported by validation, not surface later at build or swap time.
+	service.base.Plugins = append(service.base.Plugins, PluginConfig{Tag: "a/b", Type: "cache"})
+	if _, err := service.Validate(context.Background(), "admin-session", state.Revision, state.Config); err == nil || !strings.Contains(err.Error(), `plugins[3]: tag "a/b"`) {
+		t.Fatalf("Validate = %v, want plugins[3] validation error", err)
+	}
+	if _, err := os.Stat(config.Control.ManagedConfig); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed file changed after failed validation: %v", err)
+	}
+}
+
 func TestManagedRuntimeProbeResponseDoesNotExposeAddress(t *testing.T) {
 	config := managedRuntimeTestConfig(t)
 	service, _ := newManagedRuntimeTestService(t, config)
