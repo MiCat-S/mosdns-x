@@ -21,6 +21,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/url"
@@ -28,6 +29,7 @@ import (
 
 	"gitlab.com/go-extension/http"
 
+	C "github.com/pmkol/mosdns-x/pkg/query_context"
 	H "github.com/pmkol/mosdns-x/pkg/server/http_handler"
 )
 
@@ -70,11 +72,18 @@ type eHandler struct {
 }
 
 func (h *eHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.s.beginQuery() {
+	protocol := C.ProtocolHTTP
+	if r.TLS != nil {
+		protocol = C.ProtocolHTTPS
+	}
+	if err := h.s.beginQuery(protocol); err != nil {
+		if errors.Is(err, errQueryLimitReached) {
+			w.Header().Set("Retry-After", "1")
+		}
 		w.WriteHeader(503)
 		return
 	}
-	defer h.s.queryWG.Done()
+	defer h.s.endQuery()
 	h.h.ServeHTTP(&eWriter{w}, &eRequest{r})
 }
 

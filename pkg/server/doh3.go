@@ -21,6 +21,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -29,6 +30,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	C "github.com/pmkol/mosdns-x/pkg/query_context"
 	H "github.com/pmkol/mosdns-x/pkg/server/http_handler"
 )
 
@@ -71,11 +73,14 @@ type sHandler struct {
 }
 
 func (h *sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.s.beginQuery() {
+	if err := h.s.beginQuery(C.ProtocolH3); err != nil {
+		if errors.Is(err, errQueryLimitReached) {
+			w.Header().Set("Retry-After", "1")
+		}
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	defer h.s.queryWG.Done()
+	defer h.s.endQuery()
 	h.h.ServeHTTP(&sWriter{w}, &sRequest{r})
 }
 

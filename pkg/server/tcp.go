@@ -87,7 +87,19 @@ func (s *Server) ServeTCP(l net.Listener) error {
 			return fmt.Errorf("unexpected listener err: %w", err)
 		}
 
-		go s.handleConnectionTcp(ctx, &TCPConn{Conn: c, handler: handler})
+		protocol := C.ProtocolTCP
+		if _, ok := c.(*tls.Conn); ok {
+			protocol = C.ProtocolTLS
+		}
+		// Connections over the limit are closed without blocking the accept loop.
+		if !s.beginConn(protocol) {
+			c.Close()
+			continue
+		}
+		go func() {
+			defer s.endConn()
+			s.handleConnectionTcp(ctx, &TCPConn{Conn: c, handler: handler})
+		}()
 	}
 }
 
@@ -139,10 +151,11 @@ func (s *Server) handleConnectionTcp(ctx context.Context, c *TCPConn) {
 			return // read err, close the connection
 		}
 
-		if !s.beginQuery() {
+		// Server closed or concurrent query limit reached: close the connection.
+		if err := s.beginQuery(protocol); err != nil {
 			return
 		}
-		go func() { defer s.queryWG.Done(); s.handleQueryTcp(ctx, c, req) }()
+		go func() { defer s.endQuery(); s.handleQueryTcp(ctx, c, req) }()
 
 		c.SetReadDeadline(time.Now().Add(idleTimeout))
 	}

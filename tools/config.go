@@ -126,6 +126,12 @@ servers:
         # Connection idle timeout in seconds. 0 selects 10 for tcp, dot and
         # doh, and 30 for doq and doh3.
         idle_timeout: 10
+        # In-flight query cap of this listener. Excess queries are rejected
+        # (udp: dropped, tcp/dot: connection closed, doq: stream reset,
+        # doh/doh3: 503). 0 means no limit.
+        max_concurrent_queries: 0
+        # Open connection cap for tcp, dot and doq. 0 means no limit.
+        max_connections: 0
         # PROXY protocol is rejected in control mode.
         proxy_protocol: false
 

@@ -25,6 +25,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -69,6 +70,21 @@ type ServerOpts struct {
 
 	// DisableEarlyData disables replayable TLS early data and QUIC 0-RTT.
 	DisableEarlyData bool
+
+	// MaxConcurrentQueries caps the number of in-flight queries across all
+	// listeners served by this Server (UDP, TCP, DoT, DoQ, DoH and DoH3).
+	// Excess queries are rejected without blocking: UDP packets are dropped,
+	// TCP/DoT connections are closed, DoQ streams are reset with
+	// DOQ_EXCESSIVE_LOAD and DoH/DoH3 requests get 503 with Retry-After.
+	// 0 or a negative value means unlimited.
+	MaxConcurrentQueries int
+
+	// MaxConnections caps the number of concurrently open TCP, DoT and DoQ
+	// connections of this Server. Connections accepted beyond the limit are
+	// closed immediately. DoH and DoH3 connections are managed by the HTTP
+	// servers and are not counted; their requests are bounded by
+	// MaxConcurrentQueries. 0 or a negative value means unlimited.
+	MaxConnections int
 }
 
 func (opts *ServerOpts) init() {
@@ -78,6 +94,12 @@ func (opts *ServerOpts) init() {
 
 	if opts.IdleTimeout <= 0 {
 		opts.IdleTimeout = 0
+	}
+	if opts.MaxConcurrentQueries < 0 {
+		opts.MaxConcurrentQueries = 0
+	}
+	if opts.MaxConnections < 0 {
+		opts.MaxConnections = 0
 	}
 }
 
@@ -95,13 +117,21 @@ type Server struct {
 	queryWG       sync.WaitGroup
 	closeOnce     sync.Once
 	closeErr      error
+
+	inflightQueries atomic.Int64
+	openConns       atomic.Int64
+	queryRejectLog  rejectLog
+	connRejectLog   rejectLog
+	metrics         *serverMetrics
 }
 
 func NewServer(opts ServerOpts) *Server {
 	opts.init()
-	return &Server{
+	s := &Server{
 		opts: opts,
 	}
+	s.metrics = newServerMetrics(s)
+	return s
 }
 
 // Closed returns true if server was closed.
@@ -157,16 +187,6 @@ func (s *Server) Close() {
 }
 
 type gracefulCloser interface{ Shutdown(context.Context) error }
-
-func (s *Server) beginQuery() bool {
-	s.m.Lock()
-	defer s.m.Unlock()
-	if s.closed {
-		return false
-	}
-	s.queryWG.Add(1)
-	return true
-}
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.closeOnce.Do(func() {
