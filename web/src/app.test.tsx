@@ -373,6 +373,59 @@ describe("前端访问与秘密处理", () => {
     ).not.toBeInTheDocument();
     expect(within(detail).queryByText("未调用上游")).not.toBeInTheDocument();
   });
+  it("管理端日志以名称显示账户和设备，账户删除后显示 ID", async () => {
+    const base = {
+      time: "2026-10-07T12:00:00Z",
+      client_ip: "192.0.2.44",
+      qtype: "A",
+      rcode: "NOERROR",
+      duration_ms: 1,
+      cache_hit: false,
+      protocol: "h2",
+      answer_ips: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          items: [
+            {
+              ...base,
+              id: "named",
+              name: "named.example.",
+              user_id: "4Hz38ohEGyng9jxKEwQUbA",
+              credential_id: "c1",
+              username: "66",
+              device_name: "Mac",
+            },
+            {
+              ...base,
+              id: "gone",
+              name: "gone.example.",
+              user_id: "deletedUserId123",
+              credential_id: "c2",
+            },
+          ],
+        }),
+      ),
+    );
+    render(<QueryDetails path="/admin/queries" enabled showPrincipal />);
+    expect(await screen.findByText("用户 66")).toBeInTheDocument();
+    expect(screen.getByText("用户 deletedUserId123")).toBeInTheDocument();
+    expect(
+      screen.queryByText("用户 4Hz38ohEGyng9jxKEwQUbA"),
+    ).not.toBeInTheDocument();
+    const rows = screen.getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("Mac");
+    expect(rows[2]).toHaveTextContent("未知设备");
+    fireEvent.click(
+      screen.getByRole("button", { name: "查看 named.example. 详情" }),
+    );
+    const detail = screen.getByRole("dialog");
+    expect(
+      within(detail).getByText("4Hz38ohEGyng9jxKEwQUbA"),
+    ).toBeInTheDocument();
+  });
   it("查询日志将筛选条件发送到后端", async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ items: [] }));
     vi.stubGlobal("fetch", fetcher);

@@ -1219,6 +1219,12 @@ function responseSourceName(source?: string) {
   return source ? (responseSourceNames[source] ?? source) : "未记录";
 }
 
+// principalName shows a record's account by name, or by ID once the account
+// has been deleted.
+function principalName(record: QueryRecord) {
+  return record.username || record.user_id || "未识别";
+}
+
 function logDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
@@ -1457,8 +1463,13 @@ function QueryLogDetail({
           </div>
           {showPrincipal ? (
             <div>
-              <dt>用户 ID</dt>
-              <dd>{record.user_id || "未识别"}</dd>
+              <dt>用户</dt>
+              <dd>
+                {principalName(record)}
+                {record.username && record.user_id ? (
+                  <small>{record.user_id}</small>
+                ) : null}
+              </dd>
             </div>
           ) : null}
           <div>
@@ -1628,7 +1639,9 @@ export function QueryDetails({
   );
   const deviceName = (record: QueryRecord) =>
     record.credential_id
-      ? (credentialNames.get(record.credential_id) ?? "未知设备")
+      ? (credentialNames.get(record.credential_id) ??
+        record.device_name ??
+        "未知设备")
       : "未标识设备";
   function updateFilter(name: keyof QueryFilters, value: string) {
     setDraft((current) => ({ ...current, [name]: value }));
@@ -1882,7 +1895,7 @@ export function QueryDetails({
                         {deviceName(record)}
                         <small>{record.client_ip || "未记录客户端 IP"}</small>
                         {showPrincipal ? (
-                          <small>用户 {record.user_id || "未识别"}</small>
+                          <small>用户 {principalName(record)}</small>
                         ) : null}
                       </td>
                       <td className="query-detail answer-preview">

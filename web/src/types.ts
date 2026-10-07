@@ -244,6 +244,10 @@ export interface QueryRecord {
   upstream_id?: string;
   upstream_label?: string;
   trace?: QueryTrace | null;
+  // Current names of the record's account and device; absent once either
+  // has been deleted.
+  username?: string;
+  device_name?: string;
 }
 export interface RouteStep {
   at_ms: number;

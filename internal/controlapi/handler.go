@@ -1025,10 +1025,67 @@ func (h *Handler) queries(w http.ResponseWriter, r *http.Request, userID string)
 		writeError(w, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
-	if v.Items == nil {
-		v.Items = []telemetry.QueryRecord{}
+	writeJSON(w, http.StatusOK, h.namedQueryPage(r.Context(), v))
+}
+
+// queryRecordView adds the current names of a record's account and device,
+// so the panel can show them instead of IDs. An account or device that no
+// longer exists, or whose name cannot be read right now, has none, and the
+// panel falls back to the ID.
+type queryRecordView struct {
+	telemetry.QueryRecord
+	Username   string `json:"username,omitempty"`
+	DeviceName string `json:"device_name,omitempty"`
+}
+
+type queryPageView struct {
+	Items      []queryRecordView `json:"items"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+}
+
+// Credential names are read a full page at a time, for at most
+// maxNamePages pages per account.
+const (
+	namePageSize = 1000
+	maxNamePages = 10
+)
+
+func (h *Handler) namedQueryPage(ctx context.Context, page telemetry.QueryPage) queryPageView {
+	usernames := make(map[string]string)
+	devices := make(map[string]string)
+	for _, record := range page.Items {
+		if record.UserID == "" {
+			continue
+		}
+		if _, seen := usernames[record.UserID]; seen {
+			continue
+		}
+		usernames[record.UserID] = ""
+		user, err := h.opts.Control.GetUser(ctx, record.UserID)
+		if err != nil {
+			continue
+		}
+		usernames[record.UserID] = user.Username
+		cursor := ""
+		for range maxNamePages {
+			credentials, err := h.opts.Control.ListCredentials(ctx, record.UserID, control.Page{Limit: namePageSize, Cursor: cursor})
+			if err != nil {
+				break
+			}
+			for _, credential := range credentials.Items {
+				devices[credential.ID] = credential.Name
+			}
+			if credentials.NextCursor == "" {
+				break
+			}
+			cursor = credentials.NextCursor
+		}
 	}
-	writeJSON(w, http.StatusOK, v)
+	view := queryPageView{Items: make([]queryRecordView, len(page.Items)), NextCursor: page.NextCursor}
+	for i, record := range page.Items {
+		view.Items[i] = queryRecordView{QueryRecord: record, Username: usernames[record.UserID], DeviceName: devices[record.CredentialID]}
+	}
+	return view
 }
 
 func parseQueryFilter(w http.ResponseWriter, r *http.Request) (telemetry.QueryFilter, bool) {

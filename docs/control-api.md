@@ -63,7 +63,7 @@
 
 - `series` 每项：`time`、`completed`、`failed`、`cache_hits`、`avg_latency_ms`。
 - `upstreams` 每项：`id`、`attempts`、`failures`、`avg_latency_ms`。id 使用安全的配置标识，不能包含上游 URL 中的凭证。
-- `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`、`response_source`、`response_source_id`、`upstream_id`、`upstream_label`、`trace`。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
+- `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`、`response_source`、`response_source_id`、`upstream_id`、`upstream_label`、`trace`、`username`、`device_name`。`username` 和 `device_name` 是读取日志时按 `user_id`、`credential_id` 查到的当前账户名和设备名；账户或设备已删除、或暂时无法读取时不返回，面板改为显示 ID。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
 - `response_source` 可能是 `cache`、`upstream`、`hosts`、`sequence` 或 `servfail`。升级前写入的记录还可能带有 `custom_block`、`custom_rewrite`、`public_list` 或 `family_preference`，本版不再产生这些值。并发和 fallback 中最终选中的响应决定 `response_source` 和 `upstream_id`；每一次实际上游请求都记录在 `trace` 中，并进入聚合统计。
 - `upstream_label` 是这次查询走的出站 DNS。缓存命中时，它是当初产生这条缓存应答的上游；升级前写入的缓存条目没有这项信息，此时为空。上游配置了 `label` 时显示该名称；否则内置名单中的公共 DNS（阿里、腾讯 DNSPod、114、百度、CNNIC、360、Google、Cloudflare、Quad9、OpenDNS、AdGuard）显示为“地址 (协议)”，例如 `223.5.5.5 (UDP)`；其他上游一律显示为“插件 tag #序号 (协议)”，例如 `forward_remote #1 (DoH)`，不包含私有服务器的域名、IP 或 URL 路径。
 - `trace` 记录这次查询的处理过程，升级前的记录没有这项：

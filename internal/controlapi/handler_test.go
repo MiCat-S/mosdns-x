@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
@@ -676,5 +677,49 @@ func TestAdminDeleteUser(t *testing.T) {
 	}
 	if n := len(eraser.erased); n != 3 || eraser.erased[2] != f.user2.ID {
 		t.Fatalf("erased=%v", eraser.erased)
+	}
+}
+
+func TestQueryLogsNameAccountsAndDevices(t *testing.T) {
+	f := newFixture(t)
+	issued, err := f.store.CreateCredential(context.Background(), f.user1.ID, f.user1.ID, "MacBook", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.telemetry.page = telemetry.QueryPage{Items: []telemetry.QueryRecord{
+		{ID: "1", UserID: f.user1.ID, CredentialID: issued.Credential.ID, Name: "a.example."},
+		{ID: "2", UserID: f.user2.ID, CredentialID: "revoked-and-gone", Name: "b.example."},
+		{ID: "3", UserID: "deleted-user", CredentialID: "deleted-credential", Name: "c.example."},
+	}}
+	admin, _ := login(t, f.handler, "admin", "password-for-admin")
+	w := req(f.handler, http.MethodGet, "/api/v1/admin/queries", "", admin, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("queries=%d %s", w.Code, w.Body.String())
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil || len(page.Items) != 3 {
+		t.Fatalf("page=%s err=%v", w.Body.String(), err)
+	}
+	if page.Items[0]["username"] != "alice" || page.Items[0]["device_name"] != "MacBook" || page.Items[0]["user_id"] != f.user1.ID {
+		t.Fatalf("named record=%v", page.Items[0])
+	}
+	if page.Items[1]["username"] != "bob" || page.Items[1]["device_name"] != nil {
+		t.Fatalf("record with a gone device=%v", page.Items[1])
+	}
+	if _, ok := page.Items[2]["username"]; ok || page.Items[2]["user_id"] != "deleted-user" {
+		t.Fatalf("record of a deleted account=%v", page.Items[2])
+	}
+
+	// A user sees their own device names on their own logs.
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+	f.telemetry.page = telemetry.QueryPage{Items: []telemetry.QueryRecord{{ID: "4", UserID: f.user1.ID, CredentialID: issued.Credential.ID}}}
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/queries", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"device_name":"MacBook"`) {
+		t.Fatalf("own queries=%d %s", w.Code, w.Body.String())
+	}
+	f.telemetry.page = telemetry.QueryPage{}
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/queries", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"items":[]`) {
+		t.Fatalf("empty queries=%d %s", w.Code, w.Body.String())
 	}
 }
