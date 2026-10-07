@@ -6,7 +6,7 @@
 
 This repository is a fork of [pmkol/mosdns-x](https://github.com/pmkol/mosdns-x). Mosdns-x is a high-performance DNS forwarder written in Go. You shape how it handles DNS with a plugin pipeline, and it speaks UDP, TCP, DoT, DoQ, DoH and DoH3.
 
-This fork adds a **multi-user DoH / DoH3 service**: one Mosdns process serves DNS, a management API and a web panel. Admins create accounts and assign quotas. Users get a private encrypted-DNS address for each of their devices, and tune their own blocking rules, privacy options and query logging from their own panel.
+This fork adds a **multi-user DoH / DoH3 service**: one Mosdns process serves DNS, a management API and a web panel. Admins create accounts and assign quotas. Users get a private encrypted-DNS address for each of their devices, and check their usage and query logs in their own panel. All users share the DNS handling defined in the main config.
 
 > The web panel and the documentation under `docs/` are in Simplified Chinese.
 
@@ -18,23 +18,21 @@ This fork adds a **multi-user DoH / DoH3 service**: one Mosdns process serves DN
 - Each device gets its own UUID credential and connects with a private URL or `Authorization: Bearer`. Credentials can be rotated or revoked at any time.
 - Usage is metered exactly at three levels (server, user and device). The quota is charged in the same transaction that admits the query.
 
-**Self-service settings for users**
+**User panel**
 
-- Security and privacy: DNS rebinding protection, blocking by query type (including HTTPS and SVCB), ECS removal, and a one-click switch for the threat intelligence lists the admin provides.
-- Custom rules: block, allow, and A / AAAA / CNAME rewrites, matched by exact name, suffix, keyword or regular expression.
-- Public blocklists: the admin curates a catalog and each user turns lists on or off.
-- Answer tuning: IPv4 or IPv6 preference, TTL floor and ceiling, CNAME flattening, shuffled answers, and ECS address override.
-- A one-click safe mode, and a switch that pauses all of a user's own policies for a while.
-- Users decide whether detailed query logs are kept, and for how long.
-- DNS Lookup: test any name against the complete policy chain currently in effect.
+- View the DNS address and credential of each device, and create, rotate or revoke credentials.
+- View your own usage statistics and query logs.
+- Change your password, and read the help and setup instructions.
 
-**Administration and operations**
+**Logs and operations**
 
+- Detailed query logs, controlled by the global `control.query_log` switch, with retention time and record limit set in `control.telemetry`. Each record shows whether the answer came from an upstream or the cache, and which upstream was used.
+- Usage statistics charts, audit log, system health monitoring, and an authenticated Prometheus `/metrics`.
 - Control and statistics data live in bbolt (no dependencies) or in MySQL 5.7 / 8.4.
-- Statistics and query logs show whether each answer came from an upstream, the cache, a rule or a public list.
-- Audit log, system health monitoring, and an authenticated Prometheus `/metrics`.
 - Managed runtime config: validate, hot-reload and roll back upstreams, caching and statistics retention from the panel. A failed change leaves the running config untouched.
-- Offline backup and restore, migration from bbolt to MySQL, and an offline `reset-password` for a locked-out admin.
+- Offline commands `control init-admin`, `control status`, and `control reset-password` for a locked-out admin.
+
+Per-user DNS policy from earlier versions (custom rules, security and privacy options, answer tuning and so on), public blocklists, DNS Lookup, and the `control backup` / `restore` / `migrate-mysql` commands have been removed. For upgrade and rollback notes, see [storage](docs/storage.md#已移除功能的数据) (Chinese).
 
 ## Quick start
 
@@ -73,8 +71,8 @@ All documents are in Simplified Chinese.
 | Topic | Documents |
 |---|---|
 | Install and upgrade | [One-command install](docs/installation.md), [deployment guide](docs/deployment.md) |
-| Configuration | [Multi-user configuration](docs/service-config.md), [storage and migration](docs/storage.md) |
-| Operations | [Initialization, backup and restore, managed config, password reset](docs/operations.md), [security and health monitoring](docs/monitoring.md) |
+| Configuration | [Multi-user configuration](docs/service-config.md), [storage and backup](docs/storage.md) |
+| Operations | [Initialization, backup, managed config, password reset](docs/operations.md), [security and health monitoring](docs/monitoring.md) |
 | Development | [Service architecture](docs/service-architecture.md), [API contract](docs/control-api.md), [building](docs/building.md), [releasing](docs/releasing.md) |
 | Acceptance | [Development review and acceptance](docs/development-review.md), [performance](docs/performance.md) |
 

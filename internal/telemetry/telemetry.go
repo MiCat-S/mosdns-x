@@ -126,8 +126,6 @@ type QueryRecord struct {
 	ResponseSource       string                 `json:"response_source"`
 	ResponseSourceID     string                 `json:"response_source_id"`
 	UpstreamID           string                 `json:"upstream_id"`
-	MatchedRuleID        string                 `json:"matched_rule_id"`
-	MatchedPublicListID  string                 `json:"matched_public_list_id"`
 }
 
 type Page struct {
@@ -179,8 +177,6 @@ type Store struct {
 	mysql               *sql.DB
 	mysqlTimeout        time.Duration
 	mysqlPrunedAt       atomic.Int64
-	userPrunedAt        atomic.Int64
-	logPolicy           atomic.Pointer[UserLogPolicy]
 	queue               chan event
 	stop                chan struct{}
 	done                chan struct{}
@@ -545,17 +541,10 @@ func (s *Store) writeBatch(events []event) error {
 		return s.writeMySQLBatch(events)
 	}
 	now := s.now().UTC()
-	// Both lookups run before the write transaction, so no call into the
-	// control store holds the telemetry write lock.
-	detailed := s.detailedLogging(events)
-	cutoffs, pruneUsers, err := s.dueUserCutoffs(now)
-	if err != nil {
-		return err
-	}
-	err = s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		for _, e := range events {
 			if e.result != nil {
-				if err := s.writeResult(tx, e.time, *e.result, detailed[e.result.Principal.UserID]); err != nil {
+				if err := s.writeResult(tx, e.time, *e.result); err != nil {
 					return err
 				}
 			}
@@ -563,11 +552,6 @@ func (s *Store) writeBatch(events []event) error {
 				if err := s.writeAttempt(tx, e.time, *e.attempt); err != nil {
 					return err
 				}
-			}
-		}
-		if pruneUsers {
-			if err := pruneByUserRetention(tx, cutoffs); err != nil {
-				return err
 			}
 		}
 		if err := s.prune(tx, now); err != nil {
@@ -579,29 +563,8 @@ func (s *Store) writeBatch(events []event) error {
 	})
 	if err == nil {
 		s.updatedUnixNano.Store(now.UnixNano())
-		if pruneUsers {
-			s.userPrunedAt.Store(now.Truncate(time.Minute).Unix())
-		}
 	}
 	return err
-}
-
-// dueUserCutoffs returns each user's retention cutoff when a minute has passed
-// since the last per-user sweep. Retention is per user, so the sweep walks
-// every user holding records; once a minute bounds that cost while keeping
-// expiry within a minute of its deadline.
-func (s *Store) dueUserCutoffs(now time.Time) (map[string]time.Time, bool, error) {
-	if now.Truncate(time.Minute).Unix() <= s.userPrunedAt.Load() {
-		return nil, false, nil
-	}
-	var users []string
-	if err := s.db.View(func(tx *bolt.Tx) error {
-		users = queryUsers(tx)
-		return nil
-	}); err != nil {
-		return nil, false, err
-	}
-	return s.retentionCutoffs(users, now), true, nil
 }
 
 func minuteKey(scope, userID string, minute time.Time, suffix string) []byte {
@@ -648,7 +611,7 @@ func latencyBucket(d time.Duration) int {
 	return i
 }
 
-func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result, detailed bool) error {
+func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) error {
 	settings := s.Settings()
 	minute := now.Truncate(time.Minute)
 	failed := r.ExecError || r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused
@@ -687,8 +650,7 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result, de
 		}
 	}
 	// Aggregates above are always written: quota and usage charts need them.
-	// Only the detailed record honors the user's choice.
-	if settings.QueryLogEnabled && detailed {
+	if settings.QueryLogEnabled {
 		sequence, err := tx.Bucket(bucketQueries).NextSequence()
 		if err != nil {
 			return err
@@ -724,8 +686,7 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result, de
 			UpstreamResponseEDNS: dnsutils.CloneEDNSSnapshot(r.UpstreamResponseEDNS),
 			ResponseEDNS:         dnsutils.CloneEDNSSnapshot(r.ResponseEDNS),
 			ResponseSource:       r.ResponseSource, ResponseSourceID: r.ResponseSourceID,
-			UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID,
-			MatchedPublicListID: r.MatchedPublicListID,
+			UpstreamID: r.UpstreamID,
 		}
 		v, _ := json.Marshal(record)
 		if err := tx.Bucket(bucketQueries).Put([]byte(id), v); err != nil {
@@ -810,12 +771,8 @@ func (s *Store) prune(tx *bolt.Tx, now time.Time) error {
 			return err
 		}
 	}
-	// Age is enforced per user by the minute sweep, since a user may keep
-	// records longer than the default. This pass only enforces the ceiling no
-	// choice can exceed, which also catches users whose choice could not be
-	// read.
 	q := tx.Bucket(bucketQueries)
-	ceiling := fmt.Sprintf("%020d", now.Add(-maxQueryRetention).UnixNano())
+	ceiling := fmt.Sprintf("%020d", now.Add(-settings.QueryRetention).UnixNano())
 	c = q.Cursor()
 	count := metaUint64(tx, keyQueryCount)
 	for k, v := c.First(); len(k) >= 20 && string(k[:20]) < ceiling; k, v = c.Next() {
@@ -993,7 +950,7 @@ func (s *Store) Queries(ctx context.Context, userID string, from, to time.Time, 
 	if err := validateRange(from, to); err != nil {
 		return result, err
 	}
-	retainedFrom := s.now().UTC().Add(-s.visibleRetention(ctx, userID, settings.QueryRetention))
+	retainedFrom := s.now().UTC().Add(-settings.QueryRetention)
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}

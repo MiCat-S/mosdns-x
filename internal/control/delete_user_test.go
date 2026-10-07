@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -86,33 +85,6 @@ func populateForDeletion(t *testing.T, s Service) deletionFixture {
 	if err := s.ChangePassword(ctx, f.victim.ID, userSpec("", 0, 0, 0).Password, "another horse battery"); err != nil {
 		t.Fatal(err)
 	}
-	strip := true
-	if _, err := s.UpdateDNSPolicySettings(ctx, f.victim.ID, f.victim.ID, DNSPolicySettingsPatch{StripECS: &strip}); err != nil {
-		t.Fatal(err)
-	}
-	rule := DNSPolicyRuleSpec{Enabled: true, Priority: 10, Action: DNSPolicyRewrite, Match: DNSPolicyMatchExact, Pattern: "internal.example", RecordType: DNSPolicyRewriteA, Value: "192.0.2.10"}
-	gone, err := s.CreateDNSPolicyRule(ctx, f.admin.ID, f.victim.ID, rule)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DeleteDNSPolicyRule(ctx, f.admin.ID, f.victim.ID, gone.ID); err != nil {
-		t.Fatal(err)
-	}
-	rule.Pattern = "kept.example"
-	if _, err := s.CreateDNSPolicyRule(ctx, f.victim.ID, f.victim.ID, rule); err != nil {
-		t.Fatal(err)
-	}
-	enabled := true
-	list, err := s.CommitPublicListSnapshot(ctx, f.admin.ID, "delete-user-list", time.Time{}, PublicListSpec{
-		Name: "Ads", URL: "https://example.com/ads.txt", Format: PublicListFormatMosDNS, DefaultEnabled: &enabled, RefreshSeconds: 300,
-	}, PublicListRefreshResult{Status: PublicListRefreshSuccess, EntryCount: 1, SHA256: strings.Repeat("a", 64), RefreshedAt: time.Now().UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	disabled := false
-	if err := s.SetUserPublicList(ctx, f.admin.ID, f.victim.ID, list.ID, &disabled); err != nil {
-		t.Fatal(err)
-	}
 	return f
 }
 
@@ -165,6 +137,7 @@ func TestDeleteUserErasesEverythingAboutTheUser(t *testing.T) {
 	now := time.Date(2026, 9, 25, 8, 0, 0, 0, time.UTC)
 	s, _, _ := newTestStore(t, now)
 	f := populateForDeletion(t, s)
+	seedRetiredBoltRecords(t, s, f.victim.ID)
 	if err := s.DeleteUser(context.Background(), f.admin.ID, f.victim.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +163,25 @@ func TestDeleteUserErasesEverythingAboutTheUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkUserDeleted(t, s, f, now.Add(-time.Hour))
+}
+
+// seedRetiredBoltRecords leaves rows in the retired policy and public list
+// buckets, as a database last used by an older binary would hold.
+func seedRetiredBoltRecords(t *testing.T, s *Store, userID string) {
+	t.Helper()
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		ruleID := []byte("rule-" + userID)
+		if err := tx.Bucket(bDNSPolicyRules).Put(ruleID, []byte(`{"user_id":"`+userID+`"}`)); err != nil {
+			return err
+		}
+		if err := tx.Bucket(bUserDNSPolicyRules).Put([]byte(userID+"\x00\x00\x00\x00\x0a"+string(ruleID)), ruleID); err != nil {
+			return err
+		}
+		return tx.Bucket(bUserPublicLists).Put([]byte(userID+"\x00list-1"), []byte("false"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDeleteUserGuards(t *testing.T) {

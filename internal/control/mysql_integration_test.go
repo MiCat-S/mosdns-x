@@ -35,40 +35,6 @@ func TestMySQLIntegrationControlLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, err := store.GetDNSPolicySettings(ctx, user.ID)
-	if err != nil || settings.BlockedQTypes == nil || len(settings.BlockedQTypes) != 0 || !settings.CustomBlockEnabled || !settings.CustomAllowEnabled || !settings.CustomRewriteEnabled || settings.PolicyPausedUntil != nil {
-		t.Fatalf("default policy settings=%+v err=%v", settings, err)
-	}
-	rule, err := store.CreateDNSPolicyRule(ctx, user.ID, user.ID, DNSPolicyRuleSpec{Enabled: true, Priority: 10, Action: DNSPolicyRewrite, Match: DNSPolicyMatchExact, Pattern: "internal.example", RecordType: DNSPolicyRewriteA, Value: "192.0.2.10"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rules, err := store.ListDNSPolicyRules(ctx, user.ID, Page{})
-	if err != nil || len(rules.Items) != 1 || rules.Items[0].ID != rule.ID {
-		t.Fatalf("policy rules=%+v err=%v", rules, err)
-	}
-	defaultEnabled := true
-	publicList, err := store.CommitPublicListSnapshot(ctx, admin.ID, "mysql-public-list", time.Time{}, PublicListSpec{
-		Name: "Ads", URL: "https://example.com/ads.txt", Format: PublicListFormatMosDNS,
-		DefaultEnabled: &defaultEnabled, RefreshSeconds: 300,
-	}, PublicListRefreshResult{
-		Status: PublicListRefreshSuccess, EntryCount: 12, SHA256: strings.Repeat("a", 64), RefreshedAt: time.Now().UTC(),
-	})
-	if err != nil || !publicList.Published || !publicList.DefaultEnabled || publicList.SnapshotStatus != PublicListSnapshotCurrent {
-		t.Fatalf("public list=%+v err=%v", publicList, err)
-	}
-	userLists, err := store.ListUserPublicLists(ctx, user.ID, Page{})
-	if err != nil || len(userLists.Items) != 1 || !userLists.Items[0].Enabled || userLists.Items[0].Overridden {
-		t.Fatalf("user public lists=%+v err=%v", userLists, err)
-	}
-	disabled := false
-	if err := store.SetUserPublicList(ctx, user.ID, user.ID, publicList.ID, &disabled); err != nil {
-		t.Fatal(err)
-	}
-	userLists, err = store.ListUserPublicLists(ctx, user.ID, Page{})
-	if err != nil || len(userLists.Items) != 1 || userLists.Items[0].Enabled || !userLists.Items[0].Overridden {
-		t.Fatalf("overridden public list=%+v err=%v", userLists, err)
-	}
 	issued, err := store.CreateCredential(ctx, user.ID, user.ID, "phone", time.Time{})
 	if err != nil {
 		t.Fatal(err)
@@ -140,16 +106,11 @@ func cleanupMySQLControlTables(t *testing.T, dsn string) {
 	}
 }
 
-// The statements below are what the previous release sends, copied verbatim
-// with no answer_family. Rolling the binary back relies on them working
-// against the upgraded table: the column must be optional to insert, invisible
-// to explicit selects, and untouched by an update that does not name it.
-const (
-	previousReleaseSettingsSelect = `SELECT user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns FROM mosdns_dns_policy_settings WHERE user_id=?`
-	previousReleaseSettingsUpdate = `UPDATE mosdns_dns_policy_settings SET strip_ecs=?, block_private_answers=?, blocked_qtypes_json=?, custom_block_enabled=?, custom_allow_enabled=?, custom_rewrite_enabled=?, policy_paused_until_ns=?, updated_at_ns=? WHERE user_id=?`
-)
+// previousReleaseSettingsSelect is what a release with DNS policies sends for
+// every query. Rolling the binary back relies on each user having a row.
+const previousReleaseSettingsSelect = `SELECT user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled, custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns FROM mosdns_dns_policy_settings WHERE user_id=?`
 
-func TestMySQLIntegrationAnswerFamilyKeepsRollbackCompatible(t *testing.T) {
+func TestMySQLIntegrationRetiredPolicyRowsKeepRollbackCompatible(t *testing.T) {
 	dsn := os.Getenv("MOSDNS_TEST_MYSQL_DSN")
 	if dsn == "" {
 		t.Skip("MOSDNS_TEST_MYSQL_DSN is not set")
@@ -166,8 +127,8 @@ func TestMySQLIntegrationAnswerFamilyKeepsRollbackCompatible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	family := AnswerFamilyIPv4
-	if _, err := store.UpdateDNSPolicySettings(ctx, admin.ID, admin.ID, DNSPolicySettingsPatch{AnswerFamily: &family}); err != nil {
+	user, err := store.CreateUser(ctx, admin.ID, userSpec("rollback-user", 10, 10, 2))
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -182,42 +143,44 @@ func TestMySQLIntegrationAnswerFamilyKeepsRollbackCompatible(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT version FROM mosdns_schema_migrations WHERE component='control'`).Scan(&version); err != nil || version != mysqlControlSchemaVersion {
 		t.Fatalf("schema version=%d err=%v, want %d so the previous release still opens it", version, err, mysqlControlSchemaVersion)
 	}
+	for _, id := range []string{admin.ID, user.ID} {
+		var userID, qtypes string
+		var strip, private, block, allow, rewrite bool
+		var paused sql.NullInt64
+		var updated int64
+		if err := db.QueryRowContext(ctx, previousReleaseSettingsSelect, id).Scan(&userID, &strip, &private, &qtypes, &block, &allow, &rewrite, &paused, &updated); err != nil {
+			t.Fatalf("previous release select for %s: %v", id, err)
+		}
+		if qtypes != "[]" || strip || private || !block || !allow || !rewrite || paused.Valid {
+			t.Fatalf("retired defaults for %s: qtypes=%q strip=%v private=%v block=%v allow=%v rewrite=%v paused=%v", id, qtypes, strip, private, block, allow, rewrite, paused)
+		}
+	}
+}
 
-	// The previous release's explicit select and update keep working.
-	var userID, qtypes string
-	var strip, private, block, allow, rewrite bool
-	var paused sql.NullInt64
-	var updated int64
-	if err := db.QueryRowContext(ctx, previousReleaseSettingsSelect, admin.ID).Scan(&userID, &strip, &private, &qtypes, &block, &allow, &rewrite, &paused, &updated); err != nil {
-		t.Fatalf("previous release select: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, previousReleaseSettingsUpdate, true, private, qtypes, block, allow, rewrite, nil, time.Now().UnixNano(), admin.ID); err != nil {
-		t.Fatalf("previous release update: %v", err)
-	}
-	// An update that does not name the column leaves the preference in place,
-	// so rolling forward again does not lose it.
-	settings, err := store.GetDNSPolicySettings(ctx, admin.ID)
-	if err != nil || settings.AnswerFamily != AnswerFamilyIPv4 || !settings.StripECS {
-		t.Fatalf("after previous release update: settings=%+v err=%v", settings, err)
-	}
-
-	// A row the previous release inserts, without the column, reads as no
-	// preference. Reusing the admin's id is avoided by inserting for a new user.
-	user, err := store.CreateUser(ctx, admin.ID, userSpec("rollback-user", 10, 10, 2))
+// seedRetiredMySQLRows leaves rows in the retired policy and public list
+// tables, as a database last used by an older binary would hold.
+func seedRetiredMySQLRows(t *testing.T, dsn, userID string) {
+	t.Helper()
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM mosdns_dns_policy_settings WHERE user_id=?`, user.ID); err != nil {
-		t.Fatal(err)
+	defer db.Close()
+	now := time.Now().UnixNano()
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO mosdns_dns_policy_rules (id, user_id, enabled, priority, action, match_kind, pattern, created_at_ns, updated_at_ns)
+			VALUES (?, ?, TRUE, 10, 'block', 'exact', 'kept.example', ?, ?)`, []any{"rule-" + userID, userID, now, now}},
+		{`INSERT INTO mosdns_public_lists (id, name, name_normalized, category, url, format, enabled, default_enabled, published, sha256, refresh_seconds, created_at_ns, updated_at_ns)
+			VALUES ('list-1', 'Ads', 'ads', '', 'https://example.com/ads.txt', 'mosdns', TRUE, TRUE, TRUE, ?, 300, ?, ?)`, []any{strings.Repeat("a", 64), now, now}},
+		{`INSERT INTO mosdns_user_public_lists (user_id, list_id, enabled) VALUES (?, 'list-1', FALSE)`, []any{userID}},
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO mosdns_dns_policy_settings
-		(user_id, strip_ecs, block_private_answers, blocked_qtypes_json, custom_block_enabled,
-		 custom_allow_enabled, custom_rewrite_enabled, policy_paused_until_ns, updated_at_ns)
-		VALUES (?, FALSE, FALSE, '[]', TRUE, TRUE, TRUE, NULL, ?)`, user.ID, time.Now().UnixNano()); err != nil {
-		t.Fatalf("previous release insert: %v", err)
-	}
-	if settings, err := store.GetDNSPolicySettings(ctx, user.ID); err != nil || settings.AnswerFamily != AnswerFamilyAny {
-		t.Fatalf("row from previous release: settings=%+v err=%v", settings, err)
+	for _, st := range statements {
+		if _, err := db.Exec(st.query, st.args...); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -236,6 +199,7 @@ func TestMySQLIntegrationDeleteUser(t *testing.T) {
 	defer store.Close()
 	started := time.Now().Add(-time.Hour)
 	f := populateForDeletion(t, store)
+	seedRetiredMySQLRows(t, dsn, f.victim.ID)
 	if err := store.DeleteUser(ctx, f.admin.ID, f.admin.ID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("self delete err=%v", err)
 	}

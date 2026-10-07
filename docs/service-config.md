@@ -72,7 +72,7 @@ control:
     driver: bbolt
 ```
 
-MySQL 表会在首次连接时自动创建。首次管理员使用 `mosdns control init-admin --config /etc/mosdns/config.yaml --username admin` 初始化，命令从配置读取 DSN，管理员密码仍从 stdin 读取。已有 bbolt 数据应按[存储文档](storage.md)的离线迁移流程导入。
+MySQL 表会在首次连接时自动创建。首次管理员使用 `mosdns control init-admin --config /etc/mosdns/config.yaml --username admin` 初始化，命令从配置读取 DSN，管理员密码仍从 stdin 读取。本版不提供把已有 bbolt 数据导入 MySQL 的工具，见[存储文档](storage.md#已移除功能的数据)。
 
 控制模式禁用 TLS early data 与 QUIC 0-RTT，避免可重放请求重复扣减额度。停止服务时会先关闭 listener、拒绝新请求并等待在途 DNS/API 请求完成，随后才关闭插件、统计库和账户库。
 

@@ -6,7 +6,7 @@
 
 本仓库 Fork 自 [pmkol/mosdns-x](https://github.com/pmkol/mosdns-x)。Mosdns-x 是用 Go 编写的高性能 DNS 转发器，通过插件流水线定制 DNS 处理逻辑，支持 UDP、TCP、DoT、DoQ、DoH 和 DoH3。
 
-本 Fork 在此基础上增加了**多用户 DoH / DoH3 服务**：一个 Mosdns 进程同时提供 DNS、管理 API 和网页面板。管理员开设账户、分配额度；用户为每台设备生成专属的加密 DNS 地址，并在自己的面板里调整拦截规则、隐私选项和查询日志。
+本 Fork 在此基础上增加了**多用户 DoH / DoH3 服务**：一个 Mosdns 进程同时提供 DNS、管理 API 和网页面板。管理员开设账户、分配额度；用户为每台设备生成专属的加密 DNS 地址，并在自己的面板里查看用量和查询日志。所有用户共用主配置中的同一套 DNS 处理逻辑。
 
 ## 功能
 
@@ -16,23 +16,21 @@
 - 每台设备一个 UUID 凭证，可用专属 URL 或 `Authorization: Bearer` 接入；凭证可随时轮换或撤销。
 - 用量按全局、用户、设备三级准确计量，额度扣减与请求受理在同一事务中完成。
 
-**用户自助设置**
+**用户面板**
 
-- 安全与隐私：DNS 重绑定防护、按查询类型拦截（包括 HTTPS／SVCB）、移除 ECS，以及一键开启管理员提供的恶意域名情报列表。
-- 自定义规则：拦截、放行，以及 A／AAAA／CNAME 重写；支持精确、后缀、关键字和正则匹配。
-- 公共订阅列表：管理员维护目录，用户按需开关。
-- 响应优化：IPv4／IPv6 地址族偏好、TTL 上下限、展平 CNAME 链、打乱应答顺序、ECS 地址覆写。
-- 一键安全模式，以及临时暂停全部个人策略。
-- 自己决定是否记录详细查询日志、保留多久。
-- DNS Lookup：用当前生效的完整策略链测试任意域名。
+- 查看各设备的 DNS 地址和凭证，自行创建、轮换或撤销凭证。
+- 查看自己的用量统计和查询日志。
+- 修改密码，查看帮助和接入说明。
 
-**管理与运维**
+**日志与运维**
 
+- 详细查询日志：由全局 `control.query_log` 开关控制，保留时长和条数上限在 `control.telemetry` 中设置；每条记录标明应答来自上游还是缓存，以及使用的上游。
+- 用量统计图表、审计日志、系统健康监控，以及受保护的 Prometheus `/metrics`。
 - 控制数据和统计数据可存 bbolt（零依赖），也可存 MySQL 5.7 / 8.4。
-- 统计与查询日志：可以看出每个应答来自上游、缓存、规则还是公共列表。
-- 审计日志、系统健康监控，以及受保护的 Prometheus `/metrics`。
 - 托管运行配置：在面板中校验、热更新和回滚上游、缓存及统计保留策略，失败时不影响正在运行的配置。
-- 离线备份与恢复、bbolt 到 MySQL 迁移，以及用于找回管理员的离线 `reset-password`。
+- 离线命令 `control init-admin`、`control status`，以及用于找回管理员的 `control reset-password`。
+
+早期版本中的用户 DNS 策略（自定义规则、安全与隐私选项、响应优化等）、公共列表、DNS Lookup，以及 `control backup`／`restore`／`migrate-mysql` 命令已移除。升级与回滚说明见[存储文档](docs/storage.md#已移除功能的数据)。
 
 ## 快速开始
 
@@ -69,8 +67,8 @@ mosdns control status --config /etc/mosdns/config.yaml
 | 主题 | 文档 |
 |---|---|
 | 安装与升级 | [一键安装](docs/installation.md)、[部署教程](docs/deployment.md) |
-| 配置 | [多用户配置](docs/service-config.md)、[存储与迁移](docs/storage.md) |
-| 日常运维 | [初始化、备份恢复、托管配置与密码重置](docs/operations.md)、[安全与运行监控](docs/monitoring.md) |
+| 配置 | [多用户配置](docs/service-config.md)、[存储与备份](docs/storage.md) |
+| 日常运维 | [初始化、备份、托管配置与密码重置](docs/operations.md)、[安全与运行监控](docs/monitoring.md) |
 | 开发 | [服务架构](docs/service-architecture.md)、[API 契约](docs/control-api.md)、[构建](docs/building.md)、[发布](docs/releasing.md) |
 | 验收 | [开发审核与验收](docs/development-review.md)、[性能验证](docs/performance.md) |
 

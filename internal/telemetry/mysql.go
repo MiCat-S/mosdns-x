@@ -342,7 +342,6 @@ type mysqlUpstreamKey struct {
 
 func (s *Store) writeMySQLBatch(events []event) error {
 	settings := s.Settings()
-	detailed := s.detailedLogging(events)
 	minutes := make(map[mysqlMinuteKey]minuteAggregate)
 	rcodes := make(map[mysqlRcodeKey]uint64)
 	latencies := make(map[mysqlLatencyKey]uint64)
@@ -372,7 +371,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 				rcodes[mysqlRcodeKey{mysqlMinuteKey: key, Rcode: rcode}]++
 				latencies[mysqlLatencyKey{mysqlMinuteKey: key, Bucket: latencyBucket(r.Duration)}]++
 			}
-			if settings.QueryLogEnabled && detailed[r.Principal.UserID] {
+			if settings.QueryLogEnabled {
 				idSuffix, err := randomTelemetryID()
 				if err != nil {
 					return err
@@ -404,8 +403,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 					UpstreamResponseEDNS: dnsutils.CloneEDNSSnapshot(r.UpstreamResponseEDNS),
 					ResponseEDNS:         dnsutils.CloneEDNSSnapshot(r.ResponseEDNS),
 					ResponseSource:       r.ResponseSource, ResponseSourceID: r.ResponseSourceID,
-					UpstreamID: r.UpstreamID, MatchedRuleID: r.MatchedRuleID,
-					MatchedPublicListID: r.MatchedPublicListID,
+					UpstreamID: r.UpstreamID,
 				})
 			}
 		}
@@ -429,16 +427,6 @@ func (s *Store) writeMySQLBatch(events []event) error {
 	now := s.now().UTC()
 	minute := now.Truncate(time.Minute).Unix()
 	shouldPrune := s.mysqlPrunedAt.Load() < minute
-	// Resolve each user's retention before the transaction, so no lookup
-	// into the control store runs while telemetry rows are locked.
-	var cutoffs map[string]time.Time
-	if shouldPrune {
-		users, err := s.mysqlQueryUsers(ctx)
-		if err != nil {
-			return fmt.Errorf("mysql telemetry: %w", err)
-		}
-		cutoffs = s.retentionCutoffs(users, now)
-	}
 	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
@@ -505,10 +493,10 @@ func (s *Store) writeMySQLBatch(events []event) error {
 		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_query_logs
 			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
 			 edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
-			 response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
+			 response_source, response_source_id, upstream_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
 			q.EDNSTraceVersion, normalizedUpstreamStageStatus(q.UpstreamStageStatus), upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON,
-			q.ResponseSource, q.ResponseSourceID, q.UpstreamID, q.MatchedRuleID, q.MatchedPublicListID)
+			q.ResponseSource, q.ResponseSourceID, q.UpstreamID)
 		if err != nil {
 			return rollback(err)
 		}
@@ -519,15 +507,8 @@ func (s *Store) writeMySQLBatch(events []event) error {
 				return rollback(err)
 			}
 		}
-		// The ceiling no choice exceeds, which also covers users whose choice
-		// could not be read this minute.
-		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-maxQueryRetention).UnixNano()); err != nil {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-settings.QueryRetention).UnixNano()); err != nil {
 			return rollback(err)
-		}
-		for userID, cutoff := range cutoffs {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE user_id=? AND time_ns<?`, userID, cutoff.UnixNano()); err != nil {
-				return rollback(err)
-			}
 		}
 		if err = mysqlEvictOverCap(ctx, tx, settings.MaxQueryRecords); err != nil {
 			return rollback(err)
@@ -720,7 +701,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	if err := validateRange(from, to); err != nil {
 		return result, err
 	}
-	retainedFrom := s.now().UTC().Add(-s.visibleRetention(ctx, userID, settings.QueryRetention))
+	retainedFrom := s.now().UTC().Add(-settings.QueryRetention)
 	if from.Before(retainedFrom) {
 		from = retainedFrom
 	}
@@ -737,7 +718,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	defer cancel()
 	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
 		edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
-		response_source, response_source_id, upstream_id, matched_rule_id, matched_public_list_id
+		response_source, response_source_id, upstream_id
 		FROM mosdns_query_logs WHERE time_ns>=? AND time_ns<?`
 	args := []any{from.UnixNano(), to.UnixNano()}
 	if page.Cursor != "" {
@@ -802,7 +783,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		var upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON []byte
 		if err := rows.Scan(&r.ID, &ns, &r.UserID, &r.CredentialID, &r.ClientIP, &r.Name, &r.QType, &r.Rcode, &r.DurationMS, &r.CacheHit, &r.Protocol, &answerJSON, &ednsJSON,
 			&r.EDNSTraceVersion, &r.UpstreamStageStatus, &upstreamRequestEDNSJSON, &upstreamResponseEDNSJSON, &responseEDNSJSON,
-			&r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID, &r.MatchedRuleID, &r.MatchedPublicListID); err != nil {
+			&r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID); err != nil {
 			return result, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		r.Time = time.Unix(0, ns).UTC()
@@ -844,25 +825,6 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 }
 
 var _ Service = (*Store)(nil)
-
-// mysqlQueryUsers lists the users holding query records. It reads the
-// (user_id, time_ns, id) index, so it does not scan the records themselves.
-func (s *Store) mysqlQueryUsers(ctx context.Context) ([]string, error) {
-	rows, err := s.mysql.QueryContext(ctx, `SELECT DISTINCT user_id FROM mosdns_query_logs`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var users []string
-	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
-			return nil, err
-		}
-		users = append(users, userID)
-	}
-	return users, rows.Err()
-}
 
 // mysqlEvictOverCap brings the total within limit following
 // fairShareEviction: one GROUP BY for the counts, then one bounded DELETE per

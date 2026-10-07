@@ -230,10 +230,7 @@ func TestReadOnlyRuntimeInspectorReportsSourcesCapabilitiesAndDataProviders(t *t
 	if _, err := service.Probe(context.Background(), "forward"); !errors.Is(err, ErrManagedRuntimeDisabled) {
 		t.Fatalf("read-only Probe error = %v", err)
 	}
-	providers, err := service.DataProviders(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	providers := state.Sources.Running.DataProviders
 	if len(providers) != 1 || providers[0].Tag != "rules" || providers[0].FileState.Status != "available" || providers[0].FileState.SizeBytes == nil || *providers[0].FileState.SizeBytes != int64(len(contents)) {
 		t.Fatalf("providers = %+v", providers)
 	}

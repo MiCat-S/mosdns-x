@@ -25,18 +25,15 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"net/netip"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/pires/go-proxyproto"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
 	"github.com/pmkol/mosdns-x/coremain/listen"
-	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server"
 	D "github.com/pmkol/mosdns-x/pkg/server/dns_handler"
 	H "github.com/pmkol/mosdns-x/pkg/server/http_handler"
@@ -62,21 +59,6 @@ func (m *Mosdns) startServers(serverIndex int, cfg *ServerConfig) error {
 		}
 	}
 	return nil
-}
-
-func (m *Mosdns) newPanelLookup(cfg *Config) (func(context.Context, string, string, uint16) (*dns.Msg, error), error) {
-	if m.runtimeManager == nil || len(cfg.Servers) == 0 {
-		return nil, errors.New("no executable is available for panel lookup")
-	}
-	handler := m.runtimeManager.LookupHandler()
-	return func(ctx context.Context, userID, name string, qtype uint16) (*dns.Msg, error) {
-		request := new(dns.Msg).SetQuestion(name, qtype)
-		request.SetEdns0(1232, false)
-		meta := query_context.NewRequestMeta(netip.Addr{})
-		meta.SetProtocol("panel")
-		meta.SetPrincipal(query_context.Principal{UserID: userID})
-		return handler.ServeDNS(ctx, request, meta)
-	}, nil
 }
 
 func configuredQueryTimeout(cfg *ServerConfig) time.Duration {

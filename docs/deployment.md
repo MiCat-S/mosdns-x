@@ -101,7 +101,7 @@ unset MOSDNS_ADMIN_PASSWORD
 
 仓库中的 [生产反代示例](../examples/control-production-proxy.yaml)与下文一致。部署机没有源码 checkout，因此先创建受限文件，再用 `sudoedit` 粘贴下文并修改真实域名和上游：
 
-需要把账户、额度和统计集中保存到 MySQL 时，改用 [MySQL 生产示例](../examples/control-production-mysql.yaml)，并按[存储文档](storage.md)初始化或迁移数据。反向代理和 systemd 监听方式无需因此改变。
+需要把账户、额度和统计集中保存到 MySQL 时，改用 [MySQL 生产示例](../examples/control-production-mysql.yaml)，并按[存储文档](storage.md)初始化。本版不提供把已有 bbolt 数据导入 MySQL 的工具。反向代理和 systemd 监听方式无需因此改变。
 
 ```bash
 sudo install -m 0640 -o root -g mosdns /dev/null /etc/mosdns/config.yaml
@@ -359,32 +359,35 @@ trap - EXIT
 
 ## 备份、恢复与升级
 
-控制数据库 CLI 要求离线操作，不会自动停止服务。备份前进入维护窗口并停止 Mosdns-x：
+本节适用于 bbolt。Mosdns-x 没有内置备份命令，备份就是在服务停止时复制两个数据库文件。进入维护窗口后执行：
 
 ```bash
 sudo systemctl stop mosdns
-sudo -u mosdns /usr/local/bin/mosdns control backup \
-  --database /var/lib/mosdns/control.db \
-  --output /var/backups/mosdns/control-$(date +%Y%m%d-%H%M%S).db
+backup_dir=/var/backups/mosdns/$(date +%Y%m%d-%H%M%S)
+sudo install -d -o mosdns -g mosdns -m 0700 "$backup_dir"
+sudo cp -p /var/lib/mosdns/control.db /var/lib/mosdns/stats.db "$backup_dir"/
 sudo systemctl start mosdns
 ```
 
-备份目标必须是新文件。备份包含账户、会话、凭证、额度和用量；恢复旧备份也会恢复旧的已用额度，因此应保留完整维护窗口，避免停机后仍有其他实例受理请求。
+备份包含账户、会话、凭证、额度、用量和统计；恢复旧备份也会恢复旧的已用额度，因此应保留完整维护窗口，避免停机后仍有其他实例受理请求。
 
-恢复时保持 Mosdns-x 停止，并恢复到一个全新的数据库路径：
+恢复时保持 Mosdns-x 停止，先把当前文件改名保留，再复制备份：
 
 ```bash
 sudo systemctl stop mosdns
-sudo -u mosdns /usr/local/bin/mosdns control restore \
-  --input /var/backups/mosdns/control-20260911-120000.db \
-  --database /var/lib/mosdns/control-restored.db
+sudo mv /var/lib/mosdns/control.db /var/lib/mosdns/control.db.before-restore
+sudo mv /var/lib/mosdns/stats.db /var/lib/mosdns/stats.db.before-restore
+sudo cp -p /var/backups/mosdns/20261007-120000/control.db \
+  /var/backups/mosdns/20261007-120000/stats.db /var/lib/mosdns/
 ```
 
-随后将 `/etc/mosdns/config.yaml` 的 `control.database` 改为新路径，检查属主和 `0600` 权限，再启动服务并验证管理员登录、用户额度和已有设备凭证。恢复不会覆盖当前数据库，确认无误前应保留原文件。
+检查两个文件的属主为 `mosdns:mosdns`、权限为 `0600`，再启动服务并验证管理员登录、用户额度和已有设备凭证。确认无误前保留 `.before-restore` 文件。使用 MySQL 时改用数据库原生工具备份和恢复，见[存储文档](storage.md)。
 
 升级包应由发布人在可信构建机提前生成。维护窗口外先按本页下载流程取得新 tag 的架构匹配 zip，精确校验 SHA-256 并解压到单独临时目录。进入维护窗口后才停止服务、制作离线备份、安装已校验的新二进制并启动，然后检查日志、面板、DoH 和额度。生产机始终无需源码和构建工具。
 
-回滚前必须先停止服务并判断数据兼容性。若新版本没有迁移数据库且旧程序能读取现库，恢复旧二进制可保留升级后的真实用量；若数据库已经发生不向后兼容的迁移，只能把升级前备份恢复到一个新路径。后者会丢失升级后已经受理的用量，不能无条件执行，应延长停服窗口、核对这段期间的计量并制定补偿方案，再由管理员决定恢复点。不要让旧程序直接试开可能已迁移的生产数据库。
+回滚前必须先停止服务并判断数据兼容性。若新版本没有迁移数据库且旧程序能读取现库，恢复旧二进制可保留升级后的真实用量；若数据库已经发生不向后兼容的迁移，只能恢复升级前的备份。后者会丢失升级后已经受理的用量，不能无条件执行，应延长停服窗口、核对这段期间的计量并制定补偿方案，再由管理员决定恢复点。不要让旧程序直接试开可能已迁移的生产数据库。
+
+从带用户 DNS 策略、公共列表或 Lookup 的版本升级到本版时，数据库 schema 版本不变，旧二进制仍能打开升级后的数据库；回滚后这些功能及其升级前的数据会重新可用。原有的 `public-lists` 快照目录不再使用，可以手动删除。详见[存储文档](storage.md#已移除功能的数据)。
 
 ## 故障排查
 

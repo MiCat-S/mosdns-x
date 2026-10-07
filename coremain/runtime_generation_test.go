@@ -72,7 +72,7 @@ func (h runtimeTestHandler) ServeDNS(ctx context.Context, req *dns.Msg, _ *query
 }
 
 func runtimeTestGeneration(handler D.Handler, closeResources func() error) *RuntimeGeneration {
-	return newRuntimeGeneration([][]D.Handler{{handler}}, handler, http.NotFoundHandler(), prometheus.NewRegistry(), closeResources)
+	return newRuntimeGeneration([][]D.Handler{{handler}}, http.NotFoundHandler(), prometheus.NewRegistry(), closeResources)
 }
 
 func stageRuntimeTestGeneration(t *testing.T, manager *RuntimeManager, generation *RuntimeGeneration) *RuntimeStage {
@@ -409,7 +409,7 @@ func TestRuntimeDrainWaitsForDetachedExecutableBranch(t *testing.T) {
 	branchEntered := make(chan struct{})
 	branchDone := make(chan error, 1)
 	closed := make(chan struct{})
-	generation := newRuntimeGeneration(nil, nil, nil, nil, func() error {
+	generation := newRuntimeGeneration(nil, nil, nil, func() error {
 		close(closed)
 		return nil
 	})
@@ -454,7 +454,7 @@ func TestRuntimeMetricsAllowSameCollectorsAcrossGenerations(t *testing.T) {
 		gauge := prometheus.NewGauge(prometheus.GaugeOpts{Name: "runtime_generation_value"})
 		gauge.Set(value)
 		registry.MustRegister(gauge)
-		return newRuntimeGeneration([][]D.Handler{{runtimeTestHandler{answer: byte(value)}}}, nil, nil, registry, nil)
+		return newRuntimeGeneration([][]D.Handler{{runtimeTestHandler{answer: byte(value)}}}, nil, registry, nil)
 	}
 
 	if err := manager.Swap(stageRuntimeTestGeneration(t, manager, makeGeneration(1))); err != nil {

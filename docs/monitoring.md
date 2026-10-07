@@ -18,12 +18,12 @@
 
 控制模式下启动一个监控任务，立即采集一次，此后每分钟采集控制数据库。每次使用 5 秒 context；关闭服务时先取消并等待监控任务，再关闭数据库。API 和 Prometheus 使用缓存的扫描结果，并独立读取连接池、bbolt 和限速器的当前内存统计，不触发监控 SQL、数据库扫描或事务；请求鉴权仍照常检查持久化会话。
 
-运行统计读取不获取存储读写锁：bbolt 侧改用原子关闭标志加 bbolt 自身的统计锁。备份等长事务持有存储读锁、同时有关闭在排队时，`sync.RWMutex` 会让等待中的写者优先，若此处再取读锁，健康接口与抓取就会一直阻塞到该事务结束。关闭后不再返回 bbolt 统计，也不补零。
+运行统计读取不获取存储读写锁：bbolt 侧改用原子关闭标志加 bbolt 自身的统计锁。长事务持有存储读锁、同时有关闭在排队时，`sync.RWMutex` 会让等待中的写者优先，若此处再取读锁，健康接口与抓取就会一直阻塞到该事务结束。关闭后不再返回 bbolt 统计，也不补零。
 
 | 指标 | 实际口径 |
 | --- | --- |
 | 会话清理 | 登录事务成功、但响应阶段读取用户失败后的会话撤销。尝试数、失败数、总耗时从进程启动累计；不包含正常退出、改密或小时维护清理。无尝试时失败率为 `null`，不是 0%。 |
-| IP 限速器 | 面板登录与面板 DNS 查询两个限速器；`entries` 是内存保留数，`active_entries` 是在限速器锁内按当前窗口过滤后的未过期数。占用指标取两个限速器中较高的 `active_entries / capacity`，过期且未清理的条目不参与评分。读取不修改条目或计数；它不是 DNS 用户配额限速器。 |
+| IP 限速器 | 面板登录限速器；`entries` 是内存保留数，`active_entries` 是在限速器锁内按当前窗口过滤后的未过期数。占用指标为 `active_entries / capacity`，过期且未清理的条目不参与评分。读取不修改条目或计数；它不是 DNS 用户配额限速器。 |
 | 有效会话数 | 未撤销、未过期、所属账户仍启用的面板会话。服务订阅到期不禁止登录面板，因此不作为失效条件。 |
 | MySQL 连接池 | 仅控制库，比例为 `InUse / MaxOpenConnections`，不是除以当前打开连接数。上限为 0 表示无限制，比例不可用。等待次数和耗时为进程内累计值。 |
 | MySQL 回滚失败 | 显式事务清理返回非 `sql.ErrTxDone` 的错误次数，进程累计值；不覆盖驱动内部不可见的自动回滚。仅作历史参考，近期故障由 Prometheus 窗口增量告警。监控不改变业务错误和事务提交行为。 |
@@ -75,7 +75,7 @@ JSON 中 `storage_status` 表示缓存扫描是否成功且新鲜，`runtime_sta
 - `active_sessions`、`db_connections{state}`、`db_max_open_connections`、`db_wait_total`、`db_wait_seconds_total`、`db_rollback_errors_total`
 - `boltdb_open_read_transactions`、`boltdb_pending_pages`
 
-以上名称均带 `mosdns_control_` 前缀。标签只允许固定指标名、`login`/`lookup`、`open`/`in_use`/`idle` 和固定状态枚举，不包含用户、设备、域名、IP 或凭证。`health_metric_status` 导出上述 7 个状态的 one-hot 值（仅当前状态为 1，其余为 0），`health_overall_status` 导出 `healthy/warning/critical/unknown` 四态。评分未知时不导出 `health_score`，同时 `health_score_available=0`。
+以上名称均带 `mosdns_control_` 前缀。标签只允许固定指标名、`login`、`open`/`in_use`/`idle` 和固定状态枚举，不包含用户、设备、域名、IP 或凭证。`health_metric_status` 导出上述 7 个状态的 one-hot 值（仅当前状态为 1，其余为 0），`health_overall_status` 导出 `healthy/warning/critical/unknown` 四态。评分未知时不导出 `health_score`，同时 `health_score_available=0`。
 
 `health_metric_available` 只表示是否有数值，不区分未知、不适用、暂无样本；**不要以 `health_metric_available == 0` 笼统告警**。未知/不适用/暂无样本均不导出单项 value，不能补零。`info` 仍导出观测值，但不是当前异常。
 

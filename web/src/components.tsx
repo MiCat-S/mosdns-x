@@ -156,13 +156,8 @@ type NavIconName =
   | "usage"
   | "credential"
   | "password"
-  | "shield"
-  | "rules"
-  | "lookup"
   | "account"
   | "help"
-  | "list"
-  | "lab"
   | "runtime";
 type NavItem = {
   to: string;
@@ -175,7 +170,6 @@ const adminNav: NavItem[] = [
   { to: "/admin", label: "总览", icon: "overview", section: "概览" },
   { to: "/admin/logs", label: "查询日志", icon: "logs", section: "监控" },
   { to: "/admin/users", label: "用户", icon: "users", section: "服务" },
-  { to: "/admin/lists", label: "公共列表", icon: "list", section: "服务" },
   {
     to: "/admin/runtime",
     label: "运行配置",
@@ -188,37 +182,11 @@ const adminNav: NavItem[] = [
 const userNav: NavItem[] = [
   { to: "/app", label: "首页", icon: "overview", section: "概览" },
   {
-    to: "/app/privacy",
-    label: "安全与隐私保护",
-    icon: "shield",
-    section: "服务",
-  },
-  {
-    to: "/app/lists",
-    label: "订阅的公共列表",
-    icon: "list",
-    section: "服务",
-  },
-  {
-    to: "/app/rules",
-    label: "自定义规则",
-    icon: "rules",
-    section: "服务",
-  },
-  {
     to: "/app/usage",
     label: "统计与日志",
     icon: "usage",
     section: "工具",
   },
-  { to: "/app/labs", label: "实验性功能", icon: "lab", section: "工具" },
-  {
-    to: "/app/advanced",
-    label: "高级设置",
-    icon: "system",
-    section: "工具",
-  },
-  { to: "/app/lookup", label: "Lookup", icon: "lookup", section: "工具" },
   { to: "/app/help", label: "获取支持", icon: "help", section: "支持" },
 ];
 
@@ -271,24 +239,6 @@ function NavIcon({ name }: { name: NavIconName }) {
         <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2" />
       </>
     ),
-    shield: (
-      <>
-        <path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6l8-3Z" />
-        <path d="m9 12 2 2 4-4" />
-      </>
-    ),
-    rules: (
-      <>
-        <path d="M5 4h14M5 10h14M5 16h9M5 22h9" />
-        <circle cx="17" cy="19" r="3" />
-      </>
-    ),
-    lookup: (
-      <>
-        <circle cx="11" cy="11" r="6" />
-        <path d="m16 16 4 4M8.5 11h5M11 8.5v5" />
-      </>
-    ),
     account: (
       <>
         <circle cx="12" cy="8" r="4" />
@@ -299,20 +249,6 @@ function NavIcon({ name }: { name: NavIconName }) {
       <>
         <circle cx="12" cy="12" r="9" />
         <path d="M9.6 9a2.6 2.6 0 1 1 4.58 1.7c-.78.86-1.93 1.24-1.93 2.8M12 17h.01" />
-      </>
-    ),
-    list: (
-      <>
-        <path d="M7 6h13M7 12h13M7 18h13" />
-        <circle cx="4" cy="6" r="1" />
-        <circle cx="4" cy="12" r="1" />
-        <circle cx="4" cy="18" r="1" />
-      </>
-    ),
-    lab: (
-      <>
-        <path d="M9 3h6M10 3v6l-5.5 9a2 2 0 0 0 1.72 3h11.56a2 2 0 0 0 1.72-3L14 9V3" />
-        <path d="M8 16h8" />
       </>
     ),
     runtime: (

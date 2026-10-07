@@ -39,7 +39,6 @@ type RuntimeBuildFunc func(context.Context) (*RuntimeGeneration, error)
 type RuntimeGeneration struct {
 	entries        [][]D.Handler
 	topology       [][]runtimeListenerIdentity
-	lookup         D.Handler
 	pluginHandler  http.Handler
 	metrics        prometheus.Gatherer
 	closeResources func() error
@@ -60,7 +59,6 @@ type RuntimeGeneration struct {
 
 func newRuntimeGeneration(
 	entries [][]D.Handler,
-	lookup D.Handler,
 	pluginHandler http.Handler,
 	metrics prometheus.Gatherer,
 	closeResources func() error,
@@ -72,7 +70,6 @@ func newRuntimeGeneration(
 	return &RuntimeGeneration{
 		entries:        entries,
 		topology:       topology,
-		lookup:         lookup,
 		pluginHandler:  pluginHandler,
 		metrics:        metrics,
 		closeResources: closeResources,
@@ -499,27 +496,6 @@ func (h runtimeDNSHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *que
 		return servfail(req), nil
 	}
 	return handler.ServeDNS(ctx, req, meta)
-}
-
-// LookupHandler returns a stable handler for panel lookups.
-func (m *RuntimeManager) LookupHandler() D.Handler {
-	return runtimeLookupHandler{manager: m}
-}
-
-type runtimeLookupHandler struct{ manager *RuntimeManager }
-
-func (h runtimeLookupHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_context.RequestMeta) (*dns.Msg, error) {
-	generation, ok := h.manager.acquireCurrent()
-	if !ok {
-		return servfail(req), nil
-	}
-	defer generation.releaseRequest()
-	meta = meta.Copy()
-	meta.SetBackgroundWorkTracker(generation.acquireBackgroundWork)
-	if generation.lookup == nil {
-		return servfail(req), nil
-	}
-	return generation.lookup.ServeDNS(ctx, req, meta)
 }
 
 func servfail(req *dns.Msg) *dns.Msg {

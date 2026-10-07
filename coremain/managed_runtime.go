@@ -130,15 +130,6 @@ func (s *ManagedRuntimeService) Get(context.Context) (ManagedRuntimeState, error
 	return s.stateLocked()
 }
 
-func (s *ManagedRuntimeService) DataProviders(context.Context) ([]runtimeconfig.DataProviderSummary, error) {
-	if s == nil || s.effective == nil {
-		return nil, ErrManagedRuntimeDisabled
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return inspectDataProviders(s.effective), nil
-}
-
 func (s *ManagedRuntimeService) Validate(ctx context.Context, sessionID, expectedRevision string, desired runtimeconfig.Config) (ManagedRuntimeValidation, error) {
 	if s == nil || s.store == nil {
 		return ManagedRuntimeValidation{}, ErrManagedRuntimeDisabled

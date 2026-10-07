@@ -73,23 +73,6 @@ type EntryHandlerOpts struct {
 	// Admit authorizes an authenticated principal after DNS question validation.
 	Admit func(context.Context, query_context.Principal) error
 
-	// BeforeExec applies an authenticated user's request policy. The request is
-	// an isolated copy and may be changed before it enters the executable chain.
-	// A non-nil response skips the executable chain.
-	BeforeExec func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, error)
-
-	// BeforeExecWithTrace is the attributed form of BeforeExec. When set, it
-	// takes precedence and records the policy rule or list that produced a
-	// response.
-	BeforeExecWithTrace func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error)
-
-	// AfterExec applies an authenticated user's response policy. It may replace
-	// the response returned by the executable chain.
-	AfterExec func(context.Context, query_context.Principal, *dns.Msg, *dns.Msg) (*dns.Msg, error)
-
-	// AfterExecWithTrace is the attributed form of AfterExec.
-	AfterExecWithTrace func(context.Context, query_context.Principal, *dns.Msg, *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error)
-
 	// Observe receives one self-contained result for every request.
 	Observe func(Result)
 
@@ -117,8 +100,6 @@ type Result struct {
 	ResponseSource       string
 	ResponseSourceID     string
 	UpstreamID           string
-	MatchedRuleID        string
-	MatchedPublicListID  string
 	EDNSTraceVersion     uint8
 	UpstreamStageStatus  string
 	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot
@@ -214,77 +195,22 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	result.Admitted = true
 	// cache original id
 	id := req.Id
-	workingReq := req
-	var qCtx *query_context.Context
-	if h.opts.BeforeExec != nil || h.opts.BeforeExecWithTrace != nil {
-		qCtx = query_context.NewContext(req.Copy(), meta)
-		qCtx.SetCaptureQueryDetails(h.opts.CaptureQueryDetails)
-		workingReq = qCtx.Q()
-	}
-
-	var (
-		respMsg     *dns.Msg
-		beforeTrace query_context.ResponseTrace
-		err         error
-	)
-	if h.opts.BeforeExecWithTrace != nil {
-		respMsg, beforeTrace, err = h.opts.BeforeExecWithTrace(ctx, result.Principal, workingReq)
-		if err == nil && respMsg != nil {
-			qCtx.SetResponseWithTrace(respMsg, beforeTrace)
-		}
-	} else if h.opts.BeforeExec != nil {
-		respMsg, err = h.opts.BeforeExec(ctx, result.Principal, workingReq)
-	}
-	if err == nil && respMsg == nil {
-		if qCtx == nil {
-			qCtx = query_context.NewContext(workingReq, meta)
-			qCtx.SetCaptureQueryDetails(h.opts.CaptureQueryDetails)
-		}
-		err = h.opts.Entry.Exec(ctx, qCtx, nil)
-		respMsg = qCtx.R()
-	}
-	if err == nil && respMsg != nil && (h.opts.AfterExecWithTrace != nil || h.opts.AfterExec != nil) {
-		ctx = query_context.WithReferenceResolver(ctx, h.referenceResolver(meta))
-	}
-	if err == nil && respMsg != nil && h.opts.AfterExecWithTrace != nil {
-		previousResponse := respMsg
-		var trace query_context.ResponseTrace
-		respMsg, trace, err = h.opts.AfterExecWithTrace(ctx, result.Principal, workingReq, respMsg)
-		if err == nil && respMsg != nil && !trace.IsZero() {
-			trace = mergeAfterResponseTrace(trace, qCtx.ResponseTrace())
-			qCtx.SetResponseWithTrace(respMsg, trace)
-		} else if err == nil && respMsg != nil && respMsg != previousResponse {
-			qCtx.SetResponseWithTrace(respMsg, replacementTrace(qCtx.ResponseTrace()))
-		}
-	} else if err == nil && respMsg != nil && h.opts.AfterExec != nil {
-		previousResponse := respMsg
-		respMsg, err = h.opts.AfterExec(ctx, result.Principal, workingReq, respMsg)
-		if err == nil && respMsg != nil && respMsg != previousResponse {
-			qCtx.SetResponseWithTrace(respMsg, replacementTrace(qCtx.ResponseTrace()))
-		}
-	}
+	qCtx := query_context.NewContext(req, meta)
+	qCtx.SetCaptureQueryDetails(h.opts.CaptureQueryDetails)
+	err := h.opts.Entry.Exec(ctx, qCtx, nil)
+	respMsg := qCtx.R()
 	if err != nil {
 		result.ExecError = true
-		fields := []zap.Field{zap.Error(err)}
-		if qCtx != nil {
-			fields = append(fields, qCtx.InfoField())
-		}
-		h.opts.Logger.Warn("query execution returned an err", fields...)
+		h.opts.Logger.Warn("query execution returned an err", zap.Error(err), qCtx.InfoField())
 	} else {
-		if qCtx != nil {
-			h.opts.Logger.Debug("entry returned", qCtx.InfoField())
-		}
+		h.opts.Logger.Debug("entry returned", qCtx.InfoField())
 	}
 	if err == nil && respMsg == nil {
-		fields := []zap.Field{}
-		if qCtx != nil {
-			fields = append(fields, qCtx.InfoField())
-		}
-		h.opts.Logger.Error("query execution returned a nil response", fields...)
+		h.opts.Logger.Error("query execution returned a nil response", qCtx.InfoField())
 	}
 
 	if respMsg == nil || err != nil {
-		if h.opts.CaptureQueryDetails && qCtx != nil {
+		if h.opts.CaptureQueryDetails {
 			trace := qCtx.ResponseTrace()
 			if trace.UpstreamStageStatus == "" {
 				result.UpstreamStageStatus = query_context.UpstreamStageNotLinked
@@ -310,14 +236,12 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		result.AnswerIPs = answerIPs(respMsg)
 		h.captureFinalResponse(&result, respMsg)
 	}
-	if err == nil && qCtx != nil && result.ResponseSource != query_context.ResponseSourceServfail {
+	if err == nil && result.ResponseSource != query_context.ResponseSourceServfail {
 		result.CacheHit = qCtx.CacheHit()
-		trace := inheritResponseTrace(qCtx.ResponseTrace(), beforeTrace)
+		trace := qCtx.ResponseTrace()
 		result.ResponseSource = trace.Source
 		result.ResponseSourceID = trace.SourceID
 		result.UpstreamID = trace.UpstreamID
-		result.MatchedRuleID = trace.MatchedRuleID
-		result.MatchedPublicListID = trace.MatchedPublicListID
 		if h.opts.CaptureQueryDetails {
 			result.UpstreamStageStatus = trace.UpstreamStageStatus
 			result.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(trace.UpstreamRequestEDNS)
@@ -333,79 +257,12 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	return respMsg, nil
 }
 
-// referenceResolver runs an internal lookup through this handler's own entry
-// chain. It deliberately skips Admit and the request and response policies:
-// the lookup informs a policy decision, so it must not be charged to the user
-// or rewritten by their rules, and it cannot recurse into this handler.
-func (h *EntryHandler) referenceResolver(meta *query_context.RequestMeta) query_context.ReferenceResolver {
-	return func(ctx context.Context, request *dns.Msg) (*dns.Msg, error) {
-		qCtx := query_context.NewContext(request, meta)
-		if err := h.opts.Entry.Exec(ctx, qCtx, nil); err != nil {
-			return nil, err
-		}
-		return qCtx.R(), nil
-	}
-}
-
 func (h *EntryHandler) captureFinalResponse(result *Result, response *dns.Msg) {
 	if !h.opts.CaptureQueryDetails || response == nil {
 		return
 	}
 	snapshot := dnsutils.SnapshotEDNS(response)
 	result.ResponseEDNS = &snapshot
-}
-
-func inheritResponseTrace(trace, earlier query_context.ResponseTrace) query_context.ResponseTrace {
-	if trace.UpstreamStageStatus == "" {
-		if trace.UpstreamID == "" {
-			trace.UpstreamID = earlier.UpstreamID
-		}
-		if earlier.UpstreamStageStatus != "" {
-			trace.UpstreamStageStatus = earlier.UpstreamStageStatus
-			trace.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(earlier.UpstreamRequestEDNS)
-			trace.UpstreamResponseEDNS = dnsutils.CloneEDNSSnapshot(earlier.UpstreamResponseEDNS)
-		}
-	}
-	if trace.MatchedRuleID == "" {
-		trace.MatchedRuleID = earlier.MatchedRuleID
-	}
-	if trace.MatchedPublicListID == "" {
-		trace.MatchedPublicListID = earlier.MatchedPublicListID
-	}
-	return trace
-}
-
-func mergeAfterResponseTrace(trace, earlier query_context.ResponseTrace) query_context.ResponseTrace {
-	if (earlier.UpstreamStageStatus == query_context.UpstreamStageSelected ||
-		earlier.UpstreamStageStatus == query_context.UpstreamStageUnavailable && earlier.UpstreamID != "") &&
-		trace.Source != "" && trace.Source != earlier.Source {
-		trace.UpstreamID = ""
-		trace.UpstreamStageStatus = query_context.UpstreamStageDiscarded
-		trace.UpstreamRequestEDNS = nil
-		trace.UpstreamResponseEDNS = nil
-	} else {
-		trace = inheritResponseTrace(trace, earlier)
-	}
-	if trace.MatchedRuleID == "" {
-		trace.MatchedRuleID = earlier.MatchedRuleID
-	}
-	if trace.MatchedPublicListID == "" {
-		trace.MatchedPublicListID = earlier.MatchedPublicListID
-	}
-	return trace
-}
-
-func replacementTrace(earlier query_context.ResponseTrace) query_context.ResponseTrace {
-	trace := query_context.ResponseTrace{Source: query_context.ResponseSourceSequence}
-	if earlier.UpstreamStageStatus == query_context.UpstreamStageSelected ||
-		earlier.UpstreamStageStatus == query_context.UpstreamStageUnavailable && earlier.UpstreamID != "" {
-		trace.UpstreamStageStatus = query_context.UpstreamStageDiscarded
-	} else {
-		trace.UpstreamStageStatus = earlier.UpstreamStageStatus
-	}
-	trace.MatchedRuleID = earlier.MatchedRuleID
-	trace.MatchedPublicListID = earlier.MatchedPublicListID
-	return trace
 }
 
 func answerIPs(msg *dns.Msg) []string {

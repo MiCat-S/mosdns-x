@@ -9,18 +9,15 @@ flowchart TD
   Client[DoH / DoH3 客户端] --> Auth[专属 URL 或 Bearer 鉴权]
   Auth --> Entry[报文校验 + 事务受理]
   Entry --> Control
-	Entry --> Policy[用户请求策略]
-	Policy --> Lists[公共订阅列表]
-	Policy --> Chain[现有 sequence / cache / fast_forward]
-	Chain --> Upstream[现有上游协议]
-	Chain --> ResponsePolicy[私有地址应答检查]
+  Entry --> Chain[现有 sequence / cache / fast_forward]
+  Chain --> Upstream[现有上游协议]
   Entry --> Stats[异步结果统计]
   Upstream --> Stats
   Control --> DB[(bbolt / MySQL 控制存储)]
   Stats --> SDB[(bbolt / MySQL 统计存储)]
   API --> SDB
-	API --> Runtime[托管配置校验与运行代切换]
-	Runtime --> Chain
+  API --> Runtime[托管配置校验与运行代切换]
+  Runtime --> Chain
 ```
 
 ## 模块边界
@@ -28,9 +25,7 @@ flowchart TD
 | 模块 | 职责 |
 |---|---|
 | `coremain` | 配置、命令行、依赖组装、监听器、关闭顺序 |
-| `internal/control` | 密码、会话、设备凭证、额度与 QPS、用户 DNS 策略、公共列表目录、准确用量、审计、存储维护 |
-| `internal/dnspolicy` | 编译并缓存用户规则，按顺序应用安全限制、自定义规则、公共列表和响应策略 |
-| `internal/publiclist` | 安全下载、校验、原子保存并匹配公共列表快照 |
+| `internal/control` | 密码、会话、设备凭证、额度与 QPS、准确用量、审计、存储维护 |
 | `internal/runtimeconfig` | 安全配置视图、敏感参数隔离、修订存储与 API 契约 |
 | `internal/controlapi` | 管理员和用户 API、CSRF、访问范围、旧 API 保护、静态资源 |
 | `internal/telemetry` | 有界异步队列、分钟聚合、可选查询明细、上游尝试统计 |
@@ -38,7 +33,7 @@ flowchart TD
 | `pkg/query_context` | 请求只读身份及上游观察器、分支私有的响应来源、缓存标记和后台工作租约 |
 | `web` | 管理端、用户端、构建时嵌入的网页资源 |
 
-`internal/control.Service` 和 `internal/telemetry.Service` 隔离存储实现，`coremain` 根据配置创建 bbolt 或 MySQL 后端。`pkg` 不导入 `internal/control`；适配发生在 `coremain`。插件不直接维护用户账户或扣减额度，因此缓存提前返回、fallback 和并行上游不会绕过受理，也不会重复扣额。用户策略按用户缓存五秒，面板写入成功后立即使对应缓存失效。
+`internal/control.Service` 和 `internal/telemetry.Service` 隔离存储实现，`coremain` 根据配置创建 bbolt 或 MySQL 后端。`pkg` 不导入 `internal/control`；适配发生在 `coremain`。插件不直接维护用户账户或扣减额度，因此缓存提前返回、fallback 和并行上游不会绕过受理，也不会重复扣额。
 
 ## 身份和权限
 
@@ -56,13 +51,13 @@ flowchart TD
 
 准确用量与结果统计分别存储。异步统计队列满或写入失败会记录可观测的丢弃量；进程崩溃可能丢失尚未落盘的结果统计，但已提交的额度保持。`dropped` 仅覆盖当前进程观测到的丢弃事件，不能用它推导历史数据完整。结果统计按分钟聚合，P95 为直方图桶上界估算。上游尝试次数包含内部并发及后台刷新，可能大于客户端查询次数。
 
-bbolt 把控制与统计放在两个本地文件中。MySQL 使用规范化表：控制事务锁定用户和凭证行后完成额度、令牌桶与用量写入；统计通过有界队列批量 `UPSERT`。两个后端保持相同的服务接口和 API 语义，迁移工具在服务停止后把 bbolt 数据导入空的 MySQL 表组。
+bbolt 把控制与统计放在两个本地文件中。MySQL 使用规范化表：控制事务锁定用户和凭证行后完成额度、令牌桶与用量写入；统计通过有界队列批量 `UPSERT`。两个后端保持相同的服务接口和 API 语义。
 
-所有用户仍共享 YAML 定义的 sequence 和缓存。处理顺序为安全 QTYPE 限制、第一条自定义规则、公共列表、原有 sequence、私有地址应答检查；自定义 `allow` 会跳过公共列表。合成应答不会写入共享缓存。移除 ECS 会改变进入缓存插件的请求，缓存插件继续按其现有请求键行为工作。三个规则动作可以独立停用；临时暂停会绕过 ECS、QTYPE、规则、公共列表和私有地址检查，截止时间到达后在请求路径上直接恢复。用户策略当前不能选择不同上游。
+所有用户共享 YAML 定义的 sequence 和缓存。受理后的请求直接进入原有执行链，服务端不按用户改写请求或应答，也不能为不同用户选择不同上游。
 
 ## 页面范围
 
-管理端提供用户开通／停用、到期与配额、设备凭证、公共列表目录、托管运行配置、全局和单用户用量、响应统计、审计及安全的系统概览。用户端按参考控制台的信息架构提供主页、安全与隐私、公共列表、自定义规则、统计与日志、实验性功能、高级设置、Lookup、支持和账户入口。公共列表与用户覆盖使用真实 API 即时保存；尚未实现的实验设置保持禁用并显示原因。
+管理端提供用户开通／停用、到期与配额、设备凭证、托管运行配置、全局和单用户用量、响应统计、查询日志、审计及安全的系统概览。用户端只提供设备地址与凭证、自己的用量统计和查询日志、修改密码，以及帮助和接入说明。
 
 系统概览只导出经过白名单筛选的配置摘要。`control.managed_config` 只承载安全结构化字段；运行代会在候选配置完整构建后一次切换，旧代等待在途查询和后台上游工作完成再逆序关闭。完整 YAML、数据库 DSN、监听器、证书、支付、自助注册和多实例共享配额不由面板管理。
 

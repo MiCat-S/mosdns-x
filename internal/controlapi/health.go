@@ -189,7 +189,7 @@ func (h *Handler) healthSnapshot() HealthReport {
 		*r.StorageAgeSeconds <= (2*healthInterval).Seconds() && (r.Storage.MySQL != nil || r.Storage.Bolt != nil) {
 		r.RuntimeStatus = "healthy"
 	}
-	r.RateLimiters = []LimiterHealth{h.limiter.healthSnapshot("login"), h.lookupLimiter.healthSnapshot("lookup")}
+	r.RateLimiters = []LimiterHealth{h.limiter.healthSnapshot("login")}
 	cleanup := healthMetric("session_cleanup", "累计会话清理失败率", "%", nil, 1, 5, "no_samples")
 	cleanup.Status = "no_samples"
 	if r.Cleanup.Attempts > 0 {

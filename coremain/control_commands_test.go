@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pmkol/mosdns-x/internal/control"
 )
@@ -165,20 +164,6 @@ func TestControlPasswordInputValidation(t *testing.T) {
 	}
 }
 
-func TestControlMigrateMySQLDryRun(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "control.db")
-	if _, err := executeControl(t, context.Background(), "admin-password-value\n", "init-admin", "--database", path, "--username", "root"); err != nil {
-		t.Fatal(err)
-	}
-	out, err := executeControl(t, context.Background(), "", "migrate-mysql", "--component", "control", "--database", path, "--dry-run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "用户 1") || !strings.Contains(out, "未连接或修改 MySQL") {
-		t.Fatalf("output=%q", out)
-	}
-}
-
 func TestControlPasswordAccepts1024BytesWithCRLF(t *testing.T) {
 	password := strings.Repeat("x", 1024)
 	db := filepath.Join(t.TempDir(), "control.db")
@@ -216,122 +201,5 @@ func TestControlInitDoesNotChmodExistingParent(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o755 {
 		t.Fatalf("existing parent mode changed to %o", st.Mode().Perm())
-	}
-}
-
-func TestControlBackupRestorePreservesState(t *testing.T) {
-	dir := t.TempDir()
-	db := filepath.Join(dir, "live.db")
-	secret := "admin-password-value"
-	if _, err := executeControl(t, context.Background(), secret+"\n", "init-admin", "--database", db, "--username", "root"); err != nil {
-		t.Fatal(err)
-	}
-	s, err := control.Open(db, control.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin, err := s.AuthenticatePassword(context.Background(), "root", secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	user, err := s.CreateUser(context.Background(), admin.ID, control.UserSpec{Username: "user", Password: "user-password-value", Role: control.RoleUser, Enabled: true, Period: control.PeriodDaily, Timezone: "UTC", Limit: 5, QPS: 100, Burst: 0, MaxCredentials: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	issued, err := s.CreateCredential(context.Background(), user.ID, user.ID, "device", time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := s.AuthenticateCredential(context.Background(), issued.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Admit(context.Background(), identity); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	backup := filepath.Join(dir, "backup.db")
-	if _, err = executeControl(t, context.Background(), "", "backup", "--database", db, "--output", backup); err != nil {
-		t.Fatal(err)
-	}
-	restored := filepath.Join(dir, "restored.db")
-	if _, err = executeControl(t, context.Background(), "", "restore", "--input", backup, "--database", restored); err != nil {
-		t.Fatal(err)
-	}
-	rs, err := control.Open(restored, control.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rs.Close()
-	quota, err := rs.CurrentQuota(context.Background(), user.ID)
-	if err != nil || quota.Used != 1 {
-		t.Fatalf("quota=%+v err=%v", quota, err)
-	}
-	if _, err = rs.AuthenticateCredential(context.Background(), issued.Token); err != nil {
-		t.Fatalf("credential=%v", err)
-	}
-}
-
-func TestControlBackupRestoreRejectPathsAndCancellation(t *testing.T) {
-	dir := t.TempDir()
-	missing := filepath.Join(dir, "missing.db")
-	out := filepath.Join(dir, "out.db")
-	if _, err := executeControl(t, context.Background(), "", "backup", "--database", missing, "--output", out); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing source=%v", err)
-	}
-	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("source was created: %v", err)
-	}
-	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("output was created: %v", err)
-	}
-	if _, err := executeControl(t, context.Background(), "", "restore", "--input", missing, "--database", filepath.Join(dir, "restored-missing.db")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("restore missing source=%v", err)
-	}
-	valid := filepath.Join(dir, "valid.db")
-	if _, err := executeControl(t, context.Background(), "admin-password-value\n", "init-admin", "--database", valid, "--username", "root"); err != nil {
-		t.Fatal(err)
-	}
-	backup := filepath.Join(dir, "backup.db")
-	if _, err := executeControl(t, context.Background(), "", "backup", "--database", valid, "--output", backup); err != nil {
-		t.Fatal(err)
-	}
-	dest := filepath.Join(dir, "existing.db")
-	if err := os.WriteFile(dest, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := executeControl(t, context.Background(), "", "restore", "--input", backup, "--database", dest); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("existing destination=%v", err)
-	}
-	data, _ := os.ReadFile(dest)
-	if string(data) != "keep" {
-		t.Fatal("destination overwritten")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	cancelOut := filepath.Join(dir, "cancel.db")
-	if _, err := executeControl(t, ctx, "", "backup", "--database", valid, "--output", cancelOut); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancel=%v", err)
-	}
-	if _, err := os.Stat(cancelOut); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cancel output remains: %v", err)
-	}
-}
-
-func TestControlBackupReportsOfflineLockConflict(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "live.db")
-	if _, err := executeControl(t, context.Background(), "admin-password-value\n", "init-admin", "--database", db, "--username", "root"); err != nil {
-		t.Fatal(err)
-	}
-	live, err := control.Open(db, control.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer live.Close()
-	_, err = executeControl(t, context.Background(), "", "backup", "--database", db, "--output", filepath.Join(t.TempDir(), "backup.db"))
-	if !errors.Is(err, control.ErrUnavailable) {
-		t.Fatalf("lock conflict=%v", err)
 	}
 }

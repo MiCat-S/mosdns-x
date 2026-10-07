@@ -107,7 +107,7 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 		metricsReg:  prometheus.NewRegistry(),
 		sc:          safe_close.NewSafeClose(),
 	}
-	generation = newRuntimeGeneration(nil, nil, owner.httpAPIMux, owner.metricsReg, owner.shutdownRuntimeResources)
+	generation = newRuntimeGeneration(nil, owner.httpAPIMux, owner.metricsReg, owner.shutdownRuntimeResources)
 	owner.generation = generation
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -190,8 +190,6 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 				opts.Admit = admit(m.control)
 				opts.Observe = m.telemetry.Observe
 				opts.CaptureQueryDetails = captureQueryDetails
-				opts.BeforeExecWithTrace = policyBeforeWithTrace(m.policy)
-				opts.AfterExecWithTrace = policyAfterWithTrace(m.policy)
 			}
 			handler, err := D.NewEntryHandler(opts)
 			if err != nil {
@@ -201,19 +199,5 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 		}
 	}
 
-	firstServer := &cfg.Servers[0]
-	lookupEntry := owner.execs[firstServer.Exec]
-	lookupOpts := D.EntryHandlerOpts{
-		Logger: owner.logger, Entry: lookupEntry, QueryTimeout: configuredQueryTimeout(firstServer), RecursionAvailable: true,
-	}
-	if m.policy != nil {
-		lookupOpts.BeforeExecWithTrace = policyBeforeWithTrace(m.policy)
-		lookupOpts.AfterExecWithTrace = policyAfterWithTrace(m.policy)
-	}
-	lookup, err := D.NewEntryHandler(lookupOpts)
-	if err != nil {
-		return generation, fmt.Errorf("failed to init panel lookup entry handler: %w", err)
-	}
-	generation.lookup = lookup
 	return generation, nil
 }

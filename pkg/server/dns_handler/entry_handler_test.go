@@ -3,7 +3,6 @@ package dns_handler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -82,56 +81,6 @@ func TestResultIncludesSelectedResponseTrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.ResponseSource != query_context.ResponseSourceUpstream || got.ResponseSourceID != "forward_remote" || got.UpstreamID != "forward_remote/1" {
-		t.Fatalf("response trace=%+v", got)
-	}
-}
-
-func TestResultIncludesPolicyResponseTrace(t *testing.T) {
-	var got Result
-	exec := new(testExecutable)
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec,
-		BeforeExecWithTrace: func(_ context.Context, _ query_context.Principal, request *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
-			response := new(dns.Msg)
-			response.SetRcode(request, dns.RcodeNameError)
-			return response, query_context.ResponseTrace{Source: query_context.ResponseSourcePublicList, SourceID: "list-1", MatchedPublicListID: "list-1"}, nil
-		},
-		Observe: func(result Result) { got = result },
-	})
-	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if exec.calls != 0 || got.ResponseSource != query_context.ResponseSourcePublicList || got.MatchedPublicListID != "list-1" {
-		t.Fatalf("exec calls=%d trace=%+v", exec.calls, got)
-	}
-}
-
-func TestResultPreservesAllowRuleAndSelectedUpstreamTrace(t *testing.T) {
-	var got Result
-	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
-		response := new(dns.Msg)
-		response.SetReply(qCtx.Q())
-		qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
-			Source: query_context.ResponseSourceUpstream, SourceID: "forward", UpstreamID: "forward/1",
-		})
-		return nil
-	})
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec,
-		BeforeExecWithTrace: func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
-			return nil, query_context.ResponseTrace{MatchedRuleID: "allow-rule"}, nil
-		},
-		AfterExecWithTrace: func(_ context.Context, _ query_context.Principal, request, _ *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
-			response := new(dns.Msg)
-			response.SetRcode(request, dns.RcodeNameError)
-			return response, query_context.ResponseTrace{Source: query_context.ResponseSourceCustomBlock}, nil
-		},
-		Observe: func(result Result) { got = result },
-	})
-	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if got.ResponseSource != query_context.ResponseSourceCustomBlock || got.UpstreamID != "forward/1" || got.MatchedRuleID != "allow-rule" {
 		t.Fatalf("response trace=%+v", got)
 	}
 }
@@ -224,36 +173,6 @@ func TestResultIncludesFourStageEDNSSnapshots(t *testing.T) {
 		got.UpstreamResponseEDNS == nil || !got.UpstreamResponseEDNS.Present ||
 		got.ResponseEDNS == nil || got.ResponseEDNS.Present || got.UpstreamStageStatus != query_context.UpstreamStageSelected {
 		t.Fatalf("four-stage result = %+v", got)
-	}
-}
-
-func TestFinalLocalReplacementDiscardsSelectedUpstreamSnapshots(t *testing.T) {
-	var got Result
-	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
-		response := new(dns.Msg)
-		response.SetReply(qCtx.Q())
-		snapshot := dnsutils.SnapshotEDNS(qCtx.Q())
-		qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
-			Source: query_context.ResponseSourceUpstream, UpstreamID: "forward/0",
-			UpstreamStageStatus: query_context.UpstreamStageSelected,
-			UpstreamRequestEDNS: &snapshot, UpstreamResponseEDNS: &snapshot,
-		})
-		return nil
-	})
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec, CaptureQueryDetails: true,
-		AfterExecWithTrace: func(_ context.Context, _ query_context.Principal, request, _ *dns.Msg) (*dns.Msg, query_context.ResponseTrace, error) {
-			response := new(dns.Msg)
-			response.SetRcode(request, dns.RcodeNameError)
-			return response, query_context.ResponseTrace{Source: query_context.ResponseSourceCustomBlock}, nil
-		},
-		Observe: func(result Result) { got = result },
-	})
-	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if got.UpstreamStageStatus != query_context.UpstreamStageDiscarded || got.UpstreamID != "" || got.UpstreamRequestEDNS != nil || got.UpstreamResponseEDNS != nil {
-		t.Fatalf("replacement inherited discarded upstream: %+v", got)
 	}
 }
 
@@ -386,87 +305,6 @@ func TestAdmitRejectionSkipsExec(t *testing.T) {
 	r, err := h.ServeDNS(context.Background(), validQuery(), nil)
 	if r != nil || query_access.HTTPStatus(err) != 429 || exec.calls != 0 {
 		t.Fatalf("response=%v err=%v exec=%d", r, err, exec.calls)
-	}
-}
-
-func TestPolicyRunsAfterAdmissionAroundExecutable(t *testing.T) {
-	principal := query_context.Principal{UserID: "u1"}
-	meta := query_context.NewRequestMeta(netip.Addr{})
-	meta.SetPrincipal(principal)
-	req := validQuery()
-	req.SetEdns0(1232, false)
-	execCalls := 0
-	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
-		execCalls++
-		if qCtx.Q().IsEdns0() != nil || qCtx.OriginalQuery().IsEdns0() == nil {
-			t.Fatal("policy request change leaked into the original query snapshot")
-		}
-		response := new(dns.Msg)
-		response.SetReply(qCtx.Q())
-		qCtx.SetResponse(response)
-		return nil
-	})
-	var order []string
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec,
-		Admit: func(context.Context, query_context.Principal) error {
-			order = append(order, "admit")
-			return nil
-		},
-		BeforeExec: func(_ context.Context, got query_context.Principal, working *dns.Msg) (*dns.Msg, error) {
-			order = append(order, "before")
-			if got != principal || working == req {
-				t.Fatal("policy did not receive the principal and an isolated request")
-			}
-			working.Extra = nil
-			return nil, nil
-		},
-		AfterExec: func(_ context.Context, got query_context.Principal, working, response *dns.Msg) (*dns.Msg, error) {
-			order = append(order, "after")
-			if got != principal || working.Extra != nil || response == nil {
-				t.Fatal("response policy received unexpected values")
-			}
-			response.AuthenticatedData = true
-			return response, nil
-		},
-	})
-	response, err := h.ServeDNS(context.Background(), req, meta)
-	if err != nil || !response.AuthenticatedData || req.IsEdns0() == nil {
-		t.Fatalf("response=%v err=%v original EDNS=%v", response, err, req.IsEdns0())
-	}
-	if got := fmt.Sprint(order); got != "[admit before after]" || execCalls != 1 {
-		t.Fatalf("order=%s", got)
-	}
-}
-
-func TestPolicyCanAnswerWithoutExecuting(t *testing.T) {
-	exec := new(testExecutable)
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec,
-		BeforeExec: func(_ context.Context, _ query_context.Principal, request *dns.Msg) (*dns.Msg, error) {
-			response := new(dns.Msg)
-			response.SetReply(request)
-			response.Rcode = dns.RcodeNameError
-			return response, nil
-		},
-	})
-	response, err := h.ServeDNS(context.Background(), validQuery(), nil)
-	if err != nil || response.Rcode != dns.RcodeNameError || exec.calls != 0 {
-		t.Fatalf("response=%v err=%v exec calls=%d", response, err, exec.calls)
-	}
-}
-
-func TestPolicyErrorBecomesSERVFAIL(t *testing.T) {
-	exec := new(testExecutable)
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec,
-		BeforeExec: func(context.Context, query_context.Principal, *dns.Msg) (*dns.Msg, error) {
-			return nil, errors.New("policy unavailable")
-		},
-	})
-	response, err := h.ServeDNS(context.Background(), validQuery(), nil)
-	if err != nil || response.Rcode != dns.RcodeServerFailure || exec.calls != 0 {
-		t.Fatalf("response=%v err=%v exec calls=%d", response, err, exec.calls)
 	}
 }
 

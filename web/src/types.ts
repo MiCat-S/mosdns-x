@@ -34,64 +34,6 @@ export interface Me {
   quota: Quota;
   public_dns_url: string;
 }
-export interface UserSettings {
-  user_id: string;
-  strip_ecs: boolean;
-  block_private_answers: boolean;
-  blocked_qtypes: string[];
-  custom_block_enabled: boolean;
-  custom_allow_enabled: boolean;
-  custom_rewrite_enabled: boolean;
-  policy_paused_until: string | null;
-  // Optional so a portal talking to an older server reads it as no preference.
-  answer_family?: AnswerFamily;
-  ttl_min?: number;
-  ttl_max?: number;
-  flatten_cname?: boolean;
-  shuffle_answers?: boolean;
-  ecs_ipv4?: string;
-  ecs_ipv6?: string;
-  query_log_disabled?: boolean;
-  query_retention_hours?: number;
-  updated_at: string;
-}
-export type AnswerFamily = "" | "ipv4" | "ipv6";
-export type RuleAction = "allow" | "block" | "rewrite";
-export type RuleMatch = "exact" | "suffix" | "keyword" | "regexp";
-export type RuleRecordType = "A" | "AAAA" | "CNAME";
-export interface Rule {
-  id: string;
-  user_id: string;
-  priority: number;
-  action: RuleAction;
-  match: RuleMatch;
-  pattern: string;
-  record_type?: RuleRecordType;
-  value?: string;
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
-}
-export interface LookupQuestion {
-  name: string;
-  qtype: string;
-}
-export interface LookupRecord {
-  name?: string;
-  type?: string;
-  ttl?: number;
-  value?: string;
-  data?: string;
-}
-export interface LookupResult {
-  question: LookupQuestion;
-  rcode: string;
-  duration_ms: number;
-  answers: LookupRecord[];
-  authority: LookupRecord[];
-  additional: LookupRecord[];
-  edns?: EDNSInfo;
-}
 export interface Credential {
   id: string;
   user_id: string;
@@ -109,46 +51,6 @@ export interface IssuedCredential {
 export interface Page<T> {
   items: T[];
   next_cursor?: string;
-}
-export type PublicListFormat = "mosdns" | "hosts";
-export interface PublicList {
-  id: string;
-  name: string;
-  category?: string;
-  url?: string;
-  format: PublicListFormat;
-  enabled: boolean;
-  /** Legacy `enabled` is used when these v2 fields are absent. */
-  published?: boolean;
-  default_enabled?: boolean;
-  sha256?: string;
-  refresh_seconds: number;
-  entry_count?: number;
-  last_refresh_status?: string;
-  last_refreshed_at?: string;
-  last_refresh_error?: string;
-  last_successful_at?: string;
-  snapshot_available?: boolean;
-  snapshot_status?: "missing" | "current" | "stale";
-  snapshot_sha256?: string;
-  created_at: string;
-  updated_at: string;
-}
-export interface UserPublicList {
-  list: PublicList;
-  enabled: boolean;
-  overridden: boolean;
-}
-export interface PublicListValidation {
-  valid: boolean;
-  validation_token: string;
-  expires_at?: string;
-  format: PublicListFormat;
-  entry_count: number;
-  invalid_entry_count?: number;
-  invalid_entries?: Array<{ line?: number; reason: string }>;
-  samples?: string[];
-  sha256?: string;
 }
 export interface RuntimeDataProvider {
   tag: string;
@@ -339,8 +241,6 @@ export interface QueryRecord {
   response_source?: string;
   response_source_id?: string;
   upstream_id?: string;
-  matched_rule_id?: string;
-  matched_public_list_id?: string;
 }
 export type UpstreamStageStatus =
   | "selected"

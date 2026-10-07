@@ -17,9 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
-	"github.com/pmkol/mosdns-x/internal/publiclist"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"go.uber.org/zap"
@@ -34,58 +32,6 @@ const (
 type Telemetry interface {
 	Snapshot(context.Context, string, time.Time, time.Time) (telemetry.StatsSnapshot, error)
 	Queries(context.Context, string, time.Time, time.Time, telemetry.QueryFilter, telemetry.Page) (telemetry.QueryPage, error)
-}
-
-type PublicLists interface {
-	Refresh(context.Context, string) error
-	RefreshAllDetailed(context.Context) (control.PublicListRefreshAllResult, error)
-	Validate(context.Context, string, control.PublicListSpec) (control.PublicListValidation, error)
-	Publish(context.Context, string, string, string) (control.PublicList, error)
-	Update(context.Context, string, string, control.PublicListPatch) (control.PublicList, error)
-	Invalidate(string)
-	Delete(context.Context, string, string) error
-}
-
-// userPublicListView deliberately excludes administrator-only source details.
-// Public-list URLs can contain signed query parameters, and refresh errors can
-// expose upstream infrastructure details.
-type userPublicListView struct {
-	List       userPublicListSummary `json:"list"`
-	Enabled    bool                  `json:"enabled"`
-	Overridden bool                  `json:"overridden"`
-}
-
-type userPublicListSummary struct {
-	ID                string                           `json:"id"`
-	Name              string                           `json:"name"`
-	Category          string                           `json:"category"`
-	Format            control.PublicListFormat         `json:"format"`
-	Enabled           bool                             `json:"enabled"`
-	DefaultEnabled    bool                             `json:"default_enabled"`
-	Published         bool                             `json:"published"`
-	RefreshSeconds    uint32                           `json:"refresh_seconds"`
-	EntryCount        uint64                           `json:"entry_count"`
-	LastRefreshStatus control.PublicListRefreshStatus  `json:"last_refresh_status"`
-	LastRefreshedAt   *time.Time                       `json:"last_refreshed_at"`
-	SnapshotStatus    control.PublicListSnapshotStatus `json:"snapshot_status"`
-	LastSuccessfulAt  *time.Time                       `json:"last_successful_at"`
-	CreatedAt         time.Time                        `json:"created_at"`
-	UpdatedAt         time.Time                        `json:"updated_at"`
-}
-
-func newUserPublicListView(item control.UserPublicList) userPublicListView {
-	list := item.List
-	return userPublicListView{
-		List: userPublicListSummary{
-			ID: list.ID, Name: list.Name, Category: list.Category, Format: list.Format,
-			Enabled: list.Enabled, DefaultEnabled: list.DefaultEnabled, Published: list.Published,
-			RefreshSeconds: list.RefreshSeconds, EntryCount: list.EntryCount,
-			LastRefreshStatus: list.LastRefreshStatus, LastRefreshedAt: list.LastRefreshedAt,
-			SnapshotStatus: list.SnapshotStatus, LastSuccessfulAt: list.LastSuccessfulAt,
-			CreatedAt: list.CreatedAt, UpdatedAt: list.UpdatedAt,
-		},
-		Enabled: item.Enabled, Overridden: item.Overridden,
-	}
 }
 
 type SystemInfo struct {
@@ -114,9 +60,6 @@ type Options struct {
 	SessionTTL        time.Duration
 	CookieName        string
 	SystemInfo        func(context.Context) (SystemInfo, error)
-	Lookup            func(context.Context, string, string, uint16) (*dns.Msg, error)
-	InvalidatePolicy  func(string)
-	PublicLists       PublicLists
 	RuntimeInspector  runtimeconfig.Inspector
 	RuntimeConfig     runtimeconfig.Manager
 	Assets            fs.FS
@@ -128,22 +71,16 @@ type Options struct {
 	LoginRateLimit    int
 	LoginRateWindow   time.Duration
 	LoginIPCapacity   int
-	LookupConcurrency int
-	LookupRateLimit   int
-	LookupRateWindow  time.Duration
-	LookupIPCapacity  int
 	Now               func() time.Time
 	Logger            *zap.Logger
 }
 
 type Handler struct {
-	opts          Options
-	publicURL     *url.URL
-	kdfSlots      chan struct{}
-	lookupSlots   chan struct{}
-	limiter       *ipLimiter
-	lookupLimiter *ipLimiter
-	health        healthState
+	opts      Options
+	publicURL *url.URL
+	kdfSlots  chan struct{}
+	limiter   *ipLimiter
+	health    healthState
 }
 
 func New(opts Options) (*Handler, error) {
@@ -204,24 +141,6 @@ func New(opts Options) (*Handler, error) {
 	if opts.LoginRateLimit < 1 || opts.LoginIPCapacity < 1 || opts.LoginRateWindow <= 0 {
 		return nil, errors.New("invalid login rate options")
 	}
-	if opts.LookupConcurrency == 0 {
-		opts.LookupConcurrency = 8
-	}
-	if opts.LookupConcurrency < 1 || opts.LookupConcurrency > 128 {
-		return nil, errors.New("invalid lookup concurrency")
-	}
-	if opts.LookupRateLimit == 0 {
-		opts.LookupRateLimit = 60
-	}
-	if opts.LookupRateWindow == 0 {
-		opts.LookupRateWindow = time.Minute
-	}
-	if opts.LookupIPCapacity == 0 {
-		opts.LookupIPCapacity = 4096
-	}
-	if opts.LookupRateLimit < 1 || opts.LookupRateWindow <= 0 || opts.LookupIPCapacity < 1 {
-		return nil, errors.New("invalid lookup rate options")
-	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -233,10 +152,9 @@ func New(opts Options) (*Handler, error) {
 	}
 	return &Handler{
 		opts: opts, publicURL: u,
-		kdfSlots: make(chan struct{}, opts.LoginConcurrency), lookupSlots: make(chan struct{}, opts.LookupConcurrency),
-		limiter:       newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
-		lookupLimiter: newIPLimiter(opts.LookupRateLimit, opts.LookupRateWindow, opts.LookupIPCapacity, opts.Now),
-		health:        healthState{startedAt: opts.Now().UTC(), monotonicNow: time.Now},
+		kdfSlots: make(chan struct{}, opts.LoginConcurrency),
+		limiter:  newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
+		health:   healthState{startedAt: opts.Now().UTC(), monotonicNow: time.Now},
 	}, nil
 }
 
@@ -566,29 +484,9 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request, ss control.Session,
 		}
 		h.queries(w, r, u.ID)
 		return
-	case "/lookup":
-		h.lookup(w, r, u)
-		return
-	case "/settings":
-		h.settings(w, r, u.ID)
-		return
-	case "/rules":
-		h.rules(w, r, u.ID, "")
-		return
-	case "/public-lists":
-		h.userPublicLists(w, r, u.ID, "")
-		return
-	}
-	if strings.HasPrefix(p, "/rules/") {
-		h.rules(w, r, u.ID, strings.TrimPrefix(p, "/rules/"))
-		return
 	}
 	if strings.HasPrefix(p, "/credentials/") {
 		h.credentials(w, r, u.ID, u.ID, strings.TrimPrefix(p, "/credentials/"))
-		return
-	}
-	if strings.HasPrefix(p, "/public-lists/") {
-		h.userPublicLists(w, r, u.ID, strings.TrimPrefix(p, "/public-lists/"))
 		return
 	}
 	writeError(w, http.StatusNotFound, "not_found")
@@ -601,18 +499,6 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 	}
 	if strings.HasPrefix(p, "/runtime/") {
 		h.adminRuntime(w, r, session.ID, strings.TrimPrefix(p, "/runtime"))
-		return
-	}
-	if p == "/data-providers" {
-		h.adminDataProviders(w, r)
-		return
-	}
-	if p == "/public-lists" {
-		h.adminPublicLists(w, r, admin.ID, "")
-		return
-	}
-	if strings.HasPrefix(p, "/public-lists/") {
-		h.adminPublicLists(w, r, admin.ID, strings.TrimPrefix(p, "/public-lists/"))
 		return
 	}
 	if p == "/users" {
@@ -780,26 +666,6 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 			return
 		}
 		h.deviceUsage(w, r, userID)
-		return
-	}
-	if len(parts) == 2 && parts[1] == "rules" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-		page, ok := parsePage(w, r)
-		if !ok {
-			return
-		}
-		rules, err := h.opts.Control.ListDNSPolicyRules(r.Context(), userID, page)
-		if err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		if rules.Items == nil {
-			rules.Items = []control.DNSPolicyRule{}
-		}
-		writeJSON(w, http.StatusOK, rules)
 		return
 	}
 	if len(parts) >= 2 && parts[1] == "credentials" {
@@ -970,30 +836,6 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 	}
 }
 
-func (h *Handler) adminDataProviders(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w)
-		return
-	}
-	inspector := h.opts.RuntimeInspector
-	if inspector == nil && h.opts.RuntimeConfig != nil {
-		inspector = h.opts.RuntimeConfig
-	}
-	if inspector == nil {
-		writeError(w, http.StatusServiceUnavailable, "runtime_inspector_unavailable")
-		return
-	}
-	items, err := inspector.DataProviders(r.Context())
-	if err != nil {
-		h.runtimeError(w, err, false)
-		return
-	}
-	if items == nil {
-		items = []runtimeconfig.DataProviderSummary{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
 func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadRequest bool) {
 	switch {
 	case errors.Is(err, runtimeconfig.ErrRevisionConflict):
@@ -1011,267 +853,6 @@ func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadReq
 	default:
 		writeError(w, http.StatusServiceUnavailable, "unavailable")
 	}
-}
-
-func (h *Handler) adminPublicLists(w http.ResponseWriter, r *http.Request, actorID, rest string) {
-	if rest == "" {
-		switch r.Method {
-		case http.MethodGet:
-			page, ok := parsePage(w, r)
-			if !ok {
-				return
-			}
-			lists, err := h.opts.Control.ListPublicLists(r.Context(), page)
-			if err != nil {
-				h.serviceError(w, err)
-				return
-			}
-			if lists.Items == nil {
-				lists.Items = []control.PublicList{}
-			}
-			writeJSON(w, http.StatusOK, lists)
-		case http.MethodPost:
-			var spec control.PublicListSpec
-			if decodeJSON(w, r, &spec) != nil {
-				return
-			}
-			published := false
-			spec.Published = &published
-			list, err := h.opts.Control.CreatePublicList(r.Context(), actorID, spec)
-			if err != nil {
-				h.serviceError(w, err)
-				return
-			}
-			if h.opts.PublicLists != nil {
-				h.opts.PublicLists.Invalidate("")
-			}
-			writeJSON(w, http.StatusCreated, list)
-		default:
-			methodNotAllowed(w)
-		}
-		return
-	}
-	if rest == "validate" && r.Method == http.MethodPost {
-		if h.opts.PublicLists == nil {
-			writeError(w, http.StatusServiceUnavailable, "unavailable")
-			return
-		}
-		var request struct {
-			control.PublicListSpec
-			ListID string `json:"list_id"`
-		}
-		if decodeJSON(w, r, &request) != nil {
-			return
-		}
-		validation, err := h.opts.PublicLists.Validate(r.Context(), request.ListID, request.PublicListSpec)
-		if err != nil {
-			h.publicListError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, validation)
-		return
-	}
-	if rest == "publish" && r.Method == http.MethodPost {
-		h.publishPublicList(w, r, actorID, "")
-		return
-	}
-	if rest == "refresh-all" && r.Method == http.MethodPost {
-		if h.opts.PublicLists == nil {
-			writeError(w, http.StatusServiceUnavailable, "unavailable")
-			return
-		}
-		result, err := h.opts.PublicLists.RefreshAllDetailed(r.Context())
-		if err != nil {
-			h.publicListError(w, err)
-			return
-		}
-		h.opts.PublicLists.Invalidate("")
-		writeJSON(w, http.StatusOK, result)
-		return
-	}
-	parts := strings.Split(rest, "/")
-	id := parts[0]
-	if id == "" || len(parts) > 2 {
-		writeError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	if len(parts) == 2 {
-		if parts[1] == "publish" && r.Method == http.MethodPost {
-			h.publishPublicList(w, r, actorID, id)
-			return
-		}
-		if parts[1] != "refresh" || r.Method != http.MethodPost {
-			writeError(w, http.StatusNotFound, "not_found")
-			return
-		}
-		if h.opts.PublicLists == nil {
-			writeError(w, http.StatusServiceUnavailable, "unavailable")
-			return
-		}
-		if err := h.opts.PublicLists.Refresh(r.Context(), id); err != nil {
-			h.publicListError(w, err)
-			return
-		}
-		h.opts.PublicLists.Invalidate("")
-		list, err := h.opts.Control.GetPublicList(r.Context(), id)
-		if err != nil {
-			h.publicListError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, list)
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		list, err := h.opts.Control.GetPublicList(r.Context(), id)
-		if err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, list)
-	case http.MethodPatch:
-		var patch control.PublicListPatch
-		if decodeJSON(w, r, &patch) != nil {
-			return
-		}
-		if patch.Published != nil && *patch.Published {
-			writeError(w, http.StatusBadRequest, "validation_required")
-			return
-		}
-		var list control.PublicList
-		var err error
-		if h.opts.PublicLists != nil {
-			list, err = h.opts.PublicLists.Update(r.Context(), actorID, id, patch)
-		} else {
-			list, err = h.opts.Control.UpdatePublicList(r.Context(), actorID, id, patch)
-		}
-		if err != nil {
-			h.publicListError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, list)
-	case http.MethodDelete:
-		if h.opts.PublicLists != nil {
-			if err := h.opts.PublicLists.Delete(r.Context(), actorID, id); err != nil {
-				h.publicListError(w, err)
-				return
-			}
-		} else if err := h.opts.Control.DeletePublicList(r.Context(), actorID, id); err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-func (h *Handler) publishPublicList(w http.ResponseWriter, r *http.Request, actorID, listID string) {
-	if h.opts.PublicLists == nil {
-		writeError(w, http.StatusServiceUnavailable, "unavailable")
-		return
-	}
-	var request struct {
-		ValidationToken string `json:"validation_token"`
-	}
-	if decodeJSON(w, r, &request) != nil {
-		return
-	}
-	if request.ValidationToken == "" {
-		writeError(w, http.StatusBadRequest, "invalid_input")
-		return
-	}
-	list, err := h.opts.PublicLists.Publish(r.Context(), actorID, listID, request.ValidationToken)
-	if err != nil {
-		h.publicListError(w, err)
-		return
-	}
-	h.opts.PublicLists.Invalidate("")
-	status := http.StatusOK
-	if listID == "" {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, list)
-}
-
-func (h *Handler) publicListError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, publiclist.ErrValidationTokenInvalid):
-		writeError(w, http.StatusConflict, "validation_token_invalid")
-	case errors.Is(err, publiclist.ErrValidationTokenExpired):
-		writeError(w, http.StatusConflict, "validation_token_expired")
-	case errors.Is(err, publiclist.ErrInvalidSource):
-		writeError(w, http.StatusBadRequest, "public_list_source_invalid")
-	case errors.Is(err, publiclist.ErrContentTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, "public_list_too_large")
-	case errors.Is(err, publiclist.ErrContentRejected):
-		writeError(w, http.StatusUnprocessableEntity, "public_list_content_invalid")
-	case errors.Is(err, publiclist.ErrNotPublished):
-		writeError(w, http.StatusConflict, "public_list_not_published")
-	case errors.Is(err, publiclist.ErrTooManyPending):
-		writeError(w, http.StatusTooManyRequests, "public_list_validation_busy")
-	case errors.Is(err, publiclist.ErrSnapshotCleanup):
-		writeError(w, http.StatusInternalServerError, "public_list_cleanup_pending")
-	case errors.Is(err, control.ErrConflict):
-		writeError(w, http.StatusConflict, "public_list_conflict")
-	default:
-		h.serviceError(w, err)
-	}
-}
-
-func (h *Handler) userPublicLists(w http.ResponseWriter, r *http.Request, userID, listID string) {
-	if listID == "" {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w)
-			return
-		}
-		page, ok := parsePage(w, r)
-		if !ok {
-			return
-		}
-		lists, err := h.opts.Control.ListUserPublicLists(r.Context(), userID, page)
-		if err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		items := make([]userPublicListView, 0, len(lists.Items))
-		for _, item := range lists.Items {
-			items = append(items, newUserPublicListView(item))
-		}
-		writeJSON(w, http.StatusOK, control.PageResult[userPublicListView]{Items: items, NextCursor: lists.NextCursor})
-		return
-	}
-	if strings.Contains(listID, "/") || r.Method != http.MethodPatch {
-		writeError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	var request struct {
-		Enabled json.RawMessage `json:"enabled"`
-	}
-	if decodeJSON(w, r, &request) != nil {
-		return
-	}
-	if len(request.Enabled) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_input")
-		return
-	}
-	var enabled *bool
-	if string(request.Enabled) != "null" {
-		var value bool
-		if err := json.Unmarshal(request.Enabled, &value); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_input")
-			return
-		}
-		enabled = &value
-	}
-	if err := h.opts.Control.SetUserPublicList(r.Context(), userID, userID, listID, enabled); err != nil {
-		h.serviceError(w, err)
-		return
-	}
-	if h.opts.PublicLists != nil {
-		h.opts.PublicLists.Invalidate(userID)
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 type issuedResponse struct {
@@ -1343,176 +924,11 @@ func (h *Handler) dohURL(token string) string {
 	return u.String()
 }
 
-func (h *Handler) settings(w http.ResponseWriter, r *http.Request, userID string) {
-	switch r.Method {
-	case http.MethodGet:
-		settings, err := h.opts.Control.GetDNSPolicySettings(r.Context(), userID)
-		if err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		if settings.BlockedQTypes == nil {
-			settings.BlockedQTypes = []string{}
-		}
-		writeJSON(w, http.StatusOK, settings)
-	case http.MethodPatch:
-		var request dnsPolicySettingsPatchRequest
-		if decodeJSON(w, r, &request) != nil {
-			return
-		}
-		patch, err := request.controlPatch(h.opts.Now())
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request")
-			return
-		}
-		settings, err := h.opts.Control.UpdateDNSPolicySettings(r.Context(), userID, userID, patch)
-		if err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		h.invalidatePolicy(userID)
-		if settings.BlockedQTypes == nil {
-			settings.BlockedQTypes = []string{}
-		}
-		writeJSON(w, http.StatusOK, settings)
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-type dnsPolicySettingsPatchRequest struct {
-	StripECS             *bool           `json:"strip_ecs"`
-	BlockPrivateAnswers  *bool           `json:"block_private_answers"`
-	BlockedQTypes        *[]string       `json:"blocked_qtypes"`
-	CustomBlockEnabled   *bool           `json:"custom_block_enabled"`
-	CustomAllowEnabled   *bool           `json:"custom_allow_enabled"`
-	CustomRewriteEnabled *bool           `json:"custom_rewrite_enabled"`
-	PolicyPausedUntil    json.RawMessage `json:"policy_paused_until"`
-	// Declared here because the decoder rejects unknown fields: omitting it
-	// would turn every answer_family update into a 400.
-	AnswerFamily        *control.AnswerFamily `json:"answer_family"`
-	TTLMin              *uint32               `json:"ttl_min"`
-	TTLMax              *uint32               `json:"ttl_max"`
-	FlattenCNAME        *bool                 `json:"flatten_cname"`
-	ShuffleAnswers      *bool                 `json:"shuffle_answers"`
-	ECSIPv4             *string               `json:"ecs_ipv4"`
-	ECSIPv6             *string               `json:"ecs_ipv6"`
-	QueryLogDisabled    *bool                 `json:"query_log_disabled"`
-	QueryRetentionHours *uint32               `json:"query_retention_hours"`
-}
-
-func (request dnsPolicySettingsPatchRequest) controlPatch(now time.Time) (control.DNSPolicySettingsPatch, error) {
-	patch := control.DNSPolicySettingsPatch{
-		StripECS: request.StripECS, BlockPrivateAnswers: request.BlockPrivateAnswers, BlockedQTypes: request.BlockedQTypes,
-		CustomBlockEnabled: request.CustomBlockEnabled, CustomAllowEnabled: request.CustomAllowEnabled,
-		CustomRewriteEnabled: request.CustomRewriteEnabled,
-		AnswerFamily:         request.AnswerFamily,
-		TTLMin:               request.TTLMin,
-		TTLMax:               request.TTLMax,
-		FlattenCNAME:         request.FlattenCNAME,
-		ShuffleAnswers:       request.ShuffleAnswers,
-		ECSIPv4:              request.ECSIPv4,
-		ECSIPv6:              request.ECSIPv6,
-		QueryLogDisabled:     request.QueryLogDisabled,
-		QueryRetentionHours:  request.QueryRetentionHours,
-	}
-	if request.PolicyPausedUntil == nil {
-		return patch, nil
-	}
-	if bytes.Equal(bytes.TrimSpace(request.PolicyPausedUntil), []byte("null")) {
-		zero := time.Time{}
-		patch.PolicyPausedUntil = &zero
-		return patch, nil
-	}
-	var value time.Time
-	if err := json.Unmarshal(request.PolicyPausedUntil, &value); err != nil {
-		return patch, err
-	}
-	value = value.UTC()
-	if !value.After(now) {
-		value = time.Time{}
-	} else if value.After(now.Add(24 * time.Hour)) {
-		return patch, errors.New("policy pause cannot exceed 24 hours")
-	}
-	patch.PolicyPausedUntil = &value
-	return patch, nil
-}
-
-func (h *Handler) rules(w http.ResponseWriter, r *http.Request, userID, ruleID string) {
-	if ruleID == "" {
-		switch r.Method {
-		case http.MethodGet:
-			page, ok := parsePage(w, r)
-			if !ok {
-				return
-			}
-			rules, err := h.opts.Control.ListDNSPolicyRules(r.Context(), userID, page)
-			if err != nil {
-				h.serviceError(w, err)
-				return
-			}
-			if rules.Items == nil {
-				rules.Items = []control.DNSPolicyRule{}
-			}
-			writeJSON(w, http.StatusOK, rules)
-		case http.MethodPost:
-			var spec control.DNSPolicyRuleSpec
-			if decodeJSON(w, r, &spec) != nil {
-				return
-			}
-			rule, err := h.opts.Control.CreateDNSPolicyRule(r.Context(), userID, userID, spec)
-			if err != nil {
-				h.serviceError(w, err)
-				return
-			}
-			h.invalidatePolicy(userID)
-			writeJSON(w, http.StatusCreated, rule)
-		default:
-			methodNotAllowed(w)
-		}
-		return
-	}
-	if strings.Contains(ruleID, "/") || len(ruleID) > 64 {
-		writeError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	switch r.Method {
-	case http.MethodPatch:
-		var patch control.DNSPolicyRulePatch
-		if decodeJSON(w, r, &patch) != nil {
-			return
-		}
-		rule, err := h.opts.Control.UpdateDNSPolicyRule(r.Context(), userID, userID, ruleID, patch)
-		if err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		h.invalidatePolicy(userID)
-		writeJSON(w, http.StatusOK, rule)
-	case http.MethodDelete:
-		if err := h.opts.Control.DeleteDNSPolicyRule(r.Context(), userID, userID, ruleID); err != nil {
-			h.serviceError(w, err)
-			return
-		}
-		h.invalidatePolicy(userID)
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		methodNotAllowed(w)
-	}
-}
-
-// deleteUser removes the account and its control data, then erases the
-// user's query logs. A user that is already gone still has its logs erased,
-// so an admin can retry after the erase failed.
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, actorID, userID string) {
 	err := h.opts.Control.DeleteUser(r.Context(), actorID, userID)
 	if err != nil && !errors.Is(err, control.ErrNotFound) {
 		h.serviceError(w, err)
 		return
-	}
-	h.invalidatePolicy(userID)
-	if h.opts.PublicLists != nil {
-		h.opts.PublicLists.Invalidate(userID)
 	}
 	if eraser, ok := h.opts.Telemetry.(telemetry.UserEraser); ok {
 		if eraseErr := eraser.DeleteUser(r.Context(), userID); eraseErr != nil {
@@ -1526,185 +942,6 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, actorID, us
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *Handler) invalidatePolicy(userID string) {
-	if h.opts.InvalidatePolicy != nil {
-		h.opts.InvalidatePolicy(userID)
-	}
-}
-
-type lookupRecord struct {
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	TTL   uint32 `json:"ttl"`
-	Value string `json:"value"`
-}
-
-type lookupQuestion struct {
-	Name  string `json:"name"`
-	QType string `json:"qtype"`
-}
-
-type lookupEDNS struct {
-	Present     bool       `json:"present"`
-	Version     uint8      `json:"version"`
-	UDPSize     uint16     `json:"udp_size"`
-	DNSSECOK    bool       `json:"dnssec_ok"`
-	OptionCodes []uint16   `json:"option_codes"`
-	ECS         *lookupECS `json:"ecs,omitempty"`
-}
-
-type lookupECS struct {
-	Address      string `json:"address"`
-	Family       uint16 `json:"family"`
-	SourcePrefix uint8  `json:"source_prefix"`
-	ScopePrefix  uint8  `json:"scope_prefix"`
-}
-
-type lookupResponse struct {
-	Question   lookupQuestion `json:"question"`
-	Rcode      string         `json:"rcode"`
-	DurationMS float64        `json:"duration_ms"`
-	Answers    []lookupRecord `json:"answers"`
-	Authority  []lookupRecord `json:"authority"`
-	Additional []lookupRecord `json:"additional"`
-	EDNS       lookupEDNS     `json:"edns"`
-}
-
-func (h *Handler) lookup(w http.ResponseWriter, r *http.Request, user control.User) {
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w)
-		return
-	}
-	if h.opts.Lookup == nil {
-		writeError(w, http.StatusServiceUnavailable, "unavailable")
-		return
-	}
-	if !user.ExpiresAt.IsZero() && !h.opts.Now().Before(user.ExpiresAt) {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return
-	}
-	var in struct {
-		Name  string `json:"name"`
-		QType string `json:"qtype"`
-	}
-	if decodeJSON(w, r, &in) != nil {
-		return
-	}
-	name := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(in.Name)), ".")
-	qtypeName := strings.ToUpper(strings.TrimSpace(in.QType))
-	qtype, supported := map[string]uint16{
-		"A": dns.TypeA, "AAAA": dns.TypeAAAA, "CNAME": dns.TypeCNAME,
-		"NS": dns.TypeNS, "MX": dns.TypeMX, "TXT": dns.TypeTXT,
-	}[qtypeName]
-	if !validLookupName(name) || !supported {
-		writeError(w, http.StatusBadRequest, "invalid_input")
-		return
-	}
-	if _, ok := dns.IsDomainName(dns.Fqdn(name)); !ok {
-		writeError(w, http.StatusBadRequest, "invalid_input")
-		return
-	}
-	if !h.lookupLimiter.allow(h.clientIP(r)) {
-		writeError(w, http.StatusTooManyRequests, "rate_limited")
-		return
-	}
-	select {
-	case h.lookupSlots <- struct{}{}:
-		defer func() { <-h.lookupSlots }()
-	default:
-		writeError(w, http.StatusTooManyRequests, "rate_limited")
-		return
-	}
-	started := time.Now()
-	response, err := h.opts.Lookup(r.Context(), user.ID, dns.Fqdn(name), qtype)
-	if err != nil || response == nil {
-		writeError(w, http.StatusServiceUnavailable, "unavailable")
-		return
-	}
-	result := lookupResponse{
-		Question:   lookupQuestion{Name: name, QType: qtypeName},
-		Rcode:      dns.RcodeToString[response.Rcode],
-		DurationMS: float64(time.Since(started).Microseconds()) / 1000,
-		Answers:    lookupRecords(response.Answer),
-		Authority:  lookupRecords(response.Ns),
-		Additional: lookupRecords(response.Extra),
-		EDNS:       lookupEDNSInfo(response),
-	}
-	if result.Rcode == "" {
-		result.Rcode = strconv.Itoa(response.Rcode)
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
-func lookupEDNSInfo(message *dns.Msg) lookupEDNS {
-	result := lookupEDNS{OptionCodes: []uint16{}}
-	opt := message.IsEdns0()
-	if opt == nil {
-		return result
-	}
-	result.Present = true
-	result.Version = opt.Version()
-	result.UDPSize = opt.UDPSize()
-	result.DNSSECOK = opt.Do()
-	for _, option := range opt.Option {
-		if option == nil {
-			continue
-		}
-		result.OptionCodes = append(result.OptionCodes, option.Option())
-		if ecs, ok := option.(*dns.EDNS0_SUBNET); ok && result.ECS == nil {
-			result.ECS = &lookupECS{Family: ecs.Family, SourcePrefix: ecs.SourceNetmask, ScopePrefix: ecs.SourceScope}
-			address, valid := netip.AddrFromSlice(ecs.Address)
-			bits := 0
-			switch ecs.Family {
-			case 1:
-				address, bits = address.Unmap(), 32
-			case 2:
-				bits = 128
-			}
-			if valid && bits > 0 && int(ecs.SourceNetmask) <= bits {
-				result.ECS.Address = netip.PrefixFrom(address, int(ecs.SourceNetmask)).Masked().Addr().String()
-			}
-		}
-	}
-	return result
-}
-
-func validLookupName(name string) bool {
-	if name == "" || len(name) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(name, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, char := range label {
-			if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-' || char == '_') {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func lookupRecords(records []dns.RR) []lookupRecord {
-	result := make([]lookupRecord, 0, len(records))
-	for _, record := range records {
-		if record == nil {
-			continue
-		}
-		header := record.Header()
-		value := record.String()
-		fields := strings.Fields(value)
-		if len(fields) >= 5 {
-			value = strings.Join(fields[4:], " ")
-		}
-		result = append(result, lookupRecord{
-			Name: strings.TrimSuffix(header.Name, "."), Type: dns.TypeToString[header.Rrtype], TTL: header.Ttl, Value: value,
-		})
-	}
-	return result
 }
 
 func (h *Handler) usage(w http.ResponseWriter, r *http.Request, userID string, admin bool) {

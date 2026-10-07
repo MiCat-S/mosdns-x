@@ -201,10 +201,7 @@ func Open(path string, opts Options) (*Store, error) {
 		if err := rebuildCredentialTokenIndex(tx); err != nil {
 			return err
 		}
-		if err := initializeDNSPolicyData(tx, previousVersion); err != nil {
-			return err
-		}
-		if err := migratePublicListPublicationState(tx, previousVersion); err != nil {
+		if err := ensureRetiredPolicyDefaults(tx, previousVersion); err != nil {
 			return err
 		}
 		var buf [8]byte
@@ -566,7 +563,7 @@ func (s *Store) InitializeAdmin(ctx context.Context, spec UserSpec) (User, error
 		if err := marshalPut(tx.Bucket(bUsers), []byte(id), r); err != nil {
 			return err
 		}
-		if err := putDefaultDNSPolicySettings(tx, id, now); err != nil {
+		if err := putRetiredPolicyDefaults(tx, id, now); err != nil {
 			return err
 		}
 		if err := tx.Bucket(bUsernames).Put([]byte(strings.ToLower(u.Username)), []byte(id)); err != nil {
@@ -604,7 +601,7 @@ func (s *Store) CreateUser(ctx context.Context, actor string, spec UserSpec) (Us
 		if err := marshalPut(tx.Bucket(bUsers), []byte(id), r); err != nil {
 			return err
 		}
-		if err := putDefaultDNSPolicySettings(tx, id, now); err != nil {
+		if err := putRetiredPolicyDefaults(tx, id, now); err != nil {
 			return err
 		}
 		if err := names.Put([]byte(strings.ToLower(u.Username)), []byte(id)); err != nil {

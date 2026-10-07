@@ -43,8 +43,6 @@ import (
 	"github.com/pmkol/mosdns-x/constant"
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/controlapi"
-	"github.com/pmkol/mosdns-x/internal/dnspolicy"
-	"github.com/pmkol/mosdns-x/internal/publiclist"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/mlog"
@@ -78,8 +76,6 @@ type Mosdns struct {
 	servers           []*server.Server
 	ownedClosers      []io.Closer
 	control           control.Service
-	policy            *dnspolicy.Engine
-	publicLists       *publiclist.Service
 	telemetry         telemetry.Service
 	controlCfg        *ControlConfig
 	trustedProxies    []netip.Prefix
@@ -149,17 +145,9 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if !ready {
 			return errors.New("control database has no enabled administrator; run control init-admin first")
 		}
-		m.publicLists, err = publiclist.New(m.control, publiclist.Options{Directory: publicListDirectory(cfg)})
-		if err != nil {
-			return fmt.Errorf("failed to initialize public lists: %w", err)
-		}
-		m.policy = dnspolicy.NewWithPublicLists(m.control, m.publicLists)
 		m.telemetry, err = openTelemetryStore(ctx, cfg.Control)
 		if err != nil {
 			return fmt.Errorf("failed to open telemetry database: %w", err)
-		}
-		if setter, ok := m.telemetry.(telemetry.UserLogPolicySetter); ok {
-			setter.SetUserLogPolicy(m.policy)
 		}
 		maintCtx, cancel := context.WithCancel(context.Background())
 		m.maintenanceCancel = cancel
@@ -174,14 +162,6 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 			if err := maintainer.RunMaintenance(maintCtx, time.Hour); err != nil && !errors.Is(err, context.Canceled) {
 				m.logger.Error("control maintenance stopped", zap.Error(err))
 				m.sc.SendCloseSignal(fmt.Errorf("control maintenance stopped: %w", err))
-			}
-		}()
-		m.maintenanceWG.Add(1)
-		go func() {
-			defer m.maintenanceWG.Done()
-			if err := m.publicLists.Run(maintCtx); err != nil && !errors.Is(err, context.Canceled) {
-				m.logger.Error("public list refresher stopped", zap.Error(err))
-				m.sc.SendCloseSignal(fmt.Errorf("public list refresher stopped: %w", err))
 			}
 		}()
 	}
@@ -221,11 +201,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		var apiHandler http.Handler = m.httpAPIMux
 		if cfg.Control != nil {
 			startedAt := time.Now()
-			lookup, lookupErr := m.newPanelLookup(cfg)
-			if lookupErr != nil {
-				return fmt.Errorf("failed to init panel lookup: %w", lookupErr)
-			}
-			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Logger: m.logger, Telemetry: m.telemetry, PublicLists: m.publicLists, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, Lookup: lookup, InvalidatePolicy: m.policy.Invalidate, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
+			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Logger: m.logger, Telemetry: m.telemetry, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
 				queryLogEnabled := cfg.Control.QueryLog
 				if m.managedRuntime != nil {
 					if state, stateErr := m.managedRuntime.Get(ctx); stateErr == nil {

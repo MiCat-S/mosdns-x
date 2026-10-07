@@ -32,76 +32,6 @@ func openClocked(t *testing.T, clock *time.Time, max int) *Store {
 	return s
 }
 
-func TestOptedOutUserKeepsAggregatesButNoRecords(t *testing.T) {
-	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
-	s := openClocked(t, &now, 0)
-	s.SetUserLogPolicy(fakeLogPolicy{"private": {enabled: false}})
-	s.Observe(result("private", "c", dns.RcodeSuccess))
-	s.Observe(result("open", "c", dns.RcodeSuccess))
-	flush(t, s)
-	if got := userRecordCount(t, s, "private"); got != 0 {
-		t.Fatalf("opted-out user has %d records", got)
-	}
-	if got := userRecordCount(t, s, "open"); got != 1 {
-		t.Fatalf("logging user has %d records", got)
-	}
-	snap, err := s.Snapshot(context.Background(), "private", now.Add(-time.Hour), now.Add(time.Minute))
-	if err != nil || snap.Completed != 1 {
-		t.Fatalf("opted-out user lost aggregates: %+v err=%v", snap, err)
-	}
-}
-
-// A user who chose a longer retention keeps records the default would drop;
-// a user on the default loses them.
-func TestPerUserRetentionOutlivesTheDefault(t *testing.T) {
-	clock := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
-	s := openClocked(t, &clock, 0)
-	s.SetUserLogPolicy(fakeLogPolicy{"keeper": {enabled: true, retention: 168 * time.Hour}})
-	s.Observe(result("keeper", "c", dns.RcodeSuccess))
-	s.Observe(result("default", "c", dns.RcodeSuccess))
-	flush(t, s)
-
-	clock = clock.Add(48 * time.Hour) // past the 24h default, inside 168h
-	s.Observe(result("trigger", "c", dns.RcodeSuccess))
-	flush(t, s)
-	if got := userRecordCount(t, s, "keeper"); got != 1 {
-		t.Fatalf("keeper lost a 48h-old record under 168h retention: %d", got)
-	}
-	if got := userRecordCount(t, s, "default"); got != 0 {
-		t.Fatalf("default user kept a 48h-old record under 24h retention: %d", got)
-	}
-}
-
-// A user whose choice cannot be read keeps their records this sweep rather
-// than being cut to a default they did not pick.
-func TestUnreadableRetentionDefersPruning(t *testing.T) {
-	clock := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
-	s := openClocked(t, &clock, 0)
-	policy := fakeLogPolicy{}
-	s.SetUserLogPolicy(policy)
-	s.Observe(result("flaky", "c", dns.RcodeSuccess))
-	flush(t, s)
-	policy["flaky"] = struct {
-		enabled   bool
-		retention time.Duration
-		err       error
-	}{enabled: true, err: context.DeadlineExceeded}
-	clock = clock.Add(48 * time.Hour)
-	s.Observe(result("trigger", "c", dns.RcodeSuccess))
-	flush(t, s)
-	// Checked in storage, not through Queries: a query for a user whose choice
-	// is unreadable falls back to the default window for display, which is a
-	// separate, transient matter from whether the record was deleted.
-	if err := s.db.View(func(tx *bolt.Tx) error {
-		if got := userQueryCount(tx, "flaky"); got != 1 {
-			t.Fatalf("records pruned despite an unreadable choice: %d", got)
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // Over the cap, records come from the largest holder, so a light user keeps
 // their whole history.
 func TestCapEvictsFromTheLargestUser(t *testing.T) {
@@ -191,24 +121,6 @@ func TestUserCountsRebuiltForExistingDatabase(t *testing.T) {
 	}
 }
 
-// A user who keeps records longer must be able to see them. Clamping queries
-// to the server default hid stored records and made the choice invisible.
-func TestLongerRetentionIsVisibleToItsOwner(t *testing.T) {
-	clock := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
-	s := openClocked(t, &clock, 0)
-	s.SetUserLogPolicy(fakeLogPolicy{"keeper": {enabled: true, retention: 168 * time.Hour}})
-	s.Observe(result("keeper", "c", dns.RcodeSuccess))
-	flush(t, s)
-	clock = clock.Add(48 * time.Hour)
-	if got := userRecordCount(t, s, "keeper"); got != 1 {
-		t.Fatalf("a stored 48h-old record is hidden under 168h retention: %d", got)
-	}
-	// The administrator's all-users view reaches it too.
-	if got := userRecordCount(t, s, ""); got != 1 {
-		t.Fatalf("admin view hid the record: %d", got)
-	}
-}
-
 // bbolt rejects a zero-length key. A result without a user must not fail the
 // batch, which would drop every other user's data in it.
 func TestResultWithoutUserDoesNotFailTheBatch(t *testing.T) {
@@ -272,31 +184,5 @@ func TestEvictionRecoversFromDriftedCounts(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-type countingPolicy struct{ calls int }
-
-func (c *countingPolicy) QueryLogFor(context.Context, string) (bool, time.Duration, error) {
-	c.calls++
-	return true, 0, nil
-}
-
-// With query_log off, the default, nothing detailed is written, so no user's
-// choice should be looked up on every batch.
-func TestNoPolicyLookupsWhileQueryLogIsOff(t *testing.T) {
-	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
-	s, err := Open(Options{Path: filepath.Join(t.TempDir(), "t.db"), QueryLogEnabled: false, Now: func() time.Time { return now }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	policy := &countingPolicy{}
-	s.SetUserLogPolicy(policy)
-	if err := s.writeBatch([]event{{time: now, result: ptrResult(result("alice", "c", dns.RcodeSuccess))}}); err != nil {
-		t.Fatal(err)
-	}
-	if policy.calls != 0 {
-		t.Fatalf("made %d lookups with query_log off", policy.calls)
 	}
 }

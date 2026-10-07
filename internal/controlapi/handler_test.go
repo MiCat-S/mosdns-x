@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
-	"github.com/pmkol/mosdns-x/internal/publiclist"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 )
@@ -38,16 +36,6 @@ type fakeTelemetry struct {
 	page    telemetry.QueryPage
 }
 
-type fakePublicLists struct {
-	mu            sync.Mutex
-	refreshed     []string
-	invalidations []string
-	deleted       []string
-	validateErr   error
-	deleteErr     error
-	store         *control.Store
-}
-
 type fakeRuntimeConfig struct {
 	mu        sync.Mutex
 	sessionID string
@@ -56,9 +44,6 @@ type fakeRuntimeConfig struct {
 
 func (f *fakeRuntimeConfig) Get(context.Context) (runtimeconfig.State, error) {
 	return f.state, nil
-}
-func (f *fakeRuntimeConfig) DataProviders(context.Context) ([]runtimeconfig.DataProviderSummary, error) {
-	return []runtimeconfig.DataProviderSummary{{Tag: "rules", File: "rules.txt", Declared: true}}, nil
 }
 func (f *fakeRuntimeConfig) Validate(_ context.Context, sessionID, revision string, config runtimeconfig.Config) (runtimeconfig.Validation, error) {
 	f.mu.Lock()
@@ -97,70 +82,6 @@ func (f *fakeRuntimeConfig) Probe(_ context.Context, tag string) ([]runtimeconfi
 		return nil, errors.New("unknown upstream")
 	}
 	return []runtimeconfig.Probe{{UpstreamID: "forward/0", Rcode: dns.RcodeSuccess, Success: true}}, nil
-}
-
-func (f *fakePublicLists) Refresh(_ context.Context, id string) error {
-	f.mu.Lock()
-	f.refreshed = append(f.refreshed, id)
-	f.mu.Unlock()
-	return nil
-}
-
-func (f *fakePublicLists) RefreshAllDetailed(context.Context) (control.PublicListRefreshAllResult, error) {
-	return control.PublicListRefreshAllResult{Items: []control.PublicListRefreshItem{}}, nil
-}
-
-func (f *fakePublicLists) Validate(_ context.Context, _ string, spec control.PublicListSpec) (control.PublicListValidation, error) {
-	if f.validateErr != nil {
-		return control.PublicListValidation{}, f.validateErr
-	}
-	return control.PublicListValidation{Valid: true, ValidationToken: "list-validation", Format: spec.Format, EntryCount: 1, Spec: spec}, nil
-}
-
-func (f *fakePublicLists) Publish(_ context.Context, _ string, id, token string) (control.PublicList, error) {
-	if token != "list-validation" {
-		return control.PublicList{}, publiclist.ErrValidationTokenInvalid
-	}
-	if id == "" {
-		id = "published-list"
-	}
-	return control.PublicList{ID: id, Published: true, SnapshotStatus: control.PublicListSnapshotCurrent}, nil
-}
-
-func (f *fakePublicLists) Update(ctx context.Context, actorID, id string, patch control.PublicListPatch) (control.PublicList, error) {
-	if f.store == nil {
-		return control.PublicList{ID: id}, nil
-	}
-	return f.store.UpdatePublicList(ctx, actorID, id, patch)
-}
-
-func (f *fakePublicLists) Invalidate(userID string) {
-	f.mu.Lock()
-	f.invalidations = append(f.invalidations, userID)
-	f.mu.Unlock()
-}
-
-func (f *fakePublicLists) Delete(ctx context.Context, actorID, id string) error {
-	f.mu.Lock()
-	f.deleted = append(f.deleted, id)
-	f.mu.Unlock()
-	if f.deleteErr != nil {
-		return f.deleteErr
-	}
-	if f.store != nil {
-		return f.store.DeletePublicList(ctx, actorID, id)
-	}
-	return nil
-}
-
-func TestPublicListDeleteCleanupErrorIsActionable(t *testing.T) {
-	fixture := newFixture(t)
-	fixture.handler.opts.PublicLists = &fakePublicLists{deleteErr: publiclist.ErrSnapshotCleanup}
-	admin, csrf := login(t, fixture.handler, "admin", "password-for-admin")
-	w := req(fixture.handler, http.MethodDelete, "/api/v1/admin/public-lists/list-1", "", admin, csrf)
-	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "public_list_cleanup_pending") {
-		t.Fatalf("response=%d %s", w.Code, w.Body.String())
-	}
 }
 
 func (f *fakeTelemetry) Snapshot(_ context.Context, user string, from, to time.Time) (telemetry.StatsSnapshot, error) {
@@ -231,25 +152,6 @@ func TestQueryAPIEmitsUnknownEDNSStagesAsNull(t *testing.T) {
 		if got, ok := response.Items[0][field]; !ok || string(got) != "null" {
 			t.Fatalf("%s=%s present=%t body=%s", field, got, ok, w.Body.String())
 		}
-	}
-}
-
-func TestAdminCanReadUserRulesWithoutMutatingThem(t *testing.T) {
-	f := newFixture(t)
-	rule, err := f.store.CreateDNSPolicyRule(context.Background(), f.user1.ID, f.user1.ID, control.DNSPolicyRuleSpec{
-		Enabled: true, Priority: 10, Action: control.DNSPolicyBlock, Match: control.DNSPolicyMatchSuffix, Pattern: "ads.example",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
-	path := "/api/v1/admin/users/" + f.user1.ID + "/rules"
-	w := req(f.handler, http.MethodGet, path, "", admin, "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), rule.ID) || !strings.Contains(w.Body.String(), "ads.example") {
-		t.Fatalf("rules=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodPost, path, `{}`, admin, csrf); w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("write through read-only admin route=%d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -392,222 +294,6 @@ func TestCredentialOneTimeURLAndIsolation(t *testing.T) {
 	}
 }
 
-func TestLookupIsAuthenticatedValidatedAndScoped(t *testing.T) {
-	f := newFixture(t)
-	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
-	var gotUser, gotName string
-	var gotType uint16
-	f.handler.opts.Lookup = func(_ context.Context, userID, name string, qtype uint16) (*dns.Msg, error) {
-		gotUser, gotName, gotType = userID, name, qtype
-		request := new(dns.Msg).SetQuestion(name, qtype)
-		response := new(dns.Msg)
-		response.SetReply(request)
-		response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("192.0.2.10")}}
-		response.SetEdns0(1232, false)
-		return response, nil
-	}
-	if got := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"example.org","qtype":"A"}`, nil, csrf); got.Code != http.StatusUnauthorized {
-		t.Fatalf("anonymous lookup=%d", got.Code)
-	}
-	if got := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"example.org","qtype":"A"}`, alice, ""); got.Code != http.StatusForbidden {
-		t.Fatalf("lookup without csrf=%d", got.Code)
-	}
-	if got := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"bad name","qtype":"A"}`, alice, csrf); got.Code != http.StatusBadRequest {
-		t.Fatalf("invalid lookup=%d", got.Code)
-	}
-	w := req(f.handler, http.MethodPost, "/api/v1/me/lookup", `{"name":"Example.ORG.","qtype":"a"}`, alice, csrf)
-	if w.Code != http.StatusOK || gotUser != f.user1.ID || gotName != "example.org." || gotType != dns.TypeA {
-		t.Fatalf("lookup=%d user=%q name=%q type=%d body=%s", w.Code, gotUser, gotName, gotType, w.Body.String())
-	}
-	var response lookupResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Question.Name != "example.org" || response.Question.QType != "A" || response.Rcode != "NOERROR" || len(response.Answers) != 1 || response.Answers[0].Value != "192.0.2.10" || !response.EDNS.Present || response.EDNS.UDPSize != 1232 {
-		t.Fatalf("lookup response=%s err=%v", w.Body.String(), err)
-	}
-}
-
-func TestUserPolicySettingsAndRules(t *testing.T) {
-	f := newFixture(t)
-	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
-	invalidations := 0
-	f.handler.opts.InvalidatePolicy = func(userID string) {
-		if userID != f.user1.ID {
-			t.Fatalf("invalidated user=%q", userID)
-		}
-		invalidations++
-	}
-	if w := req(f.handler, http.MethodGet, "/api/v1/me/settings", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"blocked_qtypes":[]`) || !strings.Contains(w.Body.String(), `"custom_block_enabled":true`) || !strings.Contains(w.Body.String(), `"policy_paused_until":null`) {
-		t.Fatalf("settings=%d %s", w.Code, w.Body.String())
-	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"strip_ecs":true,"block_private_answers":true,"blocked_qtypes":["AAAA","TXT"],"custom_block_enabled":false,"custom_allow_enabled":false,"custom_rewrite_enabled":false}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"custom_rewrite_enabled":false`) {
-		t.Fatalf("update settings=%d %s", w.Code, w.Body.String())
-	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"policy_paused_until":"2026-01-15T13:00:00Z"}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"policy_paused_until":"2026-01-15T13:00:00Z"`) {
-		t.Fatalf("pause policy=%d %s", w.Code, w.Body.String())
-	}
-	for _, body := range []string{`{"policy_paused_until":"2026-01-16T12:00:01Z"}`, `{"policy_paused_until":"tomorrow"}`} {
-		if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", body, alice, csrf); w.Code != http.StatusBadRequest {
-			t.Fatalf("invalid pause body=%s status=%d response=%s", body, w.Code, w.Body.String())
-		}
-	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"policy_paused_until":"2026-01-15T11:59:59Z"}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"policy_paused_until":null`) {
-		t.Fatalf("past pause=%d %s", w.Code, w.Body.String())
-	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"policy_paused_until":null}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"policy_paused_until":null`) {
-		t.Fatalf("cancel pause=%d %s", w.Code, w.Body.String())
-	}
-	w := req(f.handler, http.MethodPost, "/api/v1/me/rules", `{"enabled":true,"action":"rewrite","match":"exact","pattern":"example.org","record_type":"A","value":"192.0.2.1"}`, alice, csrf)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create rule=%d %s", w.Code, w.Body.String())
-	}
-	var rule control.DNSPolicyRule
-	if err := json.Unmarshal(w.Body.Bytes(), &rule); err != nil || rule.UserID != f.user1.ID || rule.ID == "" {
-		t.Fatalf("rule=%+v err=%v", rule, err)
-	}
-	if w = req(f.handler, http.MethodGet, "/api/v1/me/rules", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), rule.ID) {
-		t.Fatalf("list rules=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodPatch, "/api/v1/me/rules/"+rule.ID, `{"enabled":false}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"enabled":false`) {
-		t.Fatalf("patch rule=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodDelete, "/api/v1/me/rules/"+rule.ID, "", alice, csrf); w.Code != http.StatusNoContent {
-		t.Fatalf("delete rule=%d %s", w.Code, w.Body.String())
-	}
-	if invalidations != 7 {
-		t.Fatalf("invalidations=%d", invalidations)
-	}
-}
-
-func TestPublicListAdminCRUDRefreshAndUserOverrides(t *testing.T) {
-	f := newFixture(t)
-	publicLists := &fakePublicLists{store: f.store}
-	f.handler.opts.PublicLists = publicLists
-	admin, adminCSRF := login(t, f.handler, "admin", "password-for-admin")
-	alice, aliceCSRF := login(t, f.handler, "alice", "password-for-alice")
-
-	if w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists", `{"name":"bad","category":"ads","url":"http://example.test/list","format":"mosdns","enabled":true,"refresh_seconds":300}`, alice, aliceCSRF); w.Code != http.StatusForbidden {
-		t.Fatalf("user admin create=%d %s", w.Code, w.Body.String())
-	}
-	if w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists", `{"name":"bad","category":"ads","url":"http://example.test/list","format":"mosdns","enabled":true,"refresh_seconds":300}`, admin, adminCSRF); w.Code != http.StatusBadRequest {
-		t.Fatalf("invalid create=%d %s", w.Code, w.Body.String())
-	}
-
-	w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists", `{"name":"Ads","category":"广告","url":"https://example.test/list?token=source-secret","format":"mosdns","enabled":false,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","refresh_seconds":300}`, admin, adminCSRF)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create=%d %s", w.Code, w.Body.String())
-	}
-	var list control.PublicList
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || list.ID == "" || list.Category != "广告" || list.LastRefreshStatus != control.PublicListRefreshNever {
-		t.Fatalf("list=%+v err=%v", list, err)
-	}
-	if w = req(f.handler, http.MethodGet, "/api/v1/admin/public-lists/"+list.ID, "", admin, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"name":"Ads"`) {
-		t.Fatalf("get=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodPatch, "/api/v1/admin/public-lists/"+list.ID, `{"category":"隐私","enabled":true}`, admin, adminCSRF); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"category":"隐私"`) {
-		t.Fatalf("patch=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodGet, "/api/v1/me/public-lists", "", alice, ""); w.Code != http.StatusOK || strings.Contains(w.Body.String(), list.ID) {
-		t.Fatalf("draft visible to user=%d %s", w.Code, w.Body.String())
-	}
-	published := true
-	if _, err := f.store.UpdatePublicList(context.Background(), f.admin.ID, list.ID, control.PublicListPatch{Published: &published}); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.store.RecordPublicListRefresh(context.Background(), list.ID, control.PublicListRefreshResult{
-		Status: control.PublicListRefreshError, RefreshedAt: time.Now(), Error: "upstream source-secret failed",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if w = req(f.handler, http.MethodPost, "/api/v1/admin/public-lists/"+list.ID+"/refresh", "{}", admin, adminCSRF); w.Code != http.StatusOK {
-		t.Fatalf("refresh=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodGet, "/api/v1/me/public-lists", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), list.ID) || !strings.Contains(w.Body.String(), `"overridden":false`) {
-		t.Fatalf("user lists=%d %s", w.Code, w.Body.String())
-	}
-	for _, sensitive := range []string{`"url"`, `"sha256"`, `"snapshot_sha256"`, `"last_refresh_error"`, "source-secret"} {
-		if strings.Contains(w.Body.String(), sensitive) {
-			t.Fatalf("user list response leaked %q: %s", sensitive, w.Body.String())
-		}
-	}
-	for _, body := range []string{`{"enabled":false}`, `{"enabled":true}`, `{"enabled":null}`} {
-		if w = req(f.handler, http.MethodPatch, "/api/v1/me/public-lists/"+list.ID, body, alice, aliceCSRF); w.Code != http.StatusNoContent {
-			t.Fatalf("override %s=%d %s", body, w.Code, w.Body.String())
-		}
-	}
-	if w = req(f.handler, http.MethodPatch, "/api/v1/me/public-lists/"+list.ID, `{}`, alice, aliceCSRF); w.Code != http.StatusBadRequest {
-		t.Fatalf("missing override=%d %s", w.Code, w.Body.String())
-	}
-	if w = req(f.handler, http.MethodDelete, "/api/v1/admin/public-lists/"+list.ID, "", admin, adminCSRF); w.Code != http.StatusNoContent {
-		t.Fatalf("delete=%d %s", w.Code, w.Body.String())
-	}
-	publicLists.mu.Lock()
-	defer publicLists.mu.Unlock()
-	if len(publicLists.refreshed) != 1 || publicLists.refreshed[0] != list.ID || len(publicLists.deleted) != 1 || publicLists.deleted[0] != list.ID {
-		t.Fatalf("public list calls=%+v", publicLists)
-	}
-	if len(publicLists.invalidations) < 5 {
-		t.Fatalf("invalidations=%v", publicLists.invalidations)
-	}
-}
-
-func TestPublicListValidationPublishAndRefreshAllRoutes(t *testing.T) {
-	f := newFixture(t)
-	publicLists := new(fakePublicLists)
-	f.handler.opts.PublicLists = publicLists
-	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
-	body := `{"name":"Ads","url":"https://example.test/list","format":"mosdns","default_enabled":true,"refresh_seconds":300}`
-	w := req(f.handler, http.MethodPost, "/api/v1/admin/public-lists/validate", body, admin, csrf)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"validation_token":"list-validation"`) || !strings.Contains(w.Body.String(), `"valid":true`) {
-		t.Fatalf("validate=%d %s", w.Code, w.Body.String())
-	}
-	w = req(f.handler, http.MethodPost, "/api/v1/admin/public-lists/publish", `{"validation_token":"list-validation"}`, admin, csrf)
-	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"published":true`) {
-		t.Fatalf("publish=%d %s", w.Code, w.Body.String())
-	}
-	w = req(f.handler, http.MethodPost, "/api/v1/admin/public-lists/list-1/publish", `{"validation_token":"list-validation"}`, admin, csrf)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"list-1"`) {
-		t.Fatalf("republish=%d %s", w.Code, w.Body.String())
-	}
-	w = req(f.handler, http.MethodPost, "/api/v1/admin/public-lists/refresh-all", `{}`, admin, csrf)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"items":[]`) {
-		t.Fatalf("refresh-all=%d %s", w.Code, w.Body.String())
-	}
-	published := true
-	list, err := f.store.CreatePublicList(context.Background(), f.admin.ID, control.PublicListSpec{Name: "Direct", URL: "https://example.test/direct", Format: control.PublicListFormatMosDNS, Published: &published})
-	if err != nil {
-		t.Fatal(err)
-	}
-	w = req(f.handler, http.MethodPatch, "/api/v1/admin/public-lists/"+list.ID, `{"published":true}`, admin, csrf)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `validation_required`) {
-		t.Fatalf("unvalidated publish=%d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestPublicListValidationErrorsHaveActionableHTTPStatus(t *testing.T) {
-	tests := []struct {
-		err    error
-		status int
-		code   string
-	}{
-		{publiclist.ErrInvalidSource, http.StatusBadRequest, "public_list_source_invalid"},
-		{publiclist.ErrContentTooLarge, http.StatusRequestEntityTooLarge, "public_list_too_large"},
-		{publiclist.ErrContentRejected, http.StatusUnprocessableEntity, "public_list_content_invalid"},
-		{publiclist.ErrTooManyPending, http.StatusTooManyRequests, "public_list_validation_busy"},
-		{control.ErrConflict, http.StatusConflict, "public_list_conflict"},
-		{publiclist.ErrSnapshotCleanup, http.StatusInternalServerError, "public_list_cleanup_pending"},
-	}
-	for _, test := range tests {
-		t.Run(test.code, func(t *testing.T) {
-			fixture := newFixture(t)
-			fixture.handler.opts.PublicLists = &fakePublicLists{validateErr: test.err}
-			admin, csrf := login(t, fixture.handler, "admin", "password-for-admin")
-			w := req(fixture.handler, http.MethodPost, "/api/v1/admin/public-lists/validate", `{"name":"Ads","url":"https://example.test/list","format":"mosdns"}`, admin, csrf)
-			if w.Code != test.status || !strings.Contains(w.Body.String(), test.code) {
-				t.Fatalf("response=%d %s", w.Code, w.Body.String())
-			}
-		})
-	}
-}
-
 func TestManagedRuntimeRoutesUseAdminSessionAndRevisionChecks(t *testing.T) {
 	f := newFixture(t)
 	manager := &fakeRuntimeConfig{state: runtimeconfig.State{
@@ -682,16 +368,11 @@ func TestManagedRuntimeRoutesUseAdminSessionAndRevisionChecks(t *testing.T) {
 }
 
 type fakeRuntimeInspector struct {
-	state     runtimeconfig.State
-	providers []runtimeconfig.DataProviderSummary
+	state runtimeconfig.State
 }
 
 func (f *fakeRuntimeInspector) Get(context.Context) (runtimeconfig.State, error) {
 	return f.state, nil
-}
-
-func (f *fakeRuntimeInspector) DataProviders(context.Context) ([]runtimeconfig.DataProviderSummary, error) {
-	return f.providers, nil
 }
 
 func TestReadOnlyRuntimeInspectorRemainsAvailableWithoutManager(t *testing.T) {
@@ -705,10 +386,6 @@ func TestReadOnlyRuntimeInspectorRemainsAvailableWithoutManager(t *testing.T) {
 				AggregateRetentionDays: 7, QueryRetentionHours: 24, MaxQueryRecords: 100000,
 			}},
 		},
-		providers: []runtimeconfig.DataProviderSummary{{
-			Tag: "china", File: "china.txt", AutoReload: true, Declared: true,
-			RuntimeState: runtimeconfig.DataProviderRuntimeState{Status: "unsupported", Reason: "runtime_load_metrics_unavailable"},
-		}},
 	}
 	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
 
@@ -721,10 +398,6 @@ func TestReadOnlyRuntimeInspectorRemainsAvailableWithoutManager(t *testing.T) {
 	}
 	if validate := req(f.handler, http.MethodPost, "/api/v1/admin/runtime/config/validate", `{}`, admin, csrf); validate.Code != http.StatusServiceUnavailable || !strings.Contains(validate.Body.String(), "managed_config_disabled") {
 		t.Fatalf("read-only validate=%d %s", validate.Code, validate.Body.String())
-	}
-	providers := req(f.handler, http.MethodGet, "/api/v1/admin/data-providers", "", admin, "")
-	if providers.Code != http.StatusOK || !strings.Contains(providers.Body.String(), `"tag":"china"`) || !strings.Contains(providers.Body.String(), `"entry_count":null`) {
-		t.Fatalf("read-only providers=%d %s", providers.Code, providers.Body.String())
 	}
 }
 
@@ -946,63 +619,6 @@ func TestStaticAndAPINotFound(t *testing.T) {
 	}
 }
 
-// answer_family travels through the settings API. The patch decoder rejects
-// unknown fields, so a missing declaration would surface here as a 400.
-func TestUserSettingsAnswerFamily(t *testing.T) {
-	f := newFixture(t)
-	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
-
-	if w := req(f.handler, http.MethodGet, "/api/v1/me/settings", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"answer_family":""`) {
-		t.Fatalf("default settings=%d %s", w.Code, w.Body.String())
-	}
-	for _, family := range []string{"ipv4", "ipv6", ""} {
-		body := `{"answer_family":"` + family + `"}`
-		w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", body, alice, csrf)
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"answer_family":"`+family+`"`) {
-			t.Fatalf("set %q: %d %s", family, w.Code, w.Body.String())
-		}
-	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"answer_family":"ipv5"}`, alice, csrf); w.Code != http.StatusBadRequest {
-		t.Fatalf("invalid family status=%d %s", w.Code, w.Body.String())
-	}
-	// An unrelated update must not clear the preference.
-	req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"answer_family":"ipv4"}`, alice, csrf)
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"strip_ecs":true}`, alice, csrf); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"answer_family":"ipv4"`) {
-		t.Fatalf("unrelated update cleared the preference: %d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestUserSettingsAnswerOptimizations(t *testing.T) {
-	f := newFixture(t)
-	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
-	w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"ttl_min":60,"ttl_max":3600,"flatten_cname":true,"shuffle_answers":true}`, alice, csrf)
-	if w.Code != http.StatusOK {
-		t.Fatalf("update=%d %s", w.Code, w.Body.String())
-	}
-	for _, want := range []string{`"ttl_min":60`, `"ttl_max":3600`, `"flatten_cname":true`, `"shuffle_answers":true`} {
-		if !strings.Contains(w.Body.String(), want) {
-			t.Fatalf("response lacks %s: %s", want, w.Body.String())
-		}
-	}
-	for _, body := range []string{`{"ttl_min":90000}`, `{"ttl_min":7200}`} {
-		if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", body, alice, csrf); w.Code != http.StatusBadRequest {
-			t.Fatalf("invalid ttl body=%s status=%d %s", body, w.Code, w.Body.String())
-		}
-	}
-}
-
-func TestUserSettingsECSOverride(t *testing.T) {
-	f := newFixture(t)
-	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
-	w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"ecs_ipv4":"203.0.113.77/24","ecs_ipv6":"2001:db8::/48"}`, alice, csrf)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ecs_ipv4":"203.0.113.0/24"`) || !strings.Contains(w.Body.String(), `"ecs_ipv6":"2001:db8::/48"`) {
-		t.Fatalf("update=%d %s", w.Code, w.Body.String())
-	}
-	if w := req(f.handler, http.MethodPatch, "/api/v1/me/settings", `{"ecs_ipv4":"2001:db8::/48"}`, alice, csrf); w.Code != http.StatusBadRequest {
-		t.Fatalf("wrong family status=%d %s", w.Code, w.Body.String())
-	}
-}
-
 type erasingTelemetry struct {
 	*fakeTelemetry
 	erased []string
@@ -1017,11 +633,7 @@ func (e *erasingTelemetry) DeleteUser(_ context.Context, userID string) error {
 func TestAdminDeleteUser(t *testing.T) {
 	f := newFixture(t)
 	eraser := &erasingTelemetry{fakeTelemetry: f.telemetry}
-	lists := &fakePublicLists{}
-	var invalidated []string
 	f.handler.opts.Telemetry = eraser
-	f.handler.opts.PublicLists = lists
-	f.handler.opts.InvalidatePolicy = func(userID string) { invalidated = append(invalidated, userID) }
 	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
 	alice, aliceCSRF := login(t, f.handler, "alice", "password-for-alice")
 
@@ -1041,8 +653,8 @@ func TestAdminDeleteUser(t *testing.T) {
 	if w := req(f.handler, http.MethodDelete, "/api/v1/admin/users/"+f.user1.ID, "", admin, csrf); w.Code != http.StatusNoContent {
 		t.Fatalf("delete=%d %s", w.Code, w.Body.String())
 	}
-	if len(eraser.erased) != 1 || eraser.erased[0] != f.user1.ID || len(invalidated) != 1 || invalidated[0] != f.user1.ID || len(lists.invalidations) != 1 || lists.invalidations[0] != f.user1.ID {
-		t.Fatalf("erased=%v policy=%v lists=%v", eraser.erased, invalidated, lists.invalidations)
+	if len(eraser.erased) != 1 || eraser.erased[0] != f.user1.ID {
+		t.Fatalf("erased=%v", eraser.erased)
 	}
 	if w := req(f.handler, http.MethodGet, "/api/v1/me", "", alice, ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("deleted user's session=%d %s", w.Code, w.Body.String())

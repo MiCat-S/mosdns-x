@@ -750,7 +750,7 @@ func (s *MySQLStore) InitializeAdmin(ctx context.Context, spec UserSpec) (User, 
 		if err := insertMySQLUser(ctx, tx, r); err != nil {
 			return err
 		}
-		if err := insertMySQLDNSPolicySettings(ctx, tx, defaultDNSPolicySettings(id, now)); err != nil {
+		if err := insertMySQLRetiredPolicyDefaults(ctx, tx, id, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_control_meta SET initialized=TRUE WHERE id=1`); err != nil {
@@ -783,7 +783,7 @@ func (s *MySQLStore) CreateUser(ctx context.Context, actor string, spec UserSpec
 		if err := insertMySQLUser(ctx, tx, r); err != nil {
 			return err
 		}
-		if err := insertMySQLDNSPolicySettings(ctx, tx, defaultDNSPolicySettings(id, now)); err != nil {
+		if err := insertMySQLRetiredPolicyDefaults(ctx, tx, id, now); err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "create_user", "user", id, nil, now)

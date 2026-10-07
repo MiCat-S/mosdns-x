@@ -84,17 +84,11 @@ type UpstreamObserver func(UpstreamAttempt)
 type BackgroundWorkTracker func() (release func(), ok bool)
 
 const (
-	ResponseSourceCache         = "cache"
-	ResponseSourceUpstream      = "upstream"
-	ResponseSourceCustomBlock   = "custom_block"
-	ResponseSourceCustomRewrite = "custom_rewrite"
-	ResponseSourcePublicList    = "public_list"
-	ResponseSourceHosts         = "hosts"
-	ResponseSourceSequence      = "sequence"
-	ResponseSourceServfail      = "servfail"
-	// ResponseSourceFamilyPreference marks an answer emptied because the user
-	// prefers the other address family and the name resolves in it.
-	ResponseSourceFamilyPreference = "family_preference"
+	ResponseSourceCache    = "cache"
+	ResponseSourceUpstream = "upstream"
+	ResponseSourceHosts    = "hosts"
+	ResponseSourceSequence = "sequence"
+	ResponseSourceServfail = "servfail"
 )
 
 const (
@@ -112,8 +106,6 @@ type ResponseTrace struct {
 	Source               string
 	SourceID             string
 	UpstreamID           string
-	MatchedRuleID        string
-	MatchedPublicListID  string
 	UpstreamStageStatus  string
 	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot
 	UpstreamResponseEDNS *dnsutils.EDNSSnapshot
@@ -123,13 +115,6 @@ func (t ResponseTrace) Clone() ResponseTrace {
 	t.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(t.UpstreamRequestEDNS)
 	t.UpstreamResponseEDNS = dnsutils.CloneEDNSSnapshot(t.UpstreamResponseEDNS)
 	return t
-}
-
-func (t ResponseTrace) IsZero() bool {
-	return t.Source == "" && t.SourceID == "" && t.UpstreamID == "" &&
-		t.MatchedRuleID == "" && t.MatchedPublicListID == "" &&
-		t.UpstreamStageStatus == "" && t.UpstreamRequestEDNS == nil &&
-		t.UpstreamResponseEDNS == nil
 }
 
 func NewRequestMeta(addr netip.Addr) *RequestMeta {

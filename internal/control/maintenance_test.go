@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -181,81 +179,5 @@ func TestMaintainContinuesAcrossBoundedBatches(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestBackupRestorePreservesQuotaAndCredentials(t *testing.T) {
-	s, clock, livePath := newTestStore(t, time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC))
-	ctx := context.Background()
-	u, issued := setupUser(t, s, userSpec("backup", 100, 100, 0))
-	identity, err := s.AuthenticateCredential(ctx, issued.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Admit(ctx, identity); err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	backup := filepath.Join(dir, "backup.db")
-	if err = s.Backup(ctx, backup); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(backup)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("backup mode=%v", info.Mode().Perm())
-	}
-	if err = ValidateBackup(ctx, backup); err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(dir, "restored.db")
-	if err = Restore(ctx, backup, destination); err != nil {
-		t.Fatal(err)
-	}
-	restored, err := Open(destination, Options{Clock: clock})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restored.Close()
-	quota, err := restored.CurrentQuota(ctx, u.ID)
-	if err != nil || quota.Used != 1 {
-		t.Fatalf("restored quota=%+v err=%v", quota, err)
-	}
-	if _, err = restored.AuthenticateCredential(ctx, issued.Token); err != nil {
-		t.Fatalf("restored credential: %v", err)
-	}
-
-	existing := filepath.Join(dir, "existing.db")
-	if err = os.WriteFile(existing, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Backup(ctx, existing); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("existing destination error=%v", err)
-	}
-	content, _ := os.ReadFile(existing)
-	if string(content) != "keep" {
-		t.Fatal("existing destination was overwritten")
-	}
-	if err = Restore(ctx, backup, existing); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("restore existing destination error=%v", err)
-	}
-
-	if err = ValidateBackup(ctx, livePath); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("live database lock conflict error=%v", err)
-	}
-}
-
-func TestBackupCancellationDoesNotLeaveDestination(t *testing.T) {
-	s, _, _ := newTestStore(t, time.Now().UTC())
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	path := filepath.Join(t.TempDir(), "cancelled.db")
-	if err := s.Backup(ctx, path); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Backup error=%v", err)
-	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cancelled backup remains: %v", err)
 	}
 }

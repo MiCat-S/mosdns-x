@@ -13,16 +13,18 @@ import {
   UsagePage,
   AccountPage,
   HelpPage,
-  LabsPage,
-  LookupPage,
   PasswordPage,
-  PrivacyPage,
-  PublicListsPage,
-  AdminPublicListsPage,
   RuntimeConfigPage,
-  RulesPage,
-  AdvancedPage,
 } from "./pages";
+// Pages removed from the slimmed panel; old bookmarks land on the home page.
+const removedUserPages = [
+  "/app/privacy",
+  "/app/lists",
+  "/app/rules",
+  "/app/labs",
+  "/app/advanced",
+  "/app/lookup",
+];
 function Guard({ role }: { role: "admin" | "user" }) {
   const { session, loading, error, retry } = useSession();
   const loc = useLocation();
@@ -58,7 +60,7 @@ export function App() {
         <Route path="/admin/logs" element={<AdminLogs />} />
         <Route path="/admin/users" element={<Users />} />
         <Route path="/admin/users/:id" element={<UserDetail />} />
-        <Route path="/admin/lists" element={<AdminPublicListsPage />} />
+        <Route path="/admin/lists" element={<Navigate to="/admin" replace />} />
         <Route path="/admin/runtime" element={<RuntimeConfigPage />} />
         <Route path="/admin/audit" element={<AuditPage />} />
         <Route path="/admin/system" element={<SystemPage />} />
@@ -67,12 +69,13 @@ export function App() {
       <Route element={<Guard role="user" />}>
         <Route path="/app" element={<ServicePage />} />
         <Route path="/app/usage" element={<UsagePage />} />
-        <Route path="/app/privacy" element={<PrivacyPage />} />
-        <Route path="/app/lists" element={<PublicListsPage />} />
-        <Route path="/app/rules" element={<RulesPage />} />
-        <Route path="/app/labs" element={<LabsPage />} />
-        <Route path="/app/advanced" element={<AdvancedPage />} />
-        <Route path="/app/lookup" element={<LookupPage />} />
+        {removedUserPages.map((path) => (
+          <Route
+            key={path}
+            path={path}
+            element={<Navigate to="/app" replace />}
+          />
+        ))}
         <Route path="/app/account" element={<AccountPage />} />
         <Route path="/app/help" element={<HelpPage />} />
         <Route

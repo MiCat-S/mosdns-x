@@ -2,7 +2,6 @@ package controlapi
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/pmkol/mosdns-x/internal/control"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -227,31 +225,5 @@ func TestProxyHeadersCannotOverrideUntrustedPeer(t *testing.T) {
 				t.Fatalf("client IP=%s want=%s", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestLookupRejectsMalformedNamesBeforeExecution(t *testing.T) {
-	h, err := New(Options{Control: &failedLoginResponse{}, PublicDNSURL: "http://localhost/dns-query",
-		PanelOrigin: "http://localhost:3000", Development: true,
-		Lookup: func(context.Context, string, string, uint16) (*dns.Msg, error) {
-			t.Error("malformed lookup reached the executor")
-			return nil, errors.New("unexpected lookup")
-		}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"", "a..test", "-bad.test", "bad-.test", "bad name.test", strings.Repeat("a", 64) + ".test", strings.Repeat("a.", 127) + "a", "example.test..", "bad/test"} {
-		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"`+name+`","qtype":"A"}`))
-		w := httptest.NewRecorder()
-		h.lookup(w, r, control.User{ID: "user"})
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("name=%q status=%d", name, w.Code)
-		}
-	}
-	h.opts.Lookup = func(context.Context, string, string, uint16) (*dns.Msg, error) { return nil, nil }
-	w := httptest.NewRecorder()
-	h.lookup(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"example.test","qtype":"A"}`)), control.User{ID: "user"})
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("nil lookup response status=%d", w.Code)
 	}
 }

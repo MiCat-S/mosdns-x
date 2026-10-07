@@ -1,5 +1,7 @@
 # 多用户受理路径性能验证
 
+> 2026-10-07 补注：本文的测量完成之后，用户 DNS 策略、公共列表、DNS Lookup、离线备份恢复命令（`control backup`／`control restore`）和 bbolt 到 MySQL 迁移（`control migrate-mysql`）已移除。下文涉及这些功能的内容只作历史记录，当前范围见[存储文档](storage.md#已移除功能的数据)。
+
 2026-09-11 在 macOS arm64、Go 1.26.6 上比较基线 `5ce2b41` 与本次实现。使用 Python `http.client`、回环明文 HTTP DoH、保持连接和同一 `blackhole` 应答（IPv4 `192.0.2.53`）。每轮 1,000 个 POST、16 个并发客户端，每种配置测量 3 轮。控制模式使用独立临时 bbolt 数据库，关闭查询明细，用户额度、QPS 与突发量均为 100,000。
 
 下表是各轮对应指标的中位数：

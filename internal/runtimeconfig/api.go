@@ -130,7 +130,6 @@ type Probe struct {
 
 type Inspector interface {
 	Get(context.Context) (State, error)
-	DataProviders(context.Context) ([]DataProviderSummary, error)
 }
 
 type Manager interface {

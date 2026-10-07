@@ -232,9 +232,6 @@ func TestCredentialTokenIndexAndLegacyUpgrade(t *testing.T) {
 	if err = raw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err = ValidateBackup(ctx, path); err != nil {
-		t.Fatalf("v1 database without token index rejected: %v", err)
-	}
 	reopened, err := Open(path, Options{Clock: clock})
 	if err != nil {
 		t.Fatal(err)

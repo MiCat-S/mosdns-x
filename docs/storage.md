@@ -4,10 +4,10 @@ Mosdns-x 支持 `bbolt` 和 `mysql` 两种控制服务存储。未配置驱动�
 
 | 方案 | 适用场景 | 数据位置 | 备份方式 |
 | --- | --- | --- | --- |
-| bbolt | 单机、小规模、希望零外部依赖 | `control.db` 与 `stats.db` | `mosdns control backup` 加离线复制统计库 |
+| bbolt | 单机、小规模、希望零外部依赖 | `control.db` 与 `stats.db` | 停止服务后复制两个数据库文件 |
 | MySQL | 数据量持续增长、需要集中备份或后续扩展 | MySQL 的规范化表 | MySQL 原生备份、快照或主从复制 |
 
-控制数据包括账户、密码派生值、会话、DNS 凭证哈希、额度状态、QPS 令牌桶、用户 DNS 设置与规则、公共列表目录及用户覆盖、计费用量和审计记录。统计数据包括分钟聚合、上游状态及可选的查询明细。两类数据使用各自的表组；可以放在同一个数据库，也可以给统计数据配置单独的 DSN。
+控制数据包括账户、密码派生值、会话、DNS 凭证哈希、额度状态、QPS 令牌桶、计费用量和审计记录。统计数据包括分钟聚合、上游状态及可选的查询明细。两类数据使用各自的表组；可以放在同一个数据库，也可以给统计数据配置单独的 DSN。
 
 无论使用哪种后端，都应把数据库和备份按敏感数据保护。查询明细可能含客户端地址、查询域名、Answer IP 和 EDNS/ECS 信息，只有确有排障或审计需要时才启用 `query_log`。
 
@@ -17,7 +17,7 @@ Mosdns-x 支持 `bbolt` 和 `mysql` 两种控制服务存储。未配置驱动�
 
 bbolt 使用两个文件：`control.database` 保存控制数据，`control.stats_database` 保存统计数据。两条路径必须不同。程序会以 `0700` 创建缺失的父目录，并把数据库文件设为 `0600`。
 
-首次用支持 UUIDv4 设备 token 的版本打开旧版 schema v1 控制库时，服务会创建 token 索引；支持用户 DNS 策略的版本继续把 bbolt 升级到 schema v3。规则总开关和临时暂停把 schema 升级到 v4，公共列表目录和用户覆盖为 v5；公共列表发布、默认订阅和快照状态为 v6。v5 的 `enabled` 会迁移为 `default_enabled`，已有列表保持发布，已有用户覆盖不变。现有用户的三个规则总开关会设为开启，暂停时间为空，因此已有规则行为保持不变。升级前先离线备份；升级后的数据库不能再由旧二进制打开。
+当前 bbolt 控制库 schema 为 v6。打开 v1～v5 的旧库时会自动升级到 v6，例如为 UUIDv4 设备 token 创建索引；升级后的数据库不能再由只支持更低 schema 的旧二进制打开。升级前先按下文备份。
 
 运行中的维护任务会清理：
 
@@ -25,15 +25,19 @@ bbolt 使用两个文件：`control.database` 保存控制数据，`control.stat
 - 超过 35 天的计费分钟用量；
 - 超过 90 天的操作审计；
 - 到期或撤销超过 35 天的 DNS 凭证；
-- 超过配置保留期的统计聚合和查询明细，以及超出配置条数上限的最旧查询记录。
+- 超过配置保留期的统计聚合和查询明细，以及超出配置条数上限的查询记录。
 
-`mosdns control backup` 对控制库创建一致的离线备份。目标必须是新文件。统计库需要在服务停止后单独复制。恢复命令也只创建新目标，不覆盖现有文件。
+### 备份与恢复
+
+bbolt 没有内置备份命令。备份时停止 Mosdns-x，复制 `control.database` 和 `control.stats_database` 指向的两个文件（如 `control.db`、`stats.db`），副本保持 `0600` 权限并存放在受限目录。不要复制正在运行的服务所用的数据库文件，复制结果可能不一致。
+
+恢复时同样先停止服务，把当前文件改名保留，再把副本放回原路径（或修改配置指向副本），确认属主和权限后启动。恢复会回到备份时刻的账户、会话、设备凭证、额度已用量和用量记录；备份之后产生的扣费不会出现在恢复后的数据中。确认管理员登录、用户额度和设备凭证正确之前，保留被替换的文件。
 
 ## MySQL
 
 当前兼容基线为 MySQL 5.7 和 8.4，两种版本都会在 CI 中运行完整控制存储与统计存储集成测试。表结构没有依赖 MySQL 8 专属的 JSON 类型、窗口函数或新排序规则，因此已有 MySQL 5.7 环境可以直接使用。
 
-MySQL 后端按用户、会话、凭证、用户 DNS 策略、公共列表、计费用量、审计、统计维度和查询明细拆表。control schema v1 会在迁移锁内升级到 v2 并补充默认策略设置；规则总开关和临时暂停继续升级到 v3，公共列表目录和用户覆盖为 v4，发布、默认订阅和快照状态为 v5。telemetry schema v2 为查询明细补充最终处理来源、规则、列表和上游字段。升级器读取实际列或索引状态并只补充缺失项；即使旧表已创建但 schema 版本行尚未写入，下一次启动也会先收敛列结构和旧值，再记录 v5。`answer_family` 列（地址族偏好）为增量列，带默认值 `''`，每次启动在 schema 锁内检查并补齐，不提升 schema 版本。旧版本在每条语句中都显式列出字段，读不到这一列，插入时自动取默认值，更新时不会碰它，所以回滚二进制后仍可打开数据库，偏好值也会保留。bbolt 的策略设置按 JSON 存储，同样不提升 schema 版本，旧版本同样可以打开；但旧版本改写该用户的策略设置时，会把这个字段丢掉，之后偏好会回到不偏好。额度扣减、用户令牌桶与三份计费用量（全局、用户、设备）在同一事务中更新；同一用户的并发请求通过行锁串行化，避免超额放行。统计写入仍通过内存队列批量落库，控制路径不会等待查询明细写入。
+MySQL 后端按用户、会话、凭证、计费用量、审计、统计维度和查询明细拆表。当前 control schema 为 v5，telemetry schema 为 v3；旧版本的表会在启动时于迁移锁内自动升级。升级器读取实际列或索引状态并只补充缺失项；即使旧表已创建但 schema 版本行尚未写入，下一次启动也会先收敛列结构，再记录版本。额度扣减、用户令牌桶与三份计费用量（全局、用户、设备）在同一事务中更新；同一用户的并发请求通过行锁串行化，避免超额放行。统计写入仍通过内存队列批量落库，控制路径不会等待查询明细写入。
 
 服务启动时使用命名锁串行初始化表，并校验 `control` 与 `telemetry` 的 schema 版本。运行账号需要目标库的 `SELECT`、`INSERT`、`UPDATE`、`DELETE`、`CREATE` 权限，并能调用 `GET_LOCK`/`RELEASE_LOCK`。建议由数据库管理员提前创建数据库和专用账号；不要授予全局管理权限。
 
@@ -41,30 +45,17 @@ MySQL 后端按用户、会话、凭证、用户 DNS 策略、公共列表、计
 
 MySQL 消除了本地文件容量和独占锁的限制，但当前版本仍按单个 Mosdns-x 实例验收。后续扩展多实例时，需要单独压测热点用户行锁，并为跨实例突发 QPS 评估 Redis 令牌桶；Redis 不是当前单机部署的必需组件。
 
-MySQL 数据应使用数据库原生工具备份。内置 `control backup`/`restore` 只处理 bbolt 文件。备份策略至少覆盖所有 `mosdns_*` 表，并定期执行恢复演练。
+MySQL 数据使用数据库原生工具备份，例如 `mysqldump`、存储快照或主从复制。备份策略至少覆盖所有 `mosdns_*` 表，并定期执行恢复演练。
 
-## 从 bbolt 迁移到 MySQL
+## 已移除功能的数据
 
-迁移要求 Mosdns-x 已停止，两个 bbolt 源文件处于离线状态，MySQL 目标表为空。先检查源库和记录数量，不连接 MySQL：
+本版只保留账户、鉴权和日志相关功能。用户 DNS 策略（自定义规则、安全与隐私选项、安全模式、策略暂停、响应优化、ECS 覆写、用户自己的查询日志开关和保留期）、公共列表、DNS Lookup，以及 `mosdns control backup`、`mosdns control restore`、`mosdns control migrate-mysql` 命令已移除。本版不提供把 bbolt 数据导入 MySQL 的工具。
 
-```sh
-mosdns control migrate-mysql \
-  --database /var/lib/mosdns/control.db \
-  --stats-database /var/lib/mosdns/stats.db \
-  --component all \
-  --dry-run
-```
+数据库 schema 版本没有因此改变：bbolt control schema 仍为 v6，MySQL control schema 仍为 v5，MySQL telemetry schema 仍为 v3。已移除功能的表和 bucket 保留但不再读取，因此旧二进制仍能打开升级后的数据库：
 
-确认数量后执行迁移：
+- MySQL：`mosdns_dns_policy_settings`、`mosdns_dns_policy_rules`、`mosdns_public_lists`、`mosdns_user_public_lists`；
+- bbolt：`dns_policy_settings`、`dns_policy_rules`、`user_dns_policy_rules`、`public_lists`、`public_list_names`、`user_public_lists`。
 
-```sh
-mosdns control migrate-mysql \
-  --database /var/lib/mosdns/control.db \
-  --stats-database /var/lib/mosdns/stats.db \
-  --config /etc/mosdns/config.yaml \
-  --component all
-```
+删除用户时仍会清除该用户在这些表或 bucket 中的记录。查询明细不再写入 `matched_rule_id`、`matched_public_list_id`，API 也不再返回这两个字段；`custom_block`、`custom_rewrite`、`public_list`、`family_preference` 这些响应来源也不再产生；升级前写入的明细仍可能带有这些值。原有的 `public-lists` 快照目录不再使用，可以手动删除。
 
-`--config` 从受限配置文件读取控制与统计 DSN；两者配置为不同数据库时也会分别导入。也可直接传 `--mysql-dsn`，并用可选的 `--telemetry-mysql-dsn` 指定统计目标。每个组件在独立事务中导入，并拒绝写入非空目标。`all` 先提交控制数据，再提交统计数据；若第二步失败，可修复原因后用 `--component telemetry` 只重试统计数据。切换配置并启动后，检查管理员登录、用户数、设备凭证、当前额度、统计概览和查询明细。保留原 bbolt 文件，直到验证完成。
-
-迁移保留现有密码摘要、会话、UUID 与旧格式设备凭证哈希、用户 DNS 设置与规则、公共列表定义及用户启停覆盖、配额状态、计费用量、审计、统计聚合和查询明细。v1/v2 bbolt 源库会为每个用户生成默认策略设置；v1/v2/v3 源库的三个规则总开关会补为开启；v5 公共列表的 `enabled` 会映射为默认订阅并保持发布。公共列表下载快照不写入数据库，切换后由目标服务器按目录 URL 重新下载；在刷新成功前不会命中该列表。迁移不会产生新的明文 token；已有客户端继续使用原 token。
+回滚到旧二进制后，这些功能会重新出现，并使用升级前留下的数据。本版除删除用户时清除对应记录外，不会修改这些数据。
