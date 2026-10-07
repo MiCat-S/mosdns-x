@@ -39,16 +39,19 @@ func (a answering) Exec(ctx context.Context, qCtx *query_context.Context, next E
 	return ExecChainNode(ctx, qCtx, next)
 }
 
-func TestJournalRecordsMatchedConditionAndItsMatchers(t *testing.T) {
+func TestJournalRecordsEveryConditionAndItsMatchers(t *testing.T) {
 	matchers := map[string]Matcher{
 		"is_cn":    &DummyMatcher{Matched: false},
 		"is_local": &DummyMatcher{Matched: true},
+		"is_cdn":   &DummyMatcher{Matched: true},
 		"is_ad":    &DummyMatcher{Matched: false},
+		"is_lan":   &DummyMatcher{Matched: false},
 	}
-	execs := map[string]Executable{"forward_local": answering{}}
+	execs := map[string]Executable{"forward_local": answering{}, "noop": &DummyExecutable{}}
 	tree, err := BuildExecutableLogicTree([]interface{}{
+		map[string]interface{}{"if": "is_lan", "exec": []interface{}{"noop"}, "else_exec": []interface{}{"noop"}},
 		map[string]interface{}{"if": "is_ad", "exec": []interface{}{"forward_local"}},
-		map[string]interface{}{"if": "is_cn || is_local", "exec": []interface{}{"forward_local"}},
+		map[string]interface{}{"if": "is_cn || is_local || is_cdn", "exec": []interface{}{"forward_local"}},
 	}, zap.NewNop(), execs, matchers)
 	if err != nil {
 		t.Fatal(err)
@@ -58,12 +61,26 @@ func TestJournalRecordsMatchedConditionAndItsMatchers(t *testing.T) {
 		t.Fatal(err)
 	}
 	trace := journal.Snapshot(qCtx.ResponseTrace().AttemptSeq)
-	if len(trace.Steps) != 1 {
-		t.Fatalf("steps = %+v, want only the matched condition", trace.Steps)
+	if len(trace.Steps) != 3 {
+		t.Fatalf("steps = %+v, want every evaluated condition", trace.Steps)
 	}
-	step := trace.Steps[0]
-	if step.Kind != query_context.RouteStepIf || step.Detail != "is_cn || is_local" || !reflect.DeepEqual(step.Hits, []string{"is_local"}) {
-		t.Fatalf("step = %+v", step)
+	type want struct {
+		detail       string
+		matched      bool
+		hits, misses []string
+		then         string
+	}
+	for i, w := range []want{
+		{"is_lan", false, nil, []string{"is_lan"}, query_context.ConditionThenElse},
+		{"is_ad", false, nil, []string{"is_ad"}, query_context.ConditionThenContinue},
+		// is_cdn is never evaluated: the expression short-circuits on is_local.
+		{"is_cn || is_local || is_cdn", true, []string{"is_local"}, []string{"is_cn"}, query_context.ConditionThenExec},
+	} {
+		step := trace.Steps[i]
+		if step.Kind != query_context.RouteStepCondition || step.Detail != w.detail || step.Matched == nil || *step.Matched != w.matched ||
+			!reflect.DeepEqual(step.Hits, w.hits) || !reflect.DeepEqual(step.Misses, w.misses) || step.Then != w.then {
+			t.Fatalf("step %d = %+v, want %+v", i, step, w)
+		}
 	}
 	if len(trace.Attempts) != 1 || !trace.Attempts[0].Selected || trace.Attempts[0].Upstream != "223.5.5.5 (UDP)" {
 		t.Fatalf("attempts = %+v", trace.Attempts)

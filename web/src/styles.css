@@ -2187,42 +2187,291 @@ summary {
   }
 }
 
-.outbound-section h4 {
-  margin: 14px 0 8px;
-  font-size: 13px;
-  color: var(--muted);
+/* Query path: one vertical line through the nodes the query passed. */
+.route-summary {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
 }
-.route-steps {
+.route-flow {
+  position: relative;
   display: grid;
-  gap: 6px;
+  gap: 0;
   margin: 0;
-  padding-left: 20px;
+  padding: 0;
+  list-style: none;
 }
-.route-steps li {
+.route-node {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  padding-bottom: 12px;
+}
+.route-node::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  bottom: 0;
+  left: 13px;
+  width: 2px;
+  background: var(--line-strong);
+}
+.route-node:last-child {
+  padding-bottom: 0;
+}
+.route-node:last-child::before {
+  display: none;
+}
+.route-marker {
+  position: relative;
+  z-index: 1;
+  justify-self: center;
+  margin-top: 4px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--muted);
+  border-radius: 50%;
+  background: var(--surface);
+}
+.route-node.decision .route-marker {
+  width: 12px;
+  height: 12px;
+  margin-top: 5px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+.route-node.upstream .route-marker {
+  border-radius: 4px;
+}
+.route-node.event .route-marker {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+}
+.route-node.ok .route-marker {
+  border-color: var(--success);
+  background: var(--success-soft);
+}
+.route-node.fail .route-marker {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+.route-node.warn .route-marker {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+.route-node.info .route-marker {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.route-node.pending .route-marker {
+  border-style: dashed;
+}
+.route-body {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.route-content {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.route-title {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  overflow-wrap: anywhere;
 }
-.route-time {
+.route-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.route-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.route-branch {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+.route-expression {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.route-operator {
   color: var(--muted);
-  min-width: 72px;
+  font-size: 12px;
 }
-.attempt-table td small {
-  display: block;
+.route-matcher {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+.route-matcher small {
+  font-family: inherit;
+  font-size: 11px;
+}
+.route-matcher.hit {
+  border-color: var(--success);
+  background: var(--success-soft);
+  color: var(--success);
+}
+.route-matcher.miss {
   color: var(--muted);
 }
-.attempt-table td .badge {
-  margin-left: 6px;
+.route-matcher.skipped {
+  border-style: dashed;
+  color: var(--muted);
 }
-.attempt-table tr.selected td {
-  font-weight: 600;
+.route-result.ok {
+  color: var(--success);
 }
-.attempt-table .attempt-failed {
+.route-result.fail {
   color: var(--danger);
+}
+.route-result.warn,
+.route-result.pending {
+  color: var(--warning);
+}
+
+/* Upstream waterfall, shown when a query made more than one request. */
+.waterfall {
+  margin: 14px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.waterfall figcaption {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.waterfall-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+}
+.waterfall-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.waterfall-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.waterfall-track {
+  position: relative;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--surface-muted);
+}
+.waterfall-bar {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 5px;
+  background: var(--success);
+}
+.waterfall-bar.fail {
+  background: var(--danger);
+}
+.waterfall-bar.warn {
+  background: var(--warning);
+}
+.waterfall-bar.pending {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--warning) 0 4px,
+    var(--warning-soft) 4px 8px
+  );
+}
+.waterfall-bar.selected {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 3px var(--success);
+}
+.waterfall-marker,
+.waterfall-marker-key {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 0;
+  border-left: 2px dashed var(--warning);
+}
+.waterfall-marker-key {
+  position: static;
+  display: inline-block;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.waterfall-result {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.waterfall-result.ok {
+  color: var(--success);
+}
+.waterfall-result.fail {
+  color: var(--danger);
+}
+.waterfall-result.warn,
+.waterfall-result.pending {
+  color: var(--warning);
+}
+.waterfall-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
 }
 .outbound-empty {
   margin: 0;
   color: var(--muted);
+}
+@media (max-width: 640px) {
+  .waterfall-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .waterfall-grid > span:first-child {
+    display: none;
+  }
+  .route-body {
+    flex-direction: column;
+  }
 }

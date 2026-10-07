@@ -251,6 +251,9 @@ export interface RouteStep {
   kind: string;
   detail?: string;
   hits?: string[];
+  matched?: boolean;
+  misses?: string[];
+  then?: "exec" | "else" | "continue";
 }
 export interface UpstreamTry {
   seq: number;

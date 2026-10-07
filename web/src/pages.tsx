@@ -29,7 +29,7 @@ import {
 } from "./components";
 import { useSession } from "./session";
 import { HealthPanel } from "./health-panel";
-import { OutboundSection, outboundName } from "./query-trace";
+import { OutboundSection, outboundName, routeReason } from "./query-trace";
 export { RuntimeConfigPage } from "./runtime-config";
 import type {
   Audit,
@@ -1502,7 +1502,7 @@ function QueryLogDetail({
           </div>
         </dl>
       </section>
-      <OutboundSection record={record} />
+      <OutboundSection record={record} deviceName={deviceName} />
       <section>
         <h3>传输与 EDNS</h3>
         <dl className="transport-summary">
@@ -1869,6 +1869,9 @@ export function QueryDetails({
                       </td>
                       <td className="query-detail">
                         {outboundName(record)}
+                        {record.trace && !record.cache_hit ? (
+                          <small>{routeReason(record)}</small>
+                        ) : null}
                         {record.trace && record.trace.attempts.length > 1 ? (
                           <small>
                             共 {record.trace.attempts.length} 次上游请求

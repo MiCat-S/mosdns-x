@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import type { QueryRecord, RouteStep, UpstreamTry } from "./types";
 
 const branchNames: Record<string, string> = {
@@ -39,24 +41,44 @@ export function attemptResult(attempt: UpstreamTry) {
   return attempt.rcode || "无响应码";
 }
 
+type Tone = "ok" | "fail" | "warn" | "pending" | "neutral" | "info";
+
+function attemptTone(attempt: UpstreamTry): Tone {
+  if (!attempt.done) return "pending";
+  if (attempt.error || attempt.rcode === "SERVFAIL") return "fail";
+  if (attempt.rcode && attempt.rcode !== "NOERROR") return "warn";
+  return "ok";
+}
+
 const fallbackReasons: Record<string, string> = {
   primary_failed: "主要上游失败，启用备援",
   fast_fallback: "主要上游未及时回应，同时启用备援",
   always_standby: "备援始终同时查询",
 };
 
+function isCondition(step: RouteStep) {
+  return (
+    step.kind === "condition" || step.kind === "if" || step.kind === "else"
+  );
+}
+
+// Records written before v26.10.07.1 keep only matched conditions ("if") and
+// conditions that took their else branch ("else").
+function conditionOutcome(step: RouteStep): {
+  matched: boolean;
+  then: string;
+} {
+  if (step.kind === "if") return { matched: true, then: "exec" };
+  if (step.kind === "else") return { matched: false, then: "else" };
+  return { matched: step.matched === true, then: step.then ?? "continue" };
+}
+
 export function describeStep(step: RouteStep) {
   switch (step.kind) {
-    case "if":
-      return step.hits?.length
-        ? `命中规则 ${step.detail}（${step.hits.join("、")}）`
-        : `命中规则 ${step.detail}`;
-    case "else":
-      return `未命中规则 ${step.detail}，走 else 分支`;
     case "cache_hit":
       return `命中缓存 ${step.detail}`;
     case "lazy_refresh":
-      return `缓存已过期，先返回旧结果并在后台刷新 ${step.detail}`;
+      return `缓存已过期，先返回旧结果，并在后台刷新 ${step.detail}`;
     case "secondary_started":
       return fallbackReasons[step.detail ?? ""] ?? "启用备援";
     case "branch_selected":
@@ -90,95 +112,394 @@ export function outboundName(record: QueryRecord) {
   return record.upstream_id || "未记录";
 }
 
-function ms(value: number) {
-  return `${value.toFixed(value < 10 ? 2 : 1)} ms`;
+// routeReason names the rule that chose the path: the matchers that were true
+// in the last condition whose branch ran.
+export function routeReason(record: QueryRecord) {
+  const steps = record.trace?.steps ?? [];
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (!isCondition(step) || conditionOutcome(step).then !== "exec") continue;
+    return `命中 ${step.hits?.length ? step.hits.join("、") : step.detail}`;
+  }
+  return record.trace ? "未命中分流规则" : "";
 }
 
-export function OutboundSection({ record }: { record: QueryRecord }) {
+function ms(value: number) {
+  return `${value.toFixed(value < 10 ? 1 : 0)} ms`;
+}
+
+export function routeSummary(record: QueryRecord) {
+  const trace = record.trace;
+  if (!trace) return "";
+  if (record.cache_hit) {
+    return record.upstream_label
+      ? `直接命中缓存，原始来源 ${record.upstream_label}，${ms(record.duration_ms)} 返回`
+      : `直接命中缓存，${ms(record.duration_ms)} 返回`;
+  }
+  const reason = routeReason(record);
+  const selected = trace.attempts.find((attempt) => attempt.selected);
+  if (!selected) {
+    return trace.attempts.length
+      ? `${reason}，${trace.attempts.length} 次上游请求均未取得可用结果`
+      : `${reason}，没有发出上游请求`;
+  }
+  const fellBack = trace.steps.some(
+    (step) =>
+      step.kind === "branch_selected" &&
+      step.detail?.split("/").pop() === "secondary",
+  );
+  const why = trace.steps.find(
+    (step) => step.kind === "secondary_started",
+  )?.detail;
+  const note = !fellBack
+    ? ""
+    : why === "primary_failed"
+      ? "（主要上游失败，改用备援）"
+      : why === "fast_fallback"
+        ? "（主要上游未及时回应，改用备援）"
+        : "（采用备援的结果）";
+  return `${reason} → ${selected.upstream}，${ms(selected.duration_ms)} 取得结果${note}`;
+}
+
+type Token =
+  { kind: "matcher"; name: string } | { kind: "operator"; text: string };
+
+const operatorNames: Record<string, string> = {
+  "||": "或",
+  "&&": "且",
+  "!": "非",
+};
+
+// expressionTokens splits a condition such as
+// `(query_is_local_domain) || [qtype65]` into matchers and operators.
+// Parentheses are dropped; the panel shows a flat sequence.
+export function expressionTokens(expression: string): Token[] {
+  const tokens: Token[] = [];
+  const pattern = /\[([^\]]+)\]|([A-Za-z0-9_.-]+)|(\|\||&&|!)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(expression))) {
+    const name = match[1] ?? match[2];
+    if (name) {
+      tokens.push({ kind: "matcher", name });
+    } else if (match[3]) {
+      tokens.push({ kind: "operator", text: operatorNames[match[3]] });
+    }
+  }
+  return tokens;
+}
+
+const matcherStates = {
+  hit: "命中",
+  miss: "未命中",
+  skipped: "未检查",
+  unknown: "",
+};
+
+function ConditionExpression({ step }: { step: RouteStep }) {
+  const hits = new Set(step.hits ?? []);
+  const misses = new Set(step.misses ?? []);
+  const detailed = step.kind === "condition";
+  return (
+    <span className="route-expression">
+      {expressionTokens(step.detail ?? "").map((token, index) => {
+        if (token.kind === "operator") {
+          return (
+            <span key={index} className="route-operator">
+              {token.text}
+            </span>
+          );
+        }
+        const state: keyof typeof matcherStates = hits.has(token.name)
+          ? "hit"
+          : misses.has(token.name)
+            ? "miss"
+            : detailed
+              ? "skipped"
+              : "unknown";
+        const label = matcherStates[state];
+        return (
+          <span key={index} className={`route-matcher ${state}`}>
+            {token.name}
+            {label ? <small>{label}</small> : null}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+const thenNames: Record<string, string> = {
+  exec: "进入此分支",
+  else: "进入 else 分支",
+  continue: "继续往下",
+};
+
+type FlowItem =
+  | { kind: "step"; at: number; step: RouteStep }
+  | { kind: "attempt"; at: number; attempt: UpstreamTry };
+
+function flowItems(record: QueryRecord): FlowItem[] {
+  const trace = record.trace;
+  if (!trace) return [];
+  const items: FlowItem[] = [
+    ...trace.steps.map((step) => ({
+      kind: "step" as const,
+      at: step.at_ms,
+      step,
+    })),
+    ...trace.attempts.map((attempt) => ({
+      kind: "attempt" as const,
+      at: attempt.start_ms,
+      attempt,
+    })),
+  ];
+  return items.sort((a, b) => a.at - b.at);
+}
+
+function FlowNode({
+  shape,
+  tone,
+  at,
+  branch,
+  children,
+}: {
+  shape: "point" | "decision" | "upstream" | "event";
+  tone: Tone;
+  at?: number;
+  branch?: string;
+  children: ReactNode;
+}) {
+  return (
+    <li className={`route-node ${shape} ${tone}`}>
+      <span className="route-marker" aria-hidden="true" />
+      <div className="route-body">
+        <div className="route-content">{children}</div>
+        {at !== undefined || branch ? (
+          <span className="route-meta">
+            {branch ? (
+              <span className="route-branch">{branchName(branch)}</span>
+            ) : null}
+            {at !== undefined ? <span>+{ms(at)}</span> : null}
+          </span>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function StepNode({ record, step }: { record: QueryRecord; step: RouteStep }) {
+  if (isCondition(step)) {
+    const outcome = conditionOutcome(step);
+    return (
+      <FlowNode
+        shape="decision"
+        tone={outcome.matched ? "ok" : "neutral"}
+        at={step.at_ms}
+        branch={step.branch}
+      >
+        <span className="route-title">
+          <ConditionExpression step={step} />
+          <span className={`badge ${outcome.matched ? "ok" : "off"}`}>
+            {outcome.matched ? "是" : "否"}
+          </span>
+        </span>
+        <span className="route-line">{thenNames[outcome.then]}</span>
+      </FlowNode>
+    );
+  }
+  if (step.kind === "cache_hit") {
+    return (
+      <FlowNode shape="upstream" tone="ok" at={step.at_ms} branch={step.branch}>
+        <span className="route-title">
+          <strong>命中缓存</strong> {step.detail}
+        </span>
+        <span className="route-line">
+          {record.cache_hit && record.upstream_label
+            ? `原始来源 ${record.upstream_label}`
+            : "原始来源未记录"}
+        </span>
+      </FlowNode>
+    );
+  }
+  const warn =
+    step.kind === "secondary_started" || step.kind === "primary_unhealthy";
+  return (
+    <FlowNode
+      shape="event"
+      tone={warn ? "warn" : "neutral"}
+      at={step.at_ms}
+      branch={step.branch}
+    >
+      <span className="route-title">{describeStep(step)}</span>
+    </FlowNode>
+  );
+}
+
+function AttemptNode({ attempt }: { attempt: UpstreamTry }) {
+  const tone = attemptTone(attempt);
+  return (
+    <FlowNode
+      shape="upstream"
+      tone={tone}
+      at={attempt.start_ms}
+      branch={attempt.branch}
+    >
+      <span className="route-title">
+        <strong>出站 DNS</strong> {attempt.upstream}
+        {attempt.selected ? <span className="badge ok">采用</span> : null}
+      </span>
+      <span className="route-line">
+        {attempt.plugin ? <span>{attempt.plugin}</span> : null}
+        <span>耗时 {ms(attempt.duration_ms)}</span>
+        <span className={`route-result ${tone}`}>{attemptResult(attempt)}</span>
+      </span>
+    </FlowNode>
+  );
+}
+
+function RouteFlow({
+  record,
+  deviceName,
+}: {
+  record: QueryRecord;
+  deviceName?: string;
+}) {
+  const answers = record.answer_ips?.length ?? 0;
+  const ok = record.rcode === "NOERROR";
+  return (
+    <ol className="route-flow" aria-label="查询路径">
+      <FlowNode shape="point" tone="info">
+        <span className="route-title">
+          <strong>收到查询</strong> <code>{record.name}</code>
+        </span>
+        <span className="route-line">
+          {record.qtype} · {record.protocol?.toUpperCase() || "未知协议"}
+          {deviceName ? ` · ${deviceName}` : ""}
+        </span>
+      </FlowNode>
+      {flowItems(record).map((item) =>
+        item.kind === "attempt" ? (
+          <AttemptNode key={`a${item.attempt.seq}`} attempt={item.attempt} />
+        ) : (
+          <StepNode
+            key={`s${item.at}-${item.step.kind}-${item.step.detail}`}
+            record={record}
+            step={item.step}
+          />
+        ),
+      )}
+      <FlowNode shape="point" tone={ok ? "ok" : "fail"} at={record.duration_ms}>
+        <span className="route-title">
+          <strong>返回</strong>
+          <span className={`badge ${ok ? "ok" : "error"}`}>
+            {record.rcode || "UNKNOWN"}
+          </span>
+        </span>
+        <span className="route-line">
+          {answers ? `${answers} 个地址` : "无地址记录"} · 共{" "}
+          {ms(record.duration_ms)}
+        </span>
+      </FlowNode>
+    </ol>
+  );
+}
+
+function AttemptWaterfall({ record }: { record: QueryRecord }) {
+  const trace = record.trace;
+  if (!trace || trace.attempts.length < 2) return null;
+  // The axis starts at the first request; time spent before it, such as
+  // admission and rule matching, would only push every bar to the right.
+  const origin = Math.min(...trace.attempts.map((attempt) => attempt.start_ms));
+  const end = Math.max(
+    ...trace.attempts.map((attempt) => attempt.start_ms + attempt.duration_ms),
+  );
+  const scale = end - origin > 0 ? end - origin : 1;
+  const pct = (value: number) =>
+    `${Math.max(0, Math.min(100, (value / scale) * 100))}%`;
+  const markers = trace.steps.filter(
+    (step) => step.kind === "secondary_started",
+  );
+  return (
+    <figure className="waterfall" aria-label="上游请求时间轴">
+      <figcaption>上游请求时间轴</figcaption>
+      <div className="waterfall-grid">
+        <span />
+        <div className="waterfall-axis">
+          <span>+{ms(origin)}</span>
+          <span>+{ms(origin + scale / 2)}</span>
+          <span>+{ms(origin + scale)}</span>
+        </div>
+        <span />
+        {trace.attempts.map((attempt) => {
+          const tone = attemptTone(attempt);
+          return [
+            <div className="waterfall-label" key={`l${attempt.seq}`}>
+              {attempt.branch ? (
+                <span className="route-branch">
+                  {branchName(attempt.branch)}
+                </span>
+              ) : null}
+              <span>{attempt.upstream}</span>
+            </div>,
+            <div className="waterfall-track" key={`t${attempt.seq}`}>
+              {markers.map((marker, index) => (
+                <span
+                  key={index}
+                  className="waterfall-marker"
+                  style={{ left: pct(marker.at_ms - origin) }}
+                />
+              ))}
+              <span
+                className={`waterfall-bar ${tone}${attempt.selected ? " selected" : ""}`}
+                style={{
+                  left: pct(attempt.start_ms - origin),
+                  width: `max(3px, ${pct(attempt.duration_ms)})`,
+                }}
+              />
+            </div>,
+            <div className={`waterfall-result ${tone}`} key={`r${attempt.seq}`}>
+              {ms(attempt.duration_ms)} · {attemptResult(attempt)}
+              {attempt.selected ? " · 采用" : ""}
+            </div>,
+          ];
+        })}
+      </div>
+      {markers.map((marker, index) => (
+        <p className="waterfall-note" key={index}>
+          <span className="waterfall-marker-key" aria-hidden="true" />+
+          {ms(marker.at_ms)} {describeStep(marker)}
+        </p>
+      ))}
+    </figure>
+  );
+}
+
+export function OutboundSection({
+  record,
+  deviceName,
+}: {
+  record: QueryRecord;
+  deviceName?: string;
+}) {
   const trace = record.trace;
   return (
     <section className="outbound-section">
-      <h3>出站路径</h3>
-      <dl>
-        <div>
-          <dt>出站 DNS</dt>
-          <dd>{outboundName(record)}</dd>
-        </div>
-      </dl>
+      <h3>查询路径</h3>
       {!trace ? (
-        <p className="outbound-empty">历史记录未采集出站路径。</p>
+        <>
+          <dl>
+            <div>
+              <dt>出站 DNS</dt>
+              <dd>{outboundName(record)}</dd>
+            </div>
+          </dl>
+          <p className="outbound-empty">历史记录未采集查询路径。</p>
+        </>
       ) : (
         <>
-          <h4>分流过程</h4>
-          {trace.steps.length ? (
-            <ol className="route-steps">
-              {trace.steps.map((step, index) => (
-                <li key={index}>
-                  <span className="route-time">+{ms(step.at_ms)}</span>
-                  {step.branch ? (
-                    <span className="badge off">{branchName(step.branch)}</span>
-                  ) : null}
-                  <span>{describeStep(step)}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <p className="outbound-empty">未经过分流规则，按默认路径处理。</p>
-          )}
-          <h4>上游请求</h4>
-          {trace.attempts.length ? (
-            <div className="table-wrap">
-              <table className="attempt-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>DNS</th>
-                    <th>分支</th>
-                    <th>开始</th>
-                    <th>耗时</th>
-                    <th>结果</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trace.attempts.map((attempt) => (
-                    <tr
-                      key={attempt.seq}
-                      className={attempt.selected ? "selected" : undefined}
-                    >
-                      <td>{attempt.seq}</td>
-                      <td>
-                        {attempt.upstream}
-                        {attempt.selected ? (
-                          <span className="badge ok">采用</span>
-                        ) : null}
-                        {attempt.plugin ? (
-                          <small>{attempt.plugin}</small>
-                        ) : null}
-                      </td>
-                      <td>{branchName(attempt.branch) || "—"}</td>
-                      <td>+{ms(attempt.start_ms)}</td>
-                      <td>{ms(attempt.duration_ms)}</td>
-                      <td
-                        className={
-                          attempt.error || attempt.rcode === "SERVFAIL"
-                            ? "attempt-failed"
-                            : undefined
-                        }
-                      >
-                        {attemptResult(attempt)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="outbound-empty">
-              {record.cache_hit
-                ? "本次由缓存直接回应，没有发出上游请求。"
-                : "本次没有发出上游请求。"}
-            </p>
-          )}
+          <p className="route-summary">{routeSummary(record)}</p>
+          <RouteFlow record={record} deviceName={deviceName} />
+          <AttemptWaterfall record={record} />
           {trace.truncated ? (
             <p className="outbound-empty">记录过多，只保留了前面的部分。</p>
           ) : null}

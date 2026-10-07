@@ -210,16 +210,18 @@ func (e *exprParamsPlaceHolder) makeResultZapFields(queryInfoField zap.Field, re
 }
 
 func (m *conditionMatcher) Match(ctx context.Context, qCtx *query_context.Context) (bool, error) {
-	res, _, err := m.match(ctx, qCtx, false)
+	res, _, _, err := m.match(ctx, qCtx, false)
 	return res, err
 }
 
-// MatchWithHits also reports the matchers that evaluated true, in name order.
-func (m *conditionMatcher) MatchWithHits(ctx context.Context, qCtx *query_context.Context) (bool, []string, error) {
+// MatchWithHits also reports the matchers that evaluated true and those that
+// evaluated false, each in name order. A matcher in neither was not
+// evaluated, because the expression short-circuited.
+func (m *conditionMatcher) MatchWithHits(ctx context.Context, qCtx *query_context.Context) (bool, []string, []string, error) {
 	return m.match(ctx, qCtx, true)
 }
 
-func (m *conditionMatcher) match(ctx context.Context, qCtx *query_context.Context, wantHits bool) (bool, []string, error) {
+func (m *conditionMatcher) match(ctx context.Context, qCtx *query_context.Context, wantHits bool) (bool, []string, []string, error) {
 	paramsPH, ok := m.paramsPHPool.Get().(*exprParamsPlaceHolder)
 	if !ok {
 		paramsPH = newExprParamsPlaceHolder()
@@ -238,39 +240,43 @@ func (m *conditionMatcher) match(ctx context.Context, qCtx *query_context.Contex
 	}
 	out, err := m.expr.Eval(paramsPH)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	res := out.(bool)
 	m.lg.Debug(
 		"condition matcher result",
 		paramsPH.makeResultZapFields(qCtx.InfoField(), res)...,
 	)
-	var hits []string
+	var hits, misses []string
 	if wantHits {
 		for name, result := range paramsPH.res {
-			if result == exprResultTrue {
+			switch result {
+			case exprResultTrue:
 				hits = append(hits, name)
+			case exprResultFalse:
+				misses = append(misses, name)
 			}
 		}
 		sort.Strings(hits)
+		sort.Strings(misses)
 	}
-	return res, hits, nil
+	return res, hits, misses, nil
 }
 
 type hitsMatcher interface {
-	MatchWithHits(context.Context, *query_context.Context) (bool, []string, error)
+	MatchWithHits(context.Context, *query_context.Context) (bool, []string, []string, error)
 }
 
 func (b *ConditionNode) Exec(ctx context.Context, qCtx *query_context.Context, next ExecutableChainNode) (err error) {
 	if b.ConditionMatcher != nil {
 		var (
-			ok   bool
-			hits []string
-			err  error
+			ok           bool
+			hits, misses []string
+			err          error
 		)
 		journal := qCtx.Journal()
 		if detailed, canDetail := b.ConditionMatcher.(hitsMatcher); canDetail && journal != nil {
-			ok, hits, err = detailed.MatchWithHits(ctx, qCtx)
+			ok, hits, misses, err = detailed.MatchWithHits(ctx, qCtx)
 		} else {
 			ok, err = b.ConditionMatcher.Match(ctx, qCtx)
 		}
@@ -278,11 +284,13 @@ func (b *ConditionNode) Exec(ctx context.Context, qCtx *query_context.Context, n
 			return fmt.Errorf("matcher failed: %w", err)
 		}
 		if journal != nil {
+			then := query_context.ConditionThenContinue
 			if ok && b.ExecutableNode != nil {
-				journal.Step(qCtx.Branch(), query_context.RouteStepIf, b.Expr, hits...)
+				then = query_context.ConditionThenExec
 			} else if !ok && b.ElseExecutableNode != nil {
-				journal.Step(qCtx.Branch(), query_context.RouteStepElse, b.Expr)
+				then = query_context.ConditionThenElse
 			}
+			journal.Condition(qCtx.Branch(), b.Expr, ok, hits, misses, then)
 		}
 		if ok && b.ExecutableNode != nil {
 			return ExecChainNode(ctx, qCtx, b.ExecutableNode)

@@ -336,7 +336,7 @@ func TestExecFailureAndNilResponseBecomeSERVFAIL(t *testing.T) {
 func TestResultCarriesUpstreamLabelAndJournal(t *testing.T) {
 	var got Result
 	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
-		qCtx.Journal().Step("", query_context.RouteStepIf, "query_is_cn_domain", "query_is_cn_domain")
+		qCtx.Journal().Condition("", "query_is_cn_domain", true, []string{"query_is_cn_domain"}, nil, query_context.ConditionThenExec)
 		failed := qCtx.Journal().BeginAttempt("", "forward_easymosdns", "forward_easymosdns #1 (DoH)")
 		qCtx.Journal().EndAttempt(failed, "", "timeout")
 		seq := qCtx.Journal().BeginAttempt("", "forward_local", "223.5.5.5 (UDP)")

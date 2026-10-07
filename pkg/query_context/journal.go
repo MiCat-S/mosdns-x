@@ -15,8 +15,7 @@ const (
 
 // Route step kinds recorded by the executable sequence.
 const (
-	RouteStepIf                = "if"
-	RouteStepElse              = "else"
+	RouteStepCondition         = "condition"
 	RouteStepCacheHit          = "cache_hit"
 	RouteStepLazyRefresh       = "lazy_refresh"
 	RouteStepSecondaryStarted  = "secondary_started"
@@ -32,7 +31,20 @@ type RouteStep struct {
 	Kind   string   `json:"kind"`
 	Detail string   `json:"detail,omitempty"`
 	Hits   []string `json:"hits,omitempty"`
+	// The fields below describe a condition step: whether it matched, the
+	// matchers that evaluated false (others in Detail were not evaluated),
+	// and what ran next: "exec", "else" or "continue".
+	Matched *bool    `json:"matched,omitempty"`
+	Misses  []string `json:"misses,omitempty"`
+	Then    string   `json:"then,omitempty"`
 }
+
+// Condition outcomes recorded in RouteStep.Then.
+const (
+	ConditionThenExec     = "exec"
+	ConditionThenElse     = "else"
+	ConditionThenContinue = "continue"
+)
 
 // UpstreamTry is one exchange with an upstream. Upstream is a display name
 // that never carries a private server's host or IP.
@@ -92,6 +104,24 @@ func (j *Journal) Step(branch, kind, detail string, hits ...string) {
 		return
 	}
 	j.steps = append(j.steps, RouteStep{AtMS: j.since(), Branch: branch, Kind: kind, Detail: detail, Hits: append([]string(nil), hits...)})
+}
+
+// Condition records an evaluated sequence condition, matched or not.
+func (j *Journal) Condition(branch, expr string, matched bool, hits, misses []string, then string) {
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.steps) >= maxJournalSteps {
+		j.truncated = true
+		return
+	}
+	j.steps = append(j.steps, RouteStep{
+		AtMS: j.since(), Branch: branch, Kind: RouteStepCondition, Detail: expr,
+		Hits: append([]string(nil), hits...), Misses: append([]string(nil), misses...),
+		Matched: &matched, Then: then,
+	})
 }
 
 // BeginAttempt records an exchange that is starting and returns its sequence

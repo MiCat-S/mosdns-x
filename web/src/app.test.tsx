@@ -84,10 +84,20 @@ describe("前端访问与秘密处理", () => {
               trace: {
                 steps: [
                   {
+                    at_ms: 0.1,
+                    kind: "condition",
+                    detail: "query_is_cn_domain",
+                    misses: ["query_is_cn_domain"],
+                    matched: false,
+                    then: "continue",
+                  },
+                  {
                     at_ms: 0.2,
-                    kind: "if",
-                    detail: "query_is_gfw_domain",
+                    kind: "condition",
+                    detail: "(query_is_gfw_domain) || [qtype65]",
                     hits: ["query_is_gfw_domain"],
+                    matched: true,
+                    then: "exec",
                   },
                   {
                     at_ms: 2500.4,
@@ -224,19 +234,34 @@ describe("前端访问与秘密处理", () => {
     ).toBeGreaterThanOrEqual(3);
     expect(
       within(first).getByText(
-        "命中规则 query_is_gfw_domain（query_is_gfw_domain）",
+        "命中 query_is_gfw_domain → forward_remote #1 (DoH)，40 ms 取得结果（主要上游未及时回应，改用备援）",
       ),
     ).toBeInTheDocument();
+    const flow = within(first).getByRole("list", { name: "查询路径" });
+    const nodes = within(flow).getAllByRole("listitem");
+    // Received, two conditions, primary attempt, fallback, secondary
+    // attempt, branch chosen, returned.
+    expect(nodes).toHaveLength(8);
+    expect(nodes[1]).toHaveTextContent("query_is_cn_domain未命中");
+    expect(nodes[1]).toHaveTextContent("否");
+    expect(nodes[1]).toHaveTextContent("继续往下");
+    expect(nodes[2]).toHaveTextContent("query_is_gfw_domain命中");
+    expect(nodes[2]).toHaveTextContent("qtype65未检查");
+    expect(nodes[2]).toHaveTextContent("进入此分支");
+    expect(nodes[3]).toHaveTextContent("forward_easymosdns #1 (DoH)");
+    expect(nodes[4]).toHaveTextContent("主要上游未及时回应，同时启用备援");
+    expect(nodes[5]).toHaveTextContent("采用");
+    expect(nodes[6]).toHaveTextContent("采用备援的结果");
+    expect(nodes[7]).toHaveTextContent("返回NOERROR");
     expect(
-      within(first).getByText("主要上游未及时回应，同时启用备援"),
-    ).toBeInTheDocument();
-    expect(within(first).getByText("采用备援的结果")).toBeInTheDocument();
-    expect(
-      within(first).getByText("未完成（已先返回其他结果）"),
+      within(first).getByRole("figure", { name: "上游请求时间轴" }),
     ).toBeInTheDocument();
     expect(
-      within(first).getByText("forward_easymosdns #1 (DoH)"),
-    ).toBeInTheDocument();
+      within(first).getAllByText("未完成（已先返回其他结果）").length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      within(first).getAllByText("forward_easymosdns #1 (DoH)").length,
+    ).toBeGreaterThanOrEqual(1);
     expect(
       within(first).queryByText(/forward_remote\/0/),
     ).not.toBeInTheDocument();
@@ -260,7 +285,7 @@ describe("前端访问与秘密处理", () => {
     ).toBeInTheDocument();
     expect(within(legacy).getByText("无地址记录")).toBeInTheDocument();
     expect(
-      within(legacy).getByText("历史记录未采集出站路径。"),
+      within(legacy).getByText("历史记录未采集查询路径。"),
     ).toBeInTheDocument();
   });
   it("查询明细不会把缓存命中的空上游快照解释为未调用上游", async () => {
@@ -328,10 +353,18 @@ describe("前端访问与秘密处理", () => {
     expect(
       within(detail).getAllByText("缓存 · 原始 223.5.5.5 (UDP)").length,
     ).toBeGreaterThanOrEqual(1);
-    expect(within(detail).getByText("命中缓存 cache_wan")).toBeInTheDocument();
     expect(
-      within(detail).getByText("本次由缓存直接回应，没有发出上游请求。"),
+      within(detail).getByText(
+        "直接命中缓存，原始来源 223.5.5.5 (UDP)，0.8 ms 返回",
+      ),
     ).toBeInTheDocument();
+    expect(within(detail).getByText("命中缓存")).toBeInTheDocument();
+    expect(
+      within(detail).getByText("原始来源 223.5.5.5 (UDP)"),
+    ).toBeInTheDocument();
+    expect(
+      within(detail).queryByRole("figure", { name: "上游请求时间轴" }),
+    ).not.toBeInTheDocument();
     expect(within(detail).queryByText("未调用上游")).not.toBeInTheDocument();
   });
   it("查询日志将筛选条件发送到后端", async () => {

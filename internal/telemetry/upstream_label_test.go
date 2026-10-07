@@ -15,10 +15,11 @@ func TestQueryRecordsKeepUpstreamLabelAndTrace(t *testing.T) {
 	clock := now
 	s := openClocked(t, &clock, 0)
 
+	matched := true
 	answered := result("u1", "c1", dns.RcodeSuccess)
 	answered.UpstreamLabel = "223.5.5.5 (UDP)"
 	answered.Trace = &query_context.QueryTrace{
-		Steps:    []query_context.RouteStep{{Kind: query_context.RouteStepIf, Detail: "query_is_cn_domain", Hits: []string{"query_is_cn_domain"}}},
+		Steps:    []query_context.RouteStep{{Kind: query_context.RouteStepCondition, Detail: "query_is_cn_domain", Hits: []string{"query_is_cn_domain"}, Matched: &matched, Then: query_context.ConditionThenExec}},
 		Attempts: []query_context.UpstreamTry{{Seq: 1, Plugin: "forward_local", Upstream: "223.5.5.5 (UDP)", Done: true, Rcode: "NOERROR", Selected: true}},
 	}
 	cached := result("u1", "c1", dns.RcodeSuccess)
