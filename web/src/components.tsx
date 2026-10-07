@@ -39,8 +39,23 @@ export function Alert({ error }: { error: string }) {
     </div>
   ) : null;
 }
-export function Empty({ children = "暂无数据" }: { children?: ReactNode }) {
-  return <div className="empty">{children}</div>;
+export function Empty({
+  children = "暂无数据",
+  action,
+}: {
+  children?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="empty">
+      <svg className="empty-icon" aria-hidden viewBox="0 0 24 24">
+        <path d="M3 13h5l1.5 3h5L16 13h5" />
+        <path d="M5.5 6.5 3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5l-2.5-6.5A2 2 0 0 0 16.6 5H7.4a2 2 0 0 0-1.9 1.5Z" />
+      </svg>
+      <span>{children}</span>
+      {action}
+    </div>
+  );
 }
 export function PageTitle({
   title,
@@ -61,17 +76,28 @@ export function PageTitle({
     </header>
   );
 }
+// A number with a short unit ("12.3 ms", "0.25 次/秒") keeps the large
+// numeric size; dates and words drop to body size so they don't wrap.
+const numericValue = /^[\d.,]+\s?\S{0,3}$/;
+function metricSize(value: ReactNode): "num" | "text" {
+  if (typeof value !== "string") return "num";
+  if (numericValue.test(value)) return "num";
+  return value.length > 12 || /[\u3000-\u9fff]/.test(value) ? "text" : "num";
+}
 export function Metric({
   label,
   value,
   hint,
+  size,
 }: {
   label: string;
   value: ReactNode;
   hint?: string;
+  size?: "num" | "text";
 }) {
+  const text = (size ?? metricSize(value)) === "text";
   return (
-    <article className="metric">
+    <article className={text ? "metric metric-text" : "metric"}>
       <span className="metric-label">{label}</span>
       <strong>{value}</strong>
       {hint ? <small className="metric-hint">{hint}</small> : null}
@@ -158,12 +184,15 @@ type NavIconName =
   | "password"
   | "account"
   | "help"
-  | "runtime";
+  | "runtime"
+  | "more";
 type NavItem = {
   to: string;
   label: string;
   icon: NavIconName;
   section: string;
+  // The mobile tab bar holds five items; the rest live on the "更多" page.
+  only?: "desktop" | "mobile";
 };
 
 const adminNav: NavItem[] = [
@@ -176,8 +205,33 @@ const adminNav: NavItem[] = [
     icon: "runtime",
     section: "服务",
   },
-  { to: "/admin/audit", label: "审计", icon: "audit", section: "管理" },
-  { to: "/admin/system", label: "系统", icon: "system", section: "管理" },
+  {
+    to: "/admin/audit",
+    label: "审计",
+    icon: "audit",
+    section: "管理",
+    only: "desktop",
+  },
+  {
+    to: "/admin/system",
+    label: "系统",
+    icon: "system",
+    section: "管理",
+    only: "desktop",
+  },
+  {
+    to: "/admin/more",
+    label: "更多",
+    icon: "more",
+    section: "管理",
+    only: "mobile",
+  },
+];
+// Pages reachable from the mobile "更多" page.
+export const adminMoreLinks = [
+  { to: "/admin/audit", label: "审计" },
+  { to: "/admin/system", label: "系统" },
+  { to: "/admin/password", label: "修改密码" },
 ];
 const userNav: NavItem[] = [
   { to: "/app", label: "首页", icon: "overview", section: "概览" },
@@ -258,6 +312,13 @@ function NavIcon({ name }: { name: NavIconName }) {
         <circle cx="8" cy="17" r="2" />
       </>
     ),
+    more: (
+      <>
+        <circle cx="5" cy="12" r="1.5" />
+        <circle cx="12" cy="12" r="1.5" />
+        <circle cx="19" cy="12" r="1.5" />
+      </>
+    ),
   };
   return (
     <svg aria-hidden viewBox="0 0 24 24">
@@ -279,17 +340,13 @@ export function Shell() {
   }, []);
   const [logoutError, setLogoutError] = useState("");
   const admin = session?.user.role === "admin";
-  const links = admin
-    ? [
-        ...adminNav,
-        {
-          to: "/admin/password",
-          label: "密码",
-          icon: "password" as const,
-          section: "管理",
-        },
-      ]
-    : userNav;
+  const links = admin ? adminNav : userNav;
+  // On mobile the "更多" tab stays lit while one of its pages is open.
+  const inMore = adminMoreLinks.some(({ to }) => location.pathname === to);
+  // Admins change their password here; users open their account centre.
+  const accountLink = admin
+    ? { to: "/admin/password", label: "修改密码", icon: "password" as const }
+    : { to: "/app/account", label: "账户中心", icon: "account" as const };
   const sections = links.reduce<Array<{ label: string; items: NavItem[] }>>(
     (groups, item) => {
       const current = groups[groups.length - 1];
@@ -346,11 +403,21 @@ export function Shell() {
           {sections.map((section) => (
             <div className="nav-group" key={section.label}>
               <span className="nav-section-label">{section.label}</span>
-              {section.items.map(({ to, label, icon }) => (
+              {section.items.map(({ to, label, icon, only }) => (
                 <NavLink
                   key={to}
                   to={to}
                   end={to === (admin ? "/admin" : "/app")}
+                  className={({ isActive }) =>
+                    [
+                      isActive || (to === "/admin/more" && inMore)
+                        ? "active"
+                        : "",
+                      only ? `nav-${only}-only` : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ") || undefined
+                  }
                 >
                   <i>
                     <NavIcon name={icon} />
@@ -369,6 +436,16 @@ export function Shell() {
             <strong>{session?.user.username}</strong>
             <small>{admin ? "管理员" : "用户账户"}</small>
           </span>
+          <NavLink
+            className={({ isActive }) =>
+              isActive ? "icon-link active" : "icon-link"
+            }
+            to={accountLink.to}
+            aria-label={accountLink.label}
+            title={accountLink.label}
+          >
+            <NavIcon name={accountLink.icon} />
+          </NavLink>
           <button className="link" onClick={exit} aria-label="退出登录">
             退出
           </button>
@@ -385,6 +462,18 @@ export function Shell() {
             <strong>MosDNS X</strong>
           </NavLink>
           <div className="mobile-account">
+            {admin ? null : (
+              <NavLink
+                className={({ isActive }) =>
+                  isActive ? "icon-link active" : "icon-link"
+                }
+                to={accountLink.to}
+                aria-label="移动端账户中心"
+                title={accountLink.label}
+              >
+                <NavIcon name={accountLink.icon} />
+              </NavLink>
+            )}
             <button className="link" onClick={exit} aria-label="移动端退出登录">
               退出
             </button>

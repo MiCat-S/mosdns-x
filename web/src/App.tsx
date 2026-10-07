@@ -14,6 +14,7 @@ import {
   AccountPage,
   HelpPage,
   PasswordPage,
+  MorePage,
   RuntimeConfigPage,
 } from "./pages";
 // Pages removed from the slimmed panel; old bookmarks land on the home page.
@@ -65,6 +66,7 @@ export function App() {
         <Route path="/admin/audit" element={<AuditPage />} />
         <Route path="/admin/system" element={<SystemPage />} />
         <Route path="/admin/password" element={<PasswordPage />} />
+        <Route path="/admin/more" element={<MorePage />} />
       </Route>
       <Route element={<Guard role="user" />}>
         <Route path="/app" element={<ServicePage />} />

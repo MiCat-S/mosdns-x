@@ -186,10 +186,13 @@ export function HealthPanel() {
       {loading && !data ? <Spinner /> : null}
       {data ? (
         <>
-          <p>
-            <Status status={data.overall_status} /> 已观测项评分：
-            {value(data.overall_score)}
-            {data.overall_score != null ? " / 100" : "（指标不足）"}
+          <p className="health-score">
+            <Status status={data.overall_status} />
+            <span>
+              已观测项评分：
+              {value(data.overall_score)}
+              {data.overall_score != null ? " / 100" : "（指标不足）"}
+            </span>
           </p>
           <p className="caption">
             更新：{fmt.date(data.timestamp)} · 数据库采集：
@@ -213,7 +216,12 @@ export function HealthPanel() {
               error={reasons[data.storage_error ?? ""] ?? "数据库状态不可用"}
             />
           ) : null}
-          <div className="table-wrap">
+          <div
+            className="table-wrap"
+            role="region"
+            aria-label="安全监控指标表格（可横向滚动）"
+            tabIndex={0}
+          >
             <table className="health-metrics-table" aria-label="安全监控指标">
               <thead>
                 <tr>

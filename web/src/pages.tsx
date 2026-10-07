@@ -24,6 +24,7 @@ import {
   Modal,
   PageTitle,
   Spinner,
+  adminMoreLinks,
   fmt,
   useLoad,
 } from "./components";
@@ -340,7 +341,7 @@ export function AdminOverview() {
         description="全局 DNS 请求、响应与上游运行状态"
         action={<button onClick={() => setVersion((x) => x + 1)}>刷新</button>}
       />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />}
       {data ? <StatsBlocks stats={data[0]} usage={data[1]} /> : null}
     </>
   );
@@ -597,9 +598,14 @@ export function Users() {
           </button>
         }
       />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />}
       {data?.length ? (
-        <div className="table-wrap">
+        <div
+          className="table-wrap"
+          role="region"
+          aria-label="用户列表"
+          tabIndex={0}
+        >
           <table>
             <thead>
               <tr>
@@ -635,6 +641,7 @@ export function Users() {
                   <td>
                     <button
                       className="link"
+                      aria-label={`查看 ${u.username}`}
                       onClick={() => nav(`/admin/users/${u.id}`)}
                     >
                       查看
@@ -646,12 +653,22 @@ export function Users() {
           </table>
         </div>
       ) : !loading && !error ? (
-        <Empty>尚未开设账户</Empty>
+        <Empty
+          action={
+            <button className="primary" onClick={() => setModal(true)}>
+              开设账户
+            </button>
+          }
+        >
+          尚未开设账户
+        </Empty>
       ) : null}
       {cursor ? (
-        <button onClick={more} disabled={loading}>
-          {loading ? "正在加载…" : "加载更多"}
-        </button>
+        <div className="table-more">
+          <button onClick={more} disabled={loading}>
+            {loading ? "正在加载…" : "加载更多"}
+          </button>
+        </div>
       ) : null}
       {modal ? (
         <Modal title="开设账户" onClose={() => setModal(false)}>
@@ -729,7 +746,11 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
   const [version, setVersion] = useState(0),
     [issued, setIssued] = useState<IssuedCredential | null>(null),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState("");
+    [busy, setBusy] = useState(""),
+    [pending, setPending] = useState<{
+      kind: "rotate" | "revoke";
+      c: Credential;
+    } | null>(null);
   const load = useCallback(
     (s: AbortSignal) => allPages<Credential>(`${base}/credentials`, s),
     [base, version],
@@ -760,12 +781,7 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
     }
   }
   async function rotate(c: Credential) {
-    if (
-      !confirm(
-        `轮换凭证“${c.name}”？旧令牌会立即失效，使用它的设备将停止解析。`,
-      )
-    )
-      return;
+    setPending(null);
     setBusy(c.id);
     try {
       setIssued(
@@ -781,7 +797,7 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
     }
   }
   async function revoke(c: Credential) {
-    if (!confirm(`撤销凭证“${c.name}”？此操作会立即中断使用它的设备。`)) return;
+    setPending(null);
     setBusy(c.id);
     try {
       await request(`${base}/credentials/${c.id}`, { method: "DELETE" });
@@ -829,7 +845,12 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
       {loading ? (
         <Spinner />
       ) : data?.length ? (
-        <div className="table-wrap">
+        <div
+          className="table-wrap"
+          role="region"
+          aria-label="凭证列表"
+          tabIndex={0}
+        >
           <table>
             <thead>
               <tr>
@@ -860,15 +881,18 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
                     </td>
                     <td className="table-actions">
                       <button
+                        className="btn-sm"
+                        aria-label={`轮换 ${c.name}`}
                         disabled={busy === c.id || !active}
-                        onClick={() => rotate(c)}
+                        onClick={() => setPending({ kind: "rotate", c })}
                       >
                         轮换
                       </button>
                       <button
-                        className="danger"
+                        className="danger btn-sm"
+                        aria-label={`撤销 ${c.name}`}
                         disabled={busy === c.id || !credentialCanRevoke(c)}
-                        onClick={() => revoke(c)}
+                        onClick={() => setPending({ kind: "revoke", c })}
                       >
                         撤销
                       </button>
@@ -882,6 +906,34 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
       ) : (
         <Empty>暂无凭证</Empty>
       )}
+      {pending ? (
+        <Modal
+          title={pending.kind === "rotate" ? "轮换凭证" : "撤销凭证"}
+          onClose={() => setPending(null)}
+        >
+          <p className="confirm-text">
+            {pending.kind === "rotate"
+              ? `轮换“${pending.c.name}”后，旧令牌会立即失效，使用它的设备将停止解析，需要换用新令牌。`
+              : `撤销“${pending.c.name}”会立即中断使用它的设备，此操作无法撤销。`}
+          </p>
+          <div className="actions">
+            <button type="button" onClick={() => setPending(null)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className={pending.kind === "rotate" ? "primary" : "danger"}
+              onClick={() =>
+                pending.kind === "rotate"
+                  ? rotate(pending.c)
+                  : revoke(pending.c)
+              }
+            >
+              {pending.kind === "rotate" ? "轮换" : "撤销"}
+            </button>
+          </div>
+        </Modal>
+      ) : null}
       {issued ? (
         <Secret issued={issued} onClose={() => setIssued(null)} />
       ) : null}
@@ -926,7 +978,7 @@ function UserDetailContent({ id }: { id: string }) {
         description="账户状态、当前额度与代管设备凭证"
         action={
           account ? (
-            <div className="actions">
+            <>
               <button onClick={() => setResetPassword(true)}>重置密码</button>
               <button onClick={() => setEdit(true)}>编辑账户</button>
               {session?.user.id !== id ? (
@@ -934,11 +986,11 @@ function UserDetailContent({ id }: { id: string }) {
                   删除用户
                 </button>
               ) : null}
-            </div>
+            </>
           ) : null
         }
       />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />}
       {account ? (
         <>
           <div className="metrics">
@@ -1225,6 +1277,16 @@ function principalName(record: QueryRecord) {
   return record.username || record.user_id || "未识别";
 }
 
+function logDay(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(
+    new Date(value),
+  );
+}
+function logClock(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", { timeStyle: "medium" }).format(
+    new Date(value),
+  );
+}
 function logDate(value: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     dateStyle: "medium",
@@ -1841,7 +1903,12 @@ export function QueryDetails({
           {loading && !data.length ? (
             <Spinner />
           ) : data.length ? (
-            <div className="table-wrap query-table">
+            <div
+              className="table-wrap query-table"
+              role="region"
+              aria-label="查询记录"
+              tabIndex={0}
+            >
               <table>
                 <thead>
                   <tr>
@@ -1857,7 +1924,7 @@ export function QueryDetails({
                 <tbody>
                   {data.map((record) => (
                     <tr key={record.id}>
-                      <td className="query-detail">
+                      <td className="query-detail" data-label="查询">
                         <button
                           className="query-name"
                           aria-label={`查看 ${record.name} 详情`}
@@ -1867,7 +1934,7 @@ export function QueryDetails({
                         </button>
                         <small>{record.qtype}</small>
                       </td>
-                      <td>
+                      <td data-label="结果">
                         <span
                           className={`badge ${record.rcode === "NOERROR" ? "ok" : "error"}`}
                         >
@@ -1880,7 +1947,7 @@ export function QueryDetails({
                           {responseSourceName(record.response_source)}
                         </small>
                       </td>
-                      <td className="query-detail">
+                      <td className="query-detail" data-label="出站 DNS">
                         {outboundName(record)}
                         {record.trace && !record.cache_hit ? (
                           <small>{routeReason(record)}</small>
@@ -1891,23 +1958,29 @@ export function QueryDetails({
                           </small>
                         ) : null}
                       </td>
-                      <td className="query-detail">
+                      <td className="query-detail" data-label="设备 / 客户端">
                         {deviceName(record)}
                         <small>{record.client_ip || "未记录客户端 IP"}</small>
                         {showPrincipal ? (
                           <small>用户 {principalName(record)}</small>
                         ) : null}
                       </td>
-                      <td className="query-detail answer-preview">
+                      <td
+                        className="query-detail answer-preview"
+                        data-label="Answer IP"
+                      >
                         {record.answer_ips?.length
                           ? record.answer_ips.join(", ")
                           : "无地址记录"}
                       </td>
-                      <td>
+                      <td data-label="协议 / 耗时">
                         {record.protocol?.toUpperCase() || "未知"}
                         <small>{record.duration_ms.toFixed(2)} ms</small>
                       </td>
-                      <td>{logDate(record.time)}</td>
+                      <td data-label="时间">
+                        {logDay(record.time)}
+                        <small>{logClock(record.time)}</small>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2063,7 +2136,7 @@ export function UsagePage() {
         description="过去 24 小时的用量、设备和 DNS 查询记录"
         action={<button onClick={() => setVersion((x) => x + 1)}>刷新</button>}
       />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
         <>
           <StatsBlocks stats={data[0]} usage={data[1]} />
@@ -2093,7 +2166,7 @@ export function CredentialsPage() {
         title="接入凭证"
         description="为每台设备签发独立地址或 Bearer 令牌"
       />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
         <CredentialManager base="/me" max={data.user.max_credentials} />
       ) : null}
@@ -2182,6 +2255,23 @@ export function PasswordPage() {
   );
 }
 
+export function MorePage() {
+  return (
+    <>
+      <PageTitle title="更多" description="审计、系统状态与账户安全" />
+      <Card className="more-card">
+        <ul className="more-links">
+          {adminMoreLinks.map(({ to, label }) => (
+            <li key={to}>
+              <Link to={to}>{label}</Link>
+            </li>
+          ))}
+        </ul>
+      </Card>
+    </>
+  );
+}
+
 export function AccountPage() {
   const load = useCallback(
     (signal: AbortSignal) => request<Me>("/me", { signal }),
@@ -2254,9 +2344,14 @@ export function AuditPage() {
   return (
     <>
       <PageTitle title="操作审计" description="过去 24 小时的账户与凭证变更" />
-      {loading ? <Spinner /> : <Alert error={error} />}{" "}
+      {loading ? <Spinner /> : <Alert error={error} />}
       {data?.length ? (
-        <div className="table-wrap">
+        <div
+          className="table-wrap"
+          role="region"
+          aria-label="审计记录"
+          tabIndex={0}
+        >
           <table>
             <thead>
               <tr>
@@ -2285,9 +2380,11 @@ export function AuditPage() {
         <Empty>当前窗口暂无审计记录</Empty>
       ) : null}
       {cursor ? (
-        <button onClick={more} disabled={loading}>
-          {loading ? "正在加载…" : "加载更多"}
-        </button>
+        <div className="table-more">
+          <button onClick={more} disabled={loading}>
+            {loading ? "正在加载…" : "加载更多"}
+          </button>
+        </div>
       ) : null}
     </>
   );
@@ -2321,14 +2418,22 @@ export function SystemPage() {
       {data ? (
         <>
           <div className="metrics">
-            <Metric label="版本" value={data.version} />
+            <Metric label="版本" value={data.version} size="text" />
             <Metric label="启动时间" value={fmt.date(data.started_at)} />
             <Metric
               label="查询明细"
               value={data.query_log_enabled ? "已启用" : "未启用"}
             />
-            <Metric label="控制数据" value={data.config.control_storage} />
-            <Metric label="统计数据" value={data.config.telemetry_storage} />
+            <Metric
+              label="控制数据"
+              value={data.config.control_storage}
+              size="text"
+            />
+            <Metric
+              label="统计数据"
+              value={data.config.telemetry_storage}
+              size="text"
+            />
           </div>
           <Card title="公共 DNS 地址">
             <code className="block">{data.public_dns_url}</code>

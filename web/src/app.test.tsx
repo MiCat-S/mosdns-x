@@ -416,6 +416,19 @@ describe("前端访问与秘密处理", () => {
       screen.queryByText("用户 4Hz38ohEGyng9jxKEwQUbA"),
     ).not.toBeInTheDocument();
     const rows = screen.getAllByRole("row");
+    expect(
+      within(rows[1])
+        .getAllByRole("cell")
+        .map((cell) => cell.dataset.label),
+    ).toEqual([
+      "查询",
+      "结果",
+      "出站 DNS",
+      "设备 / 客户端",
+      "Answer IP",
+      "协议 / 耗时",
+      "时间",
+    ]);
     expect(rows[1]).toHaveTextContent("Mac");
     expect(rows[2]).toHaveTextContent("未知设备");
     fireEvent.click(
@@ -536,6 +549,42 @@ describe("前端访问与秘密处理", () => {
     expect(
       await screen.findByRole("button", { name: "退出登录" }),
     ).toBeInTheDocument();
+  });
+  it("管理员的更多页列出审计、系统与修改密码", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) =>
+        url.endsWith("/session")
+          ? Promise.resolve(
+              response({
+                user: { ...user, role: "admin" },
+                csrf_token: "c",
+                expires_at: "2027-01-01T00:00:00Z",
+              }),
+            )
+          : Promise.resolve(response({ items: [] })),
+      ),
+    );
+    const view = mount("/admin/more");
+    expect(
+      await screen.findByRole("heading", { name: "更多" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "更多" })).toHaveAttribute(
+      "href",
+      "/admin/more",
+    );
+    const list = view.container.querySelector<HTMLElement>(".more-links")!;
+    expect(
+      within(list)
+        .getAllByRole("link")
+        .map((link) => [link.textContent, link.getAttribute("href")]),
+    ).toEqual([
+      ["审计", "/admin/audit"],
+      ["系统", "/admin/system"],
+      ["修改密码", "/admin/password"],
+    ]);
+    for (const link of screen.getAllByRole("link", { name: "修改密码" }))
+      expect(link).toHaveAttribute("href", "/admin/password");
   });
   it("管理员可以从导航进入运行配置", async () => {
     vi.stubGlobal(
@@ -842,5 +891,62 @@ describe("前端访问与秘密处理", () => {
     await waitFor(() =>
       expect(screen.queryByText("one-time-secret")).not.toBeInTheDocument(),
     );
+  });
+  it("轮换和撤销凭证需在对话框中确认后才发送请求", async () => {
+    const credential = {
+      id: "k",
+      user_id: "u1",
+      name: "手机",
+      expires_at: "0001-01-01T00:00:00Z",
+      revoked_at: "0001-01-01T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const fetcher = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) => {
+        if (url.endsWith("/session"))
+          return Promise.resolve(
+            response({
+              user,
+              csrf_token: "c",
+              expires_at: "2027-01-01T00:00:00Z",
+            }),
+          );
+        if (url.endsWith("/me")) return Promise.resolve(response({ user }));
+        if (url.endsWith("/rotate"))
+          return Promise.resolve(
+            response({
+              credential,
+              token: "rotated-secret",
+              doh_url: "https://dns.test/dns-query/k",
+            }),
+          );
+        if (url.includes("/credentials"))
+          return Promise.resolve(response({ items: [credential] }));
+        return Promise.resolve(response({}));
+      });
+    vi.stubGlobal("fetch", fetcher);
+    const writes = () =>
+      fetcher.mock.calls.filter(
+        ([, init]) => init?.method === "POST" || init?.method === "DELETE",
+      );
+    mount("/app/account");
+    fireEvent.click(await screen.findByRole("button", { name: "撤销 手机" }));
+    let dialog = screen.getByRole("dialog", { name: "撤销凭证" });
+    expect(dialog).toHaveTextContent("撤销“手机”会立即中断使用它的设备");
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    expect(writes()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "轮换 手机" }));
+    dialog = screen.getByRole("dialog", { name: "轮换凭证" });
+    expect(writes()).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: "轮换" }));
+    expect(await screen.findByText("rotated-secret")).toBeInTheDocument();
+    expect(writes().map(([url]) => String(url))).toEqual([
+      expect.stringMatching(/\/me\/credentials\/k\/rotate$/),
+    ]);
   });
 });

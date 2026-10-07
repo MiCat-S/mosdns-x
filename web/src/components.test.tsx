@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { useCallback } from "react";
 import { describe, expect, it } from "vitest";
-import { useLoad } from "./components";
+import { Metric, useLoad } from "./components";
 
 function DeferredView({
   id,
@@ -31,5 +31,27 @@ describe("异步页面数据", () => {
     expect(screen.queryByText("旧用户")).not.toBeInTheDocument();
     finishB("新用户");
     expect(await screen.findByText("新用户")).toBeInTheDocument();
+  });
+});
+
+describe("指标字号", () => {
+  it("数字与短单位用大号数字，日期和文字降为正文字号", () => {
+    const size = (value: string, size?: "num" | "text") => {
+      const view = render(<Metric label="指标" value={value} size={size} />);
+      const text = view.container
+        .querySelector(".metric")
+        ?.classList.contains("metric-text");
+      view.unmount();
+      return text ? "text" : "num";
+    };
+    expect(size("1,234")).toBe("num");
+    expect(size("99.5%")).toBe("num");
+    expect(size("12.3 ms")).toBe("num");
+    expect(size("0.25 次/秒")).toBe("num");
+    expect(size("5 / 10")).toBe("num");
+    expect(size("2026年10月8日 12:00")).toBe("text");
+    expect(size("已启用")).toBe("text");
+    expect(size("未设置")).toBe("text");
+    expect(size("mysql", "text")).toBe("text");
   });
 });
