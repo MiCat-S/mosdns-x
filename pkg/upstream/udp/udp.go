@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	defaultBufSize = 4096
+	defaultBufSize = 65535
 	pendingTTL     = 10 * time.Second
 )
 
