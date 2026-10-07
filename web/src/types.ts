@@ -100,6 +100,7 @@ export interface RuntimeTelemetry {
 }
 export interface RuntimeUpstream {
   addr: string;
+  label?: string;
   dial_addr?: string;
   trusted?: boolean;
   so_mark?: number;
@@ -241,6 +242,32 @@ export interface QueryRecord {
   response_source?: string;
   response_source_id?: string;
   upstream_id?: string;
+  upstream_label?: string;
+  trace?: QueryTrace | null;
+}
+export interface RouteStep {
+  at_ms: number;
+  branch?: string;
+  kind: string;
+  detail?: string;
+  hits?: string[];
+}
+export interface UpstreamTry {
+  seq: number;
+  branch?: string;
+  plugin?: string;
+  upstream: string;
+  start_ms: number;
+  duration_ms: number;
+  done: boolean;
+  rcode?: string;
+  error?: string;
+  selected?: boolean;
+}
+export interface QueryTrace {
+  steps: RouteStep[];
+  attempts: UpstreamTry[];
+  truncated?: boolean;
 }
 export type UpstreamStageStatus =
   | "selected"

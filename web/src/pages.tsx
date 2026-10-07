@@ -29,6 +29,7 @@ import {
 } from "./components";
 import { useSession } from "./session";
 import { HealthPanel } from "./health-panel";
+import { OutboundSection, outboundName } from "./query-trace";
 export { RuntimeConfigPage } from "./runtime-config";
 import type {
   Audit,
@@ -1185,7 +1186,7 @@ const emptyQueryFilters = {
   address: "",
   cache: "all",
   source: "all",
-  upstreamId: "",
+  upstream: "",
 };
 
 type QueryFilters = typeof emptyQueryFilters;
@@ -1216,20 +1217,6 @@ const responseSourceNames: Record<string, string> = {
 
 function responseSourceName(source?: string) {
   return source ? (responseSourceNames[source] ?? source) : "未记录";
-}
-
-function finalUpstreamName(record: QueryRecord) {
-  if (record.upstream_id) return record.upstream_id;
-  switch (record.upstream_stage_status) {
-    case "attempted_no_selection":
-      return "发生过尝试，无最终采用上游";
-    case "discarded":
-      return "上游结果已被最终响应替换";
-    case "not_linked":
-      return "最终响应无对应上游";
-    default:
-      return "未记录";
-  }
 }
 
 function logDate(value: string) {
@@ -1506,8 +1493,8 @@ function QueryLogDetail({
             <dd>{record.response_source_id || "未记录"}</dd>
           </div>
           <div>
-            <dt>最终上游</dt>
-            <dd>{finalUpstreamName(record)}</dd>
+            <dt>出站 DNS</dt>
+            <dd>{outboundName(record)}</dd>
           </div>
           <div>
             <dt>处理耗时</dt>
@@ -1515,6 +1502,7 @@ function QueryLogDetail({
           </div>
         </dl>
       </section>
+      <OutboundSection record={record} />
       <section>
         <h3>传输与 EDNS</h3>
         <dl className="transport-summary">
@@ -1609,7 +1597,7 @@ export function QueryDetails({
     if (applied.address) params.address = applied.address;
     if (applied.cache !== "all") params.cache = applied.cache;
     if (applied.source !== "all") params.source = applied.source;
-    if (applied.upstreamId) params.upstream_id = applied.upstreamId;
+    if (applied.upstream) params.upstream = applied.upstream;
     return query(path, params);
   }, [path, applied, refreshVersion]);
   const {
@@ -1631,6 +1619,13 @@ export function QueryDetails({
     () => new Map((credentials ?? []).map((item) => [item.id, item.name])),
     [credentials],
   );
+  const upstreamLabels = useMemo(
+    () =>
+      [
+        ...new Set(data.map((record) => record.upstream_label).filter(Boolean)),
+      ].sort() as string[],
+    [data],
+  );
   const deviceName = (record: QueryRecord) =>
     record.credential_id
       ? (credentialNames.get(record.credential_id) ?? "未知设备")
@@ -1645,7 +1640,7 @@ export function QueryDetails({
       ...draft,
       name: draft.name.trim(),
       address: draft.address.trim(),
-      upstreamId: draft.upstreamId.trim(),
+      upstream: draft.upstream.trim(),
     });
   }
   function resetFilters() {
@@ -1792,15 +1787,21 @@ export function QueryDetails({
                 ))}
               </select>
             </Field>
-            <Field label="最终上游">
+            <Field label="出站 DNS">
               <input
-                value={draft.upstreamId}
+                value={draft.upstream}
                 onChange={(event) =>
-                  updateFilter("upstreamId", event.target.value)
+                  updateFilter("upstream", event.target.value)
                 }
-                placeholder="例如：forward_remote/0…"
-                maxLength={255}
+                placeholder="例如：223.5.5.5 (UDP)…"
+                list="query-upstream-labels"
+                maxLength={128}
               />
+              <datalist id="query-upstream-labels">
+                {upstreamLabels.map((label) => (
+                  <option key={label} value={label} />
+                ))}
+              </datalist>
             </Field>
             <div className="query-filter-actions">
               <button type="button" onClick={resetFilters}>
@@ -1833,6 +1834,7 @@ export function QueryDetails({
                   <tr>
                     <th>查询</th>
                     <th>结果</th>
+                    <th>出站 DNS</th>
                     <th>设备 / 客户端</th>
                     <th>Answer IP</th>
                     <th>协议 / 耗时</th>
@@ -1864,6 +1866,14 @@ export function QueryDetails({
                         <small>
                           {responseSourceName(record.response_source)}
                         </small>
+                      </td>
+                      <td className="query-detail">
+                        {outboundName(record)}
+                        {record.trace && record.trace.attempts.length > 1 ? (
+                          <small>
+                            共 {record.trace.attempts.length} 次上游请求
+                          </small>
+                        ) : null}
                       </td>
                       <td className="query-detail">
                         {deviceName(record)}

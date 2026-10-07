@@ -94,6 +94,7 @@ func (p *ParallelNode) exec(ctx context.Context, qCtx *query_context.Context) er
 		i := i
 		n := n
 		qCtxCopy := qCtx.Copy()
+		qCtxCopy.EnterBranch("parallel#" + strconv.Itoa(i+1))
 
 		var pCtx context.Context
 		var cancel func()

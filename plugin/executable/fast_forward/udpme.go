@@ -34,11 +34,16 @@ type udpmeUpstream struct {
 	addr       string
 	trusted    bool
 	observerID string
+	label      string
+	pluginTag  string
 }
 
 func (u *udpmeUpstream) ObserverID() string {
 	return u.observerID
 }
+
+func (u *udpmeUpstream) DisplayName() string { return u.label }
+func (u *udpmeUpstream) PluginTag() string   { return u.pluginTag }
 
 func newUDPME(addr string, trusted bool) *udpmeUpstream {
 	if _, _, err := net.SplitHostPort(addr); err != nil {

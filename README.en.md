@@ -26,7 +26,7 @@ This fork adds a **multi-user DoH / DoH3 service**: one Mosdns process serves DN
 
 **Logs and operations**
 
-- Detailed query logs, controlled by the global `control.query_log` switch, with retention time and record limit set in `control.telemetry`. Each record shows whether the answer came from an upstream or the cache, and which upstream was used.
+- Detailed query logs, controlled by the global `control.query_log` switch, with retention time and record limit set in `control.telemetry`. Each record shows which outbound DNS answered (for a cache hit, the upstream that produced the cached answer), which routing rules it passed, and every upstream request with its time and result. Private upstreams appear only by plugin and position or by a label you set, never by host or IP.
 - Usage statistics charts, audit log, system health monitoring, and an authenticated Prometheus `/metrics`.
 - Control and statistics data live in bbolt (no dependencies) or in MySQL 5.7 / 8.4.
 - Managed runtime config: validate, hot-reload and roll back upstreams, caching and statistics retention from the panel. A failed change leaves the running config untouched.

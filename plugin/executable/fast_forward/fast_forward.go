@@ -61,7 +61,11 @@ type Args struct {
 }
 
 type UpstreamConfig struct {
-	Addr           string `yaml:"addr"` // required
+	Addr string `yaml:"addr"` // required
+	// Label names this upstream in query logs. Without one, a well-known
+	// public resolver shows its address and any other server shows only the
+	// plugin tag and position, so a private address is never logged.
+	Label          string `yaml:"label"`
 	DialAddr       string `yaml:"dial_addr"`
 	Trusted        bool   `yaml:"trusted"`
 	Socks5         string `yaml:"socks5"`
@@ -110,6 +114,8 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 		if strings.HasPrefix(c.Addr, "udpme://") {
 			u := newUDPME(c.Addr[8:], c.Trusted)
 			u.observerID = fmt.Sprintf("%s/%d", bp.Tag(), i)
+			u.label = upstreamtrace.DisplayName(bp.Tag(), i, c.Addr, c.Label)
+			u.pluginTag = bp.Tag()
 			f.upstreamWrappers = append(f.upstreamWrappers, u)
 			if i == 0 {
 				u.trusted = true
@@ -143,6 +149,8 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 		w := &upstreamWrapper{
 			address:    c.Addr,
 			observerID: fmt.Sprintf("%s/%d", bp.Tag(), i),
+			label:      upstreamtrace.DisplayName(bp.Tag(), i, c.Addr, c.Label),
+			pluginTag:  bp.Tag(),
 			trusted:    c.Trusted,
 			u:          u,
 		}
@@ -161,6 +169,8 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 type upstreamWrapper struct {
 	address    string
 	observerID string
+	label      string
+	pluginTag  string
 	trusted    bool
 	u          upstream.Upstream
 }
@@ -168,6 +178,9 @@ type upstreamWrapper struct {
 func (u *upstreamWrapper) ObserverID() string {
 	return u.observerID
 }
+
+func (u *upstreamWrapper) DisplayName() string { return u.label }
+func (u *upstreamWrapper) PluginTag() string   { return u.pluginTag }
 
 func (u *upstreamWrapper) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 	q.Compress = true
@@ -228,19 +241,22 @@ func (f *fastForward) exec(ctx context.Context, qCtx *query_context.Context) (er
 		}
 		qCtx.SetResponseWithTrace(result.Response, query_context.ResponseTrace{
 			Source: query_context.ResponseSourceUpstream, SourceID: f.Tag(), UpstreamID: result.UpstreamID,
+			UpstreamLabel: result.UpstreamLabel, AttemptSeq: result.AttemptSeq,
 			UpstreamStageStatus: status,
 			UpstreamRequestEDNS: result.RequestEDNS, UpstreamResponseEDNS: result.ResponseEDNS,
 		})
 		return nil
 	}
-	r, upstreamID, err := bundled_upstream.ExchangeParallel(ctx, qCtx, f.upstreamWrappers, f.L())
+	result, err := bundled_upstream.ExchangeParallel(ctx, qCtx, f.upstreamWrappers, f.L())
 	if err != nil {
 		return err
 	}
-	qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{
-		Source:     query_context.ResponseSourceUpstream,
-		SourceID:   f.Tag(),
-		UpstreamID: upstreamID,
+	qCtx.SetResponseWithTrace(result.Response, query_context.ResponseTrace{
+		Source:        query_context.ResponseSourceUpstream,
+		SourceID:      f.Tag(),
+		UpstreamID:    result.UpstreamID,
+		UpstreamLabel: result.UpstreamLabel,
+		AttemptSeq:    result.AttemptSeq,
 	})
 	return nil
 }

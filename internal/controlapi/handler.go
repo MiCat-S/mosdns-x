@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
@@ -1041,8 +1042,9 @@ func parseQueryFilter(w http.ResponseWriter, r *http.Request) (telemetry.QueryFi
 		Address:        strings.TrimSpace(q.Get("address")),
 		ResponseSource: strings.ToLower(strings.TrimSpace(q.Get("source"))),
 		UpstreamID:     strings.TrimSpace(q.Get("upstream_id")),
+		UpstreamLabel:  strings.TrimSpace(q.Get("upstream")),
 	}
-	if len(filter.Name) > 255 || len(filter.QType) > 16 || len(filter.Rcode) > 32 || len(filter.CredentialID) > 64 || len(filter.Protocol) > 16 || len(filter.UpstreamID) > 255 {
+	if len(filter.Name) > 255 || len(filter.QType) > 16 || len(filter.Rcode) > 32 || len(filter.CredentialID) > 64 || len(filter.Protocol) > 16 || len(filter.UpstreamID) > 255 || utf8.RuneCountInString(filter.UpstreamLabel) > 128 {
 		writeError(w, http.StatusBadRequest, "invalid_input")
 		return telemetry.QueryFilter{}, false
 	}
@@ -1051,8 +1053,7 @@ func parseQueryFilter(w http.ResponseWriter, r *http.Request) (telemetry.QueryFi
 	}
 	if filter.ResponseSource != "" {
 		valid := map[string]struct{}{
-			"cache": {}, "upstream": {}, "custom_block": {}, "custom_rewrite": {},
-			"public_list": {}, "hosts": {}, "sequence": {}, "servfail": {},
+			"cache": {}, "upstream": {}, "hosts": {}, "sequence": {}, "servfail": {},
 		}
 		if _, ok := valid[filter.ResponseSource]; !ok {
 			writeError(w, http.StatusBadRequest, "invalid_input")

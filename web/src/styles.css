@@ -1702,7 +1702,7 @@ summary {
 
 .runtime-upstream-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
   align-items: end;
   gap: 0.7rem;
 }
@@ -2185,4 +2185,44 @@ summary {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.outbound-section h4 {
+  margin: 14px 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.route-steps {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+.route-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.route-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 72px;
+}
+.attempt-table td small {
+  display: block;
+  color: var(--muted);
+}
+.attempt-table td .badge {
+  margin-left: 6px;
+}
+.attempt-table tr.selected td {
+  font-weight: 600;
+}
+.attempt-table .attempt-failed {
+  color: var(--danger);
+}
+.outbound-empty {
+  margin: 0;
+  color: var(--muted);
 }

@@ -170,6 +170,19 @@ function RuntimeUpstreamEditor({
             onChange={(event) => update("addr", event.target.value)}
           />
         </Field>
+        <Field
+          label="日志显示名称"
+          hint="可选。留空时公共 DNS 显示地址，其他上游只显示插件名和序号，不显示地址。"
+        >
+          <input
+            aria-label={`上游 ${index + 1} 日志显示名称`}
+            value={upstream.label ?? ""}
+            disabled={disabled}
+            maxLength={64}
+            placeholder="例如：香港私有 DoH…"
+            onChange={(event) => update("label", event.target.value)}
+          />
+        </Field>
         <button
           type="button"
           className="danger"

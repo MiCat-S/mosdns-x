@@ -83,23 +83,30 @@ type EntryHandlerOpts struct {
 
 // Result is an immutable snapshot of a completed entry request.
 type Result struct {
-	Principal            query_context.Principal
-	Protocol             string
-	ClientAddr           netip.Addr
-	AnswerIPs            []string
-	EDNS                 EDNSInfo
-	QuestionName         string
-	QuestionType         uint16
-	Duration             time.Duration
-	Rcode                int
-	ExecError            bool
-	Admitted             bool
-	Rejected             bool
-	AccessKind           query_access.Kind
-	CacheHit             bool
-	ResponseSource       string
-	ResponseSourceID     string
-	UpstreamID           string
+	Principal        query_context.Principal
+	Protocol         string
+	ClientAddr       netip.Addr
+	AnswerIPs        []string
+	EDNS             EDNSInfo
+	QuestionName     string
+	QuestionType     uint16
+	Duration         time.Duration
+	Rcode            int
+	ExecError        bool
+	Admitted         bool
+	Rejected         bool
+	AccessKind       query_access.Kind
+	CacheHit         bool
+	ResponseSource   string
+	ResponseSourceID string
+	UpstreamID       string
+	// UpstreamLabel names the upstream that answered, or for a cache hit the
+	// upstream that produced the cached answer. It never holds a private
+	// server's address.
+	UpstreamLabel string
+	// Trace is the routing path and every upstream attempt, kept only when
+	// query details are captured.
+	Trace                *query_context.QueryTrace
 	EDNSTraceVersion     uint8
 	UpstreamStageStatus  string
 	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot
@@ -195,6 +202,12 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 	result.Admitted = true
 	// cache original id
 	id := req.Id
+	var journal *query_context.Journal
+	if h.opts.CaptureQueryDetails {
+		journal = query_context.NewJournal(started)
+		meta = meta.Copy()
+		meta.SetJournal(journal)
+	}
 	qCtx := query_context.NewContext(req, meta)
 	qCtx.SetCaptureQueryDetails(h.opts.CaptureQueryDetails)
 	err := h.opts.Entry.Exec(ctx, qCtx, nil)
@@ -242,6 +255,12 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		result.ResponseSource = trace.Source
 		result.ResponseSourceID = trace.SourceID
 		result.UpstreamID = trace.UpstreamID
+		switch trace.Source {
+		case query_context.ResponseSourceUpstream:
+			result.UpstreamLabel = trace.UpstreamLabel
+		case query_context.ResponseSourceCache:
+			result.UpstreamLabel = trace.CacheOrigin
+		}
 		if h.opts.CaptureQueryDetails {
 			result.UpstreamStageStatus = trace.UpstreamStageStatus
 			result.UpstreamRequestEDNS = dnsutils.CloneEDNSSnapshot(trace.UpstreamRequestEDNS)
@@ -253,6 +272,13 @@ func (h *EntryHandler) ServeDNS(ctx context.Context, req *dns.Msg, meta *query_c
 		if result.ResponseSource == "" {
 			result.ResponseSource = query_context.ResponseSourceSequence
 		}
+	}
+	if journal != nil {
+		selected := 0
+		if result.ResponseSource == query_context.ResponseSourceUpstream {
+			selected = qCtx.ResponseTrace().AttemptSeq
+		}
+		result.Trace = journal.Snapshot(selected)
 	}
 	return respMsg, nil
 }

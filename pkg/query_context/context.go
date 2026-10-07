@@ -58,6 +58,7 @@ type RequestMeta struct {
 
 	upstreamObserver      UpstreamObserver
 	backgroundWorkTracker BackgroundWorkTracker
+	journal               *Journal
 }
 
 // Principal identifies the authenticated account and credential for a query.
@@ -109,6 +110,12 @@ type ResponseTrace struct {
 	UpstreamStageStatus  string
 	UpstreamRequestEDNS  *dnsutils.EDNSSnapshot
 	UpstreamResponseEDNS *dnsutils.EDNSSnapshot
+	// UpstreamLabel names the upstream that answered, safe to display.
+	UpstreamLabel string
+	// AttemptSeq is the journal attempt whose response was selected.
+	AttemptSeq int
+	// CacheOrigin names the upstream that produced a cached answer.
+	CacheOrigin string
 }
 
 func (t ResponseTrace) Clone() ResponseTrace {
@@ -177,6 +184,20 @@ func (m *RequestMeta) GetUpstreamObserver() UpstreamObserver {
 	return m.upstreamObserver
 }
 
+// SetJournal attaches the journal that records this query's routing and
+// upstream attempts. Branch copies of the query share it.
+func (m *RequestMeta) SetJournal(j *Journal) {
+	m.journal = j
+}
+
+// GetJournal returns the query's journal, or nil when details are not kept.
+func (m *RequestMeta) GetJournal() *Journal {
+	if m == nil {
+		return nil
+	}
+	return m.journal
+}
+
 // Copy returns an independent metadata container. Callbacks and the principal
 // are immutable after admission and are safe to copy by value.
 func (m *RequestMeta) Copy() *RequestMeta {
@@ -215,6 +236,9 @@ type Context struct {
 	trace               ResponseTrace
 	captureQueryDetails bool
 	marks               map[uint]struct{}
+	// branch names the sequence branch this copy runs in, such as
+	// "primary" or "secondary", for the journal.
+	branch string
 }
 
 var (
@@ -360,6 +384,30 @@ func (ctx *Context) CaptureQueryDetails() bool {
 	return ctx.captureQueryDetails
 }
 
+// Journal returns the query's journal, or nil when details are not kept.
+func (ctx *Context) Journal() *Journal {
+	return ctx.reqMeta.GetJournal()
+}
+
+// Branch returns the sequence branch this context runs in.
+func (ctx *Context) Branch() string {
+	return ctx.branch
+}
+
+// SetBranch restores a branch path saved from Branch.
+func (ctx *Context) SetBranch(branch string) {
+	ctx.branch = branch
+}
+
+// EnterBranch extends the branch path of a copy that runs a sub-branch.
+func (ctx *Context) EnterBranch(name string) {
+	if ctx.branch == "" {
+		ctx.branch = name
+		return
+	}
+	ctx.branch += "/" + name
+}
+
 func (ctx *Context) SetCacheHit(hit bool) {
 	ctx.cacheHit = hit
 }
@@ -407,6 +455,7 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 	d.cacheHit = ctx.cacheHit
 	d.trace = ctx.trace.Clone()
 	d.captureQueryDetails = ctx.captureQueryDetails
+	d.branch = ctx.branch
 	for m := range ctx.marks {
 		d.AddMark(m)
 	}

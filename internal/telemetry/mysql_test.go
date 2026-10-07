@@ -236,13 +236,13 @@ func TestMySQLQueriesReadsNullAndObservedNoOPTStages(t *testing.T) {
 	columns := []string{
 		"id", "time_ns", "user_id", "credential_id", "client_ip", "name", "qtype", "rcode", "duration_ms", "cache_hit", "protocol", "answer_ips_json", "edns_json",
 		"edns_trace_version", "upstream_stage_status", "upstream_request_edns_json", "upstream_response_edns_json", "response_edns_json",
-		"response_source", "response_source_id", "upstream_id",
+		"response_source", "response_source_id", "upstream_id", "upstream_label", "trace_json",
 	}
 	rows := sqlmock.NewRows(columns).AddRow(
 		"00000000000000000001.query", now.UnixNano(), "user-1", "credential-1", "192.0.2.1", "example.test.", "A", "NOERROR", float64(1), false, "doh",
 		`[]`, `{"present":false,"version":0,"udp_size":0,"dnssec_ok":false,"option_codes":[]}`,
 		1, "selected", nil, `{"present":false,"version":0,"udp_size":0,"dnssec_ok":false,"option_codes":[]}`, `{"present":true,"version":0,"udp_size":1232,"dnssec_ok":false,"option_codes":[]}`,
-		"upstream", "forward_remote", "forward_remote/0",
+		"upstream", "forward_remote", "forward_remote/0", "forward_remote #1 (DoH)", nil,
 	)
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id, time_ns, user_id`)).WillReturnRows(rows)
 	page, err := store.mysqlQueries(context.Background(), "user-1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})

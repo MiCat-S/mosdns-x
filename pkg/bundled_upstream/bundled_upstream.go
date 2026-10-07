@@ -49,6 +49,7 @@ type parallelResult struct {
 	r            *dns.Msg
 	err          error
 	from         Upstream
+	seq          int
 	requestEDNS  *dnsutils.EDNSSnapshot
 	responseEDNS *dnsutils.EDNSSnapshot
 }
@@ -56,6 +57,8 @@ type parallelResult struct {
 type ExchangeResult struct {
 	Response         *dns.Msg
 	UpstreamID       string
+	UpstreamLabel    string
+	AttemptSeq       int
 	RequestEDNS      *dnsutils.EDNSSnapshot
 	ResponseEDNS     *dnsutils.EDNSSnapshot
 	Attempted        bool
@@ -77,9 +80,57 @@ func observerID(u Upstream) string {
 	return "upstream"
 }
 
-func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal) (*dns.Msg, error) {
+// labeledUpstream names an upstream for query logs without exposing a private
+// server's address.
+type labeledUpstream interface {
+	DisplayName() string
+	PluginTag() string
+}
+
+func displayName(u Upstream) (label, plugin string) {
+	if l, ok := u.(labeledUpstream); ok {
+		return l.DisplayName(), l.PluginTag()
+	}
+	return observerID(u), ""
+}
+
+// attemptRecorder writes upstream attempts to the query's journal.
+type attemptRecorder struct {
+	journal *query_context.Journal
+	branch  string
+}
+
+func newAttemptRecorder(qCtx *query_context.Context) attemptRecorder {
+	return attemptRecorder{journal: qCtx.Journal(), branch: qCtx.Branch()}
+}
+
+func (a attemptRecorder) begin(u Upstream) int {
+	if a.journal == nil {
+		return 0
+	}
+	label, plugin := displayName(u)
+	return a.journal.BeginAttempt(a.branch, plugin, label)
+}
+
+func (a attemptRecorder) end(seq int, r *dns.Msg, err error) {
+	if a.journal == nil {
+		return
+	}
+	rcode := ""
+	errKind := upstreamtrace.ErrorKind(err)
+	if r != nil {
+		rcode = dns.RcodeToString[r.Rcode]
+	} else if err == nil {
+		errKind = upstreamtrace.ErrorEmptyResponse
+	}
+	a.journal.EndAttempt(seq, rcode, errKind)
+}
+
+func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal, rec attemptRecorder) (*dns.Msg, int, error) {
 	started := time.Now()
+	seq := rec.begin(u)
 	r, err := u.Exchange(ctx, q)
+	rec.end(seq, r, err)
 	if observer != nil {
 		attempt := query_context.UpstreamAttempt{
 			Principal:  principal,
@@ -94,15 +145,16 @@ func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_contex
 		}
 		observer(attempt)
 	}
-	return r, err
+	return r, seq, err
 }
 
 type detailedUpstream interface {
 	ExchangeDetailed(context.Context, *dns.Msg) (upstreamtrace.Result, error)
 }
 
-func exchangeDetailed(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal) (upstreamtrace.Result, error) {
+func exchangeDetailed(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal, rec attemptRecorder) (upstreamtrace.Result, int, error) {
 	started := time.Now()
+	seq := rec.begin(u)
 	var (
 		result upstreamtrace.Result
 		err    error
@@ -112,6 +164,7 @@ func exchangeDetailed(ctx context.Context, q *dns.Msg, u Upstream, observer quer
 	} else {
 		result.Response, err = u.Exchange(ctx, q)
 	}
+	rec.end(seq, result.Response, err)
 	if observer != nil {
 		attempt := query_context.UpstreamAttempt{
 			Principal: principal, UpstreamID: observerID(u), Duration: time.Since(started),
@@ -123,12 +176,11 @@ func exchangeDetailed(ctx context.Context, q *dns.Msg, u Upstream, observer quer
 		}
 		observer(attempt)
 	}
-	return result, err
+	return result, seq, err
 }
 
-func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstreams []Upstream, logger *zap.Logger) (*dns.Msg, string, error) {
-	result, err := exchangeParallel(ctx, qCtx, upstreams, logger, false)
-	return result.Response, result.UpstreamID, err
+func ExchangeParallel(ctx context.Context, qCtx *query_context.Context, upstreams []Upstream, logger *zap.Logger) (ExchangeResult, error) {
+	return exchangeParallel(ctx, qCtx, upstreams, logger, false)
 }
 
 func ExchangeParallelDetailed(ctx context.Context, qCtx *query_context.Context, upstreams []Upstream, logger *zap.Logger) (ExchangeResult, error) {
@@ -144,14 +196,16 @@ func exchangeParallel(ctx context.Context, qCtx *query_context.Context, upstream
 	meta := qCtx.ReqMeta()
 	observer := meta.GetUpstreamObserver()
 	principal := meta.GetPrincipal()
+	rec := newAttemptRecorder(qCtx)
 	t := len(upstreams)
 	if t == 1 {
+		label, _ := displayName(upstreams[0])
 		if capture {
-			detailed, err := exchangeDetailed(ctx, q.Copy(), upstreams[0], observer, principal)
-			return ExchangeResult{Response: detailed.Response, UpstreamID: observerID(upstreams[0]), RequestEDNS: detailed.RequestEDNS, ResponseEDNS: detailed.ResponseEDNS, Attempted: true, DetailsAvailable: detailed.DetailsAvailable}, err
+			detailed, seq, err := exchangeDetailed(ctx, q.Copy(), upstreams[0], observer, principal, rec)
+			return ExchangeResult{Response: detailed.Response, UpstreamID: observerID(upstreams[0]), UpstreamLabel: label, AttemptSeq: seq, RequestEDNS: detailed.RequestEDNS, ResponseEDNS: detailed.ResponseEDNS, Attempted: true, DetailsAvailable: detailed.DetailsAvailable}, err
 		}
-		r, err := exchange(ctx, q.Copy(), upstreams[0], observer, principal)
-		return ExchangeResult{Response: r, UpstreamID: observerID(upstreams[0]), Attempted: true}, err
+		r, seq, err := exchange(ctx, q.Copy(), upstreams[0], observer, principal, rec)
+		return ExchangeResult{Response: r, UpstreamID: observerID(upstreams[0]), UpstreamLabel: label, AttemptSeq: seq, Attempted: true}, err
 	}
 
 	c := make(chan *parallelResult, t) // use buf chan to avoid blocking.
@@ -165,12 +219,12 @@ func exchangeParallel(ctx context.Context, qCtx *query_context.Context, upstream
 		go func() {
 			defer release()
 			if capture {
-				detailed, err := exchangeDetailed(ctx, qCopy, u, observer, principal)
-				c <- &parallelResult{r: detailed.Response, err: err, from: u, requestEDNS: detailed.RequestEDNS, responseEDNS: detailed.ResponseEDNS}
+				detailed, seq, err := exchangeDetailed(ctx, qCopy, u, observer, principal, rec)
+				c <- &parallelResult{r: detailed.Response, err: err, from: u, seq: seq, requestEDNS: detailed.RequestEDNS, responseEDNS: detailed.ResponseEDNS}
 				return
 			}
-			r, err := exchange(ctx, qCopy, u, observer, principal)
-			c <- &parallelResult{r: r, err: err, from: u}
+			r, seq, err := exchange(ctx, qCopy, u, observer, principal, rec)
+			c <- &parallelResult{r: r, err: err, from: u, seq: seq}
 		}()
 	}
 
@@ -187,7 +241,8 @@ func exchangeParallel(ctx context.Context, qCtx *query_context.Context, upstream
 			}
 
 			if res.from.Trusted() || res.r.Rcode == dns.RcodeSuccess {
-				return ExchangeResult{Response: res.r, UpstreamID: observerID(res.from), RequestEDNS: res.requestEDNS, ResponseEDNS: res.responseEDNS, Attempted: true, DetailsAvailable: res.requestEDNS != nil && res.responseEDNS != nil}, nil
+				label, _ := displayName(res.from)
+				return ExchangeResult{Response: res.r, UpstreamID: observerID(res.from), UpstreamLabel: label, AttemptSeq: res.seq, RequestEDNS: res.requestEDNS, ResponseEDNS: res.responseEDNS, Attempted: true, DetailsAvailable: res.requestEDNS != nil && res.responseEDNS != nil}, nil
 			}
 			continue
 

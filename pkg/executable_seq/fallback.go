@@ -166,10 +166,11 @@ func (f *FallbackNode) exec(ctx context.Context, qCtx *query_context.Context) er
 		if f.fastFallbackDuration > 0 {
 			return f.doFastFallback(ctx, qCtx)
 		} else {
-			return f.doPrimary(ctx, qCtx)
+			return f.doPrimaryInPlace(ctx, qCtx)
 		}
 	}
 	f.logger.Debug("primary is not good", qCtx.InfoField())
+	qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepPrimaryUnhealthy, "")
 	return f.doFallback(ctx, qCtx)
 }
 
@@ -178,6 +179,15 @@ func (f *FallbackNode) isolateDoPrimary(ctx context.Context, qCtx *query_context
 	err = f.doPrimary(ctx, qCtxCopy)
 	qCtx.AdoptResponse(qCtxCopy)
 	return err
+}
+
+// doPrimaryInPlace runs primary on qCtx itself, naming the branch for the
+// journal while it runs.
+func (f *FallbackNode) doPrimaryInPlace(ctx context.Context, qCtx *query_context.Context) error {
+	parent := qCtx.Branch()
+	qCtx.EnterBranch("primary")
+	defer qCtx.SetBranch(parent)
+	return f.doPrimary(ctx, qCtx)
 }
 
 func (f *FallbackNode) doPrimary(ctx context.Context, qCtx *query_context.Context) (err error) {
@@ -206,6 +216,7 @@ func (f *FallbackNode) doFastFallback(ctx context.Context, qCtx *query_context.C
 	primFailed := make(chan struct{}) // will be closed if primary returns an error.
 	primDone := make(chan struct{})
 	qCtxP := qCtx.Copy()
+	qCtxP.EnterBranch("primary")
 	go func() {
 		cCtx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
 		defer cancel()
@@ -223,6 +234,8 @@ func (f *FallbackNode) doFastFallback(ctx context.Context, qCtx *query_context.C
 	}()
 
 	qCtxS := qCtx.Copy()
+	qCtxS.EnterBranch("secondary")
+	journal, parentBranch := qCtx.Journal(), qCtx.Branch()
 	go func() {
 		timer := pool.GetTimer(f.fastFallbackDuration)
 		defer pool.ReleaseTimer(timer)
@@ -231,8 +244,12 @@ func (f *FallbackNode) doFastFallback(ctx context.Context, qCtx *query_context.C
 			case <-primDone: // primary is done, no need to exec this.
 				return
 			case <-primFailed: // primary failed
+				journal.Step(parentBranch, query_context.RouteStepSecondaryStarted, "primary_failed")
 			case <-timer.C: // or timed out, exec secondary now.
+				journal.Step(parentBranch, query_context.RouteStepSecondaryStarted, "fast_fallback")
 			}
+		} else {
+			journal.Step(parentBranch, query_context.RouteStepSecondaryStarted, "always_standby")
 		}
 
 		cCtx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
@@ -271,6 +288,7 @@ func (f *FallbackNode) doFallback(ctx context.Context, qCtx *query_context.Conte
 	c := make(chan *parallelECSResult, 2) // buf size is 2, avoid blocking.
 
 	qCtxP := qCtx.Copy()
+	qCtxP.EnterBranch("primary")
 	go func() {
 		cCtx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
 		defer cancel()
@@ -283,6 +301,7 @@ func (f *FallbackNode) doFallback(ctx context.Context, qCtx *query_context.Conte
 	}()
 
 	qCtxS := qCtx.Copy()
+	qCtxS.EnterBranch("secondary")
 	go func() {
 		cCtx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
 		defer cancel()

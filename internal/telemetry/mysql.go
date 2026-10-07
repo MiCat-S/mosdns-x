@@ -113,6 +113,8 @@ var mysqlTelemetryMigrations = []string{
 		upstream_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
 		matched_rule_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
 		matched_public_list_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+		upstream_label VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+		trace_json LONGTEXT NULL,
 		KEY ix_mosdns_query_logs_time (time_ns, id),
 		KEY ix_mosdns_query_logs_user (user_id, time_ns, id),
 		KEY ix_mosdns_query_logs_credential (credential_id, time_ns),
@@ -267,6 +269,17 @@ var mysqlTelemetryQueryLogColumns = []mysqlTelemetryColumn{
 	{"upstream_request_edns_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
 	{"upstream_response_edns_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
 	{"response_edns_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
+	{"upstream_label", "VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT ''", "varchar(128)", false, sql.NullString{String: "", Valid: true}},
+	{"trace_json", "LONGTEXT NULL", "longtext", true, sql.NullString{}},
+}
+
+// truncateLabel fits an upstream label in its column, on a rune boundary.
+func truncateLabel(label string) string {
+	runes := []rune(label)
+	if len(runes) <= 128 {
+		return label
+	}
+	return string(runes[:128])
 }
 
 func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) error {
@@ -403,7 +416,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 					UpstreamResponseEDNS: dnsutils.CloneEDNSSnapshot(r.UpstreamResponseEDNS),
 					ResponseEDNS:         dnsutils.CloneEDNSSnapshot(r.ResponseEDNS),
 					ResponseSource:       r.ResponseSource, ResponseSourceID: r.ResponseSourceID,
-					UpstreamID: r.UpstreamID,
+					UpstreamID: r.UpstreamID, UpstreamLabel: r.UpstreamLabel, Trace: r.Trace,
 				})
 			}
 		}
@@ -490,13 +503,21 @@ func (s *Store) writeMySQLBatch(events []event) error {
 		if err != nil {
 			return rollback(err)
 		}
+		var traceJSON any
+		if q.Trace != nil {
+			encoded, err := json.Marshal(q.Trace)
+			if err != nil {
+				return rollback(err)
+			}
+			traceJSON = encoded
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_query_logs
 			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
 			 edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
-			 response_source, response_source_id, upstream_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
+			 response_source, response_source_id, upstream_id, upstream_label, trace_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
 			q.EDNSTraceVersion, normalizedUpstreamStageStatus(q.UpstreamStageStatus), upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON,
-			q.ResponseSource, q.ResponseSourceID, q.UpstreamID)
+			q.ResponseSource, q.ResponseSourceID, q.UpstreamID, truncateLabel(q.UpstreamLabel), traceJSON)
 		if err != nil {
 			return rollback(err)
 		}
@@ -718,7 +739,7 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 	defer cancel()
 	query := `SELECT id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
 		edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
-		response_source, response_source_id, upstream_id
+		response_source, response_source_id, upstream_id, upstream_label, trace_json
 		FROM mosdns_query_logs WHERE time_ns>=? AND time_ns<?`
 	args := []any{from.UnixNano(), to.UnixNano()}
 	if page.Cursor != "" {
@@ -765,6 +786,10 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		query += ` AND upstream_id=?`
 		args = append(args, filter.UpstreamID)
 	}
+	if filter.UpstreamLabel != "" {
+		query += ` AND upstream_label=?`
+		args = append(args, filter.UpstreamLabel)
+	}
 	if filter.CacheHit != nil {
 		query += ` AND cache_hit=?`
 		args = append(args, *filter.CacheHit)
@@ -780,13 +805,19 @@ func (s *Store) mysqlQueries(ctx context.Context, userID string, from, to time.T
 		var r QueryRecord
 		var ns int64
 		var answerJSON, ednsJSON []byte
-		var upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON []byte
+		var upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON, traceJSON []byte
 		if err := rows.Scan(&r.ID, &ns, &r.UserID, &r.CredentialID, &r.ClientIP, &r.Name, &r.QType, &r.Rcode, &r.DurationMS, &r.CacheHit, &r.Protocol, &answerJSON, &ednsJSON,
 			&r.EDNSTraceVersion, &r.UpstreamStageStatus, &upstreamRequestEDNSJSON, &upstreamResponseEDNSJSON, &responseEDNSJSON,
-			&r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID); err != nil {
+			&r.ResponseSource, &r.ResponseSourceID, &r.UpstreamID, &r.UpstreamLabel, &traceJSON); err != nil {
 			return result, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		r.Time = time.Unix(0, ns).UTC()
+		if len(traceJSON) > 0 {
+			r.Trace = new(query_context.QueryTrace)
+			if err := json.Unmarshal(traceJSON, r.Trace); err != nil {
+				return result, fmt.Errorf("mysql telemetry: %w", err)
+			}
+		}
 		if err := json.Unmarshal(answerJSON, &r.AnswerIPs); err != nil {
 			return result, fmt.Errorf("mysql telemetry: %w", err)
 		}

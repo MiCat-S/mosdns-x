@@ -22,6 +22,7 @@ package executable_seq
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/Knetic/govaluate"
@@ -46,6 +47,9 @@ type ConditionNode struct {
 	ConditionMatcher   Matcher // if ConditionMatcher is nil, ConditionNode is a no-op.
 	ExecutableNode     ExecutableChainNode
 	ElseExecutableNode ExecutableChainNode
+
+	// Expr is the condition as configured, recorded in the query journal.
+	Expr string
 
 	next ExecutableChainNode
 }
@@ -80,6 +84,7 @@ func ParseConditionNode(
 		return nil, err
 	}
 	cn.ConditionMatcher = cm
+	cn.Expr = cfg.If
 
 	if cfg.Exec != nil {
 		cn.ExecutableNode, err = BuildExecutableLogicTree(cfg.Exec, logger.Named("exec"), execs, matchers)
@@ -205,11 +210,24 @@ func (e *exprParamsPlaceHolder) makeResultZapFields(queryInfoField zap.Field, re
 }
 
 func (m *conditionMatcher) Match(ctx context.Context, qCtx *query_context.Context) (bool, error) {
+	res, _, err := m.match(ctx, qCtx, false)
+	return res, err
+}
+
+// MatchWithHits also reports the matchers that evaluated true, in name order.
+func (m *conditionMatcher) MatchWithHits(ctx context.Context, qCtx *query_context.Context) (bool, []string, error) {
+	return m.match(ctx, qCtx, true)
+}
+
+func (m *conditionMatcher) match(ctx context.Context, qCtx *query_context.Context, wantHits bool) (bool, []string, error) {
 	paramsPH, ok := m.paramsPHPool.Get().(*exprParamsPlaceHolder)
 	if !ok {
 		paramsPH = newExprParamsPlaceHolder()
 	}
 	defer m.paramsPHPool.Put(paramsPH)
+	// A pooled holder keeps results from its last query; the expression may
+	// short-circuit before reaching them.
+	clear(paramsPH.res)
 
 	for tag, matcher := range m.matchers {
 		matcher := matcher
@@ -220,21 +238,51 @@ func (m *conditionMatcher) Match(ctx context.Context, qCtx *query_context.Contex
 	}
 	out, err := m.expr.Eval(paramsPH)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	res := out.(bool)
 	m.lg.Debug(
 		"condition matcher result",
 		paramsPH.makeResultZapFields(qCtx.InfoField(), res)...,
 	)
-	return res, nil
+	var hits []string
+	if wantHits {
+		for name, result := range paramsPH.res {
+			if result == exprResultTrue {
+				hits = append(hits, name)
+			}
+		}
+		sort.Strings(hits)
+	}
+	return res, hits, nil
+}
+
+type hitsMatcher interface {
+	MatchWithHits(context.Context, *query_context.Context) (bool, []string, error)
 }
 
 func (b *ConditionNode) Exec(ctx context.Context, qCtx *query_context.Context, next ExecutableChainNode) (err error) {
 	if b.ConditionMatcher != nil {
-		ok, err := b.ConditionMatcher.Match(ctx, qCtx)
+		var (
+			ok   bool
+			hits []string
+			err  error
+		)
+		journal := qCtx.Journal()
+		if detailed, canDetail := b.ConditionMatcher.(hitsMatcher); canDetail && journal != nil {
+			ok, hits, err = detailed.MatchWithHits(ctx, qCtx)
+		} else {
+			ok, err = b.ConditionMatcher.Match(ctx, qCtx)
+		}
 		if err != nil {
 			return fmt.Errorf("matcher failed: %w", err)
+		}
+		if journal != nil {
+			if ok && b.ExecutableNode != nil {
+				journal.Step(qCtx.Branch(), query_context.RouteStepIf, b.Expr, hits...)
+			} else if !ok && b.ElseExecutableNode != nil {
+				journal.Step(qCtx.Branch(), query_context.RouteStepElse, b.Expr)
+			}
 		}
 		if ok && b.ExecutableNode != nil {
 			return ExecChainNode(ctx, qCtx, b.ExecutableNode)

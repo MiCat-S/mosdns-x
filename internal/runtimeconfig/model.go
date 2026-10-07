@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -39,7 +41,9 @@ type FastForward struct {
 }
 
 type Upstream struct {
-	Addr           string `json:"addr" yaml:"addr"`
+	Addr string `json:"addr" yaml:"addr"`
+	// Label names the upstream in query logs instead of its address.
+	Label          string `json:"label,omitempty" yaml:"label,omitempty"`
 	DialAddr       string `json:"dial_addr,omitempty" yaml:"dial_addr,omitempty"`
 	Trusted        bool   `json:"trusted,omitempty" yaml:"trusted,omitempty"`
 	SoMark         int    `json:"so_mark,omitempty" yaml:"so_mark,omitempty"`
@@ -77,7 +81,7 @@ var fastForwardTopKeys = map[string]struct{}{
 }
 
 var fastForwardUpstreamKeys = map[string]struct{}{
-	"addr": {}, "dial_addr": {}, "trusted": {}, "socks5": {}, "s5_username": {}, "s5_password": {},
+	"addr": {}, "label": {}, "dial_addr": {}, "trusted": {}, "socks5": {}, "s5_username": {}, "s5_password": {},
 	"so_mark": {}, "bind_to_device": {}, "idle_timeout": {}, "max_conns": {}, "enable_pipeline": {},
 	"bootstrap": {}, "insecure": {}, "kernel_tx": {}, "kernel_rx": {},
 }
@@ -186,6 +190,9 @@ func Validate(config Config) error {
 				}
 				if upstream.IdleTimeout < 0 || upstream.MaxConns < 0 {
 					return fmt.Errorf("plugin %q upstream #%d has a negative limit", plugin.Tag, j)
+				}
+				if !validLabel(upstream.Label) {
+					return fmt.Errorf("plugin %q upstream #%d label must be at most %d characters without control characters", plugin.Tag, j, MaxUpstreamLabel)
 				}
 			}
 		case "cache":
@@ -459,4 +466,19 @@ func readOnlyReason(err error) string {
 		return "sensitive_parameters"
 	}
 	return "unsupported_parameters"
+}
+
+// MaxUpstreamLabel bounds an upstream label shown in query logs.
+const MaxUpstreamLabel = 64
+
+func validLabel(label string) bool {
+	if utf8.RuneCountInString(label) > MaxUpstreamLabel {
+		return false
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

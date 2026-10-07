@@ -332,3 +332,63 @@ func TestExecFailureAndNilResponseBecomeSERVFAIL(t *testing.T) {
 		})
 	}
 }
+
+func TestResultCarriesUpstreamLabelAndJournal(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		qCtx.Journal().Step("", query_context.RouteStepIf, "query_is_cn_domain", "query_is_cn_domain")
+		failed := qCtx.Journal().BeginAttempt("", "forward_easymosdns", "forward_easymosdns #1 (DoH)")
+		qCtx.Journal().EndAttempt(failed, "", "timeout")
+		seq := qCtx.Journal().BeginAttempt("", "forward_local", "223.5.5.5 (UDP)")
+		qCtx.Journal().EndAttempt(seq, "NOERROR", "")
+		r := new(dns.Msg)
+		r.SetReply(qCtx.Q())
+		qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{Source: query_context.ResponseSourceUpstream, SourceID: "forward_local", UpstreamID: "forward_local/0", UpstreamLabel: "223.5.5.5 (UDP)", AttemptSeq: seq})
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got.UpstreamLabel != "223.5.5.5 (UDP)" || got.Trace == nil {
+		t.Fatalf("result=%+v", got)
+	}
+	if len(got.Trace.Steps) != 1 || len(got.Trace.Attempts) != 2 || got.Trace.Attempts[0].Selected || !got.Trace.Attempts[1].Selected || got.Trace.Attempts[0].Error != "timeout" {
+		t.Fatalf("trace=%+v", got.Trace)
+	}
+}
+
+func TestCacheHitResultNamesTheCachedAnswersUpstream(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		r := new(dns.Msg)
+		r.SetReply(qCtx.Q())
+		qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: "cache_wan", CacheOrigin: "forward_local #1 (UDP)"})
+		qCtx.SetCacheHit(true)
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !got.CacheHit || got.UpstreamLabel != "forward_local #1 (UDP)" || got.UpstreamID != "" || got.Trace == nil || len(got.Trace.Attempts) != 0 {
+		t.Fatalf("result=%+v", got)
+	}
+}
+
+func TestNoJournalWithoutQueryDetails(t *testing.T) {
+	var got Result
+	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		if qCtx.Journal() != nil {
+			t.Error("journal kept without query details")
+		}
+		r := new(dns.Msg)
+		r.SetReply(qCtx.Q())
+		qCtx.SetResponse(r)
+		return nil
+	})
+	h, _ := NewEntryHandler(EntryHandlerOpts{Entry: exec, Observe: func(result Result) { got = result }})
+	if _, err := h.ServeDNS(context.Background(), validQuery(), nil); err != nil || got.Trace != nil {
+		t.Fatalf("err=%v trace=%+v", err, got.Trace)
+	}
+}

@@ -126,6 +126,13 @@ type QueryRecord struct {
 	ResponseSource       string                 `json:"response_source"`
 	ResponseSourceID     string                 `json:"response_source_id"`
 	UpstreamID           string                 `json:"upstream_id"`
+	// UpstreamLabel names the upstream that answered, or for a cache hit the
+	// upstream that produced the cached answer. Private servers are named by
+	// plugin and position, never by address.
+	UpstreamLabel string `json:"upstream_label"`
+	// Trace is the routing path and every upstream attempt. Records written
+	// before it existed have none.
+	Trace *query_context.QueryTrace `json:"trace,omitempty"`
 }
 
 type Page struct {
@@ -142,6 +149,7 @@ type QueryFilter struct {
 	Address        string
 	ResponseSource string
 	UpstreamID     string
+	UpstreamLabel  string
 	CacheHit       *bool
 }
 
@@ -686,7 +694,7 @@ func (s *Store) writeResult(tx *bolt.Tx, now time.Time, r dns_handler.Result) er
 			UpstreamResponseEDNS: dnsutils.CloneEDNSSnapshot(r.UpstreamResponseEDNS),
 			ResponseEDNS:         dnsutils.CloneEDNSSnapshot(r.ResponseEDNS),
 			ResponseSource:       r.ResponseSource, ResponseSourceID: r.ResponseSourceID,
-			UpstreamID: r.UpstreamID,
+			UpstreamID: r.UpstreamID, UpstreamLabel: r.UpstreamLabel, Trace: r.Trace,
 		}
 		v, _ := json.Marshal(record)
 		if err := tx.Bucket(bucketQueries).Put([]byte(id), v); err != nil {
@@ -1057,6 +1065,9 @@ func (f QueryFilter) matches(r QueryRecord) bool {
 		return false
 	}
 	if f.UpstreamID != "" && r.UpstreamID != f.UpstreamID {
+		return false
+	}
+	if f.UpstreamLabel != "" && r.UpstreamLabel != f.UpstreamLabel {
 		return false
 	}
 	return f.CacheHit == nil || r.CacheHit == *f.CacheHit

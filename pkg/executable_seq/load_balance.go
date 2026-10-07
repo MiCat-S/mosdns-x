@@ -78,6 +78,7 @@ func (lbn *LBNode) Exec(ctx context.Context, qCtx *query_context.Context, next E
 	}
 
 	nextIdx := atomic.AddUint32(&lbn.p, 1) % uint32(len(lbn.branchNode))
+	qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepLoadBalanceChosen, "#"+strconv.Itoa(int(nextIdx)+1))
 	err := ExecChainNode(ctx, qCtx, lbn.branchNode[nextIdx])
 	if err != nil {
 		return fmt.Errorf("command sequence #%d: %w", nextIdx, err)

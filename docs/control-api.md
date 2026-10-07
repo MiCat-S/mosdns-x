@@ -63,9 +63,15 @@
 
 - `series` 每项：`time`、`completed`、`failed`、`cache_hits`、`avg_latency_ms`。
 - `upstreams` 每项：`id`、`attempts`、`failures`、`avg_latency_ms`。id 使用安全的配置标识，不能包含上游 URL 中的凭证。
-- `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`、`response_source`、`response_source_id`、`upstream_id`。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
-- `response_source` 可能是 `cache`、`upstream`、`hosts`、`sequence` 或 `servfail`。升级前写入的记录还可能带有 `custom_block`、`custom_rewrite`、`public_list` 或 `family_preference`，本版不再产生这些值。并发和 fallback 只记录最终选中响应的来源及上游；所有实际上游尝试仍进入聚合统计。
-- 查询日志按 `time`、`id` 从新到旧返回。除通用的 `from`、`to`、`limit`、`cursor` 外，还支持 `name`（不区分大小写的包含匹配）、`qtype`、`rcode`、`credential_id`、`protocol`、`address`（客户端 IP 或 Answer IP）、`source`、`upstream_id` 和 `cache=all|hit|miss`。继续分页时必须保持时间范围和筛选条件不变。
+- `QueryRecord`：`id`、`time`、`user_id`、`credential_id`、`client_ip`、`name`、`qtype`、`rcode`、`duration_ms`、`cache_hit`、`protocol`、`answer_ips`、`edns`、`response_source`、`response_source_id`、`upstream_id`、`upstream_label`、`trace`。`answer_ips` 是最终返回 Answer 区中的 A/AAAA 地址，按报文顺序去重；没有地址时为空数组。
+- `response_source` 可能是 `cache`、`upstream`、`hosts`、`sequence` 或 `servfail`。升级前写入的记录还可能带有 `custom_block`、`custom_rewrite`、`public_list` 或 `family_preference`，本版不再产生这些值。并发和 fallback 中最终选中的响应决定 `response_source` 和 `upstream_id`；每一次实际上游请求都记录在 `trace` 中，并进入聚合统计。
+- `upstream_label` 是这次查询走的出站 DNS。缓存命中时，它是当初产生这条缓存应答的上游；升级前写入的缓存条目没有这项信息，此时为空。上游配置了 `label` 时显示该名称；否则内置名单中的公共 DNS（阿里、腾讯 DNSPod、114、百度、CNNIC、360、Google、Cloudflare、Quad9、OpenDNS、AdGuard）显示为“地址 (协议)”，例如 `223.5.5.5 (UDP)`；其他上游一律显示为“插件 tag #序号 (协议)”，例如 `forward_remote #1 (DoH)`，不包含私有服务器的域名、IP 或 URL 路径。
+- `trace` 记录这次查询的处理过程，升级前的记录没有这项：
+  - `steps`：依次经过的分流决定。`kind` 为 `if`（命中条件，`detail` 是条件表达式，`hits` 是取值为真的 matcher）、`else`、`cache_hit`、`lazy_refresh`（缓存过期，先回旧结果并在后台刷新）、`secondary_started`（`detail` 为 `primary_failed`、`fast_fallback` 或 `always_standby`）、`branch_selected`（采用哪个分支的结果）、`primary_unhealthy` 或 `load_balance`。
+  - `attempts`：每一次上游请求，含 `upstream`（同 `upstream_label` 的命名规则）、`plugin`、`branch`（如 `primary`、`secondary`、`parallel#1`、`lazy_refresh`，嵌套时以 `/` 连接）、相对查询开始的 `start_ms`、`duration_ms`、`rcode` 或 `error`，以及 `selected`（最终采用的那次）。`done` 为 `false` 表示查询返回时这次请求尚未结束。
+  - `error` 只记录分类：`timeout`、`canceled`、`tls`、`connection_refused`、`connection_reset`、`connect_failed`、`resolve_failed`、`http_status`、`bad_response`、`empty_response`、`error`。原始错误信息常包含服务器地址，因此不写入日志。
+  - 每条记录最多保留 32 个步骤和 32 次请求，超出时 `truncated` 为 `true`。
+- 查询日志按 `time`、`id` 从新到旧返回。除通用的 `from`、`to`、`limit`、`cursor` 外，还支持 `name`（不区分大小写的包含匹配）、`qtype`、`rcode`、`credential_id`、`protocol`、`address`（客户端 IP 或 Answer IP）、`source`、`upstream_id`、`upstream`（按 `upstream_label` 精确匹配）和 `cache=all|hit|miss`。继续分页时必须保持时间范围和筛选条件不变。
 - `edns` 包含 `present`、`version`、`udp_size`、`dnssec_ok`、`option_codes`，以及可选的 `ecs`。`ecs` 包含规范化网络地址 `address`、`family`、`source_prefix`、`scope_prefix`。系统只记录 EDNS option code，不保存 Cookie、Padding、NSID 或其他 option 载荷。
 - `completed` 是结果统计采集量，`failed` 是其中的失败量；扣费次数以事务保存的 usage / quota 为准。`dropped` 是当前进程观测到的异步事件丢弃量，包含响应或上游尝试事件，重启后不能据此判断历史数据完整性。统计窗口和更新时刻必须展示。
 - 响应聚合默认保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细默认保留 24 小时且最多 100,000 条，均可通过 `control.telemetry` 在允许范围内调整。查询更久区间不会补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。

@@ -168,3 +168,34 @@ func TestInspectKeepsURLQueryCredentialsOutOfWritableConfig(t *testing.T) {
 		t.Fatalf("Validate error = %v", err)
 	}
 }
+
+func TestUpstreamLabelSurvivesInspectAndApply(t *testing.T) {
+	sources := []PluginSource{
+		{Tag: "forward", Type: "fast_forward", Args: map[string]any{"upstream": []any{map[string]any{"addr": "https://hk.example/token/dns-query", "label": "香港私有 DoH"}}}},
+	}
+	desired, err := Inspect(false, validTelemetry(), sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := desired.Plugins[0].FastForward.Upstreams[0].Label; got != "香港私有 DoH" || !desired.Plugins[0].Editable {
+		t.Fatalf("inspected label = %q editable=%v", got, desired.Plugins[0].Editable)
+	}
+	desired.Plugins[0].FastForward.Upstreams[0].Label = "私有 DoH 2"
+	applied, err := Apply(sources, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := yaml.Marshal(applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "label: 私有 DoH 2") {
+		t.Fatalf("applied args lost the label:\n%s", encoded)
+	}
+	for _, label := range []string{strings.Repeat("长", MaxUpstreamLabel+1), "bad\nlabel"} {
+		desired.Plugins[0].FastForward.Upstreams[0].Label = label
+		if err := Validate(desired); err == nil || !strings.Contains(err.Error(), "label") {
+			t.Fatalf("Validate(%q) error = %v", label, err)
+		}
+	}
+}

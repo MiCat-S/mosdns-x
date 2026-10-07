@@ -38,6 +38,11 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 		EDNSTraceVersion: 1, UpstreamStageStatus: "not_linked",
 		ResponseEDNS:   &dnsutils.EDNSSnapshot{Present: false, OptionCodes: []uint16{}},
 		ResponseSource: query_context.ResponseSourceCache, ResponseSourceID: "cache_wan",
+		UpstreamLabel: "香港私有 DoH",
+		Trace: &query_context.QueryTrace{
+			Steps:    []query_context.RouteStep{{Kind: query_context.RouteStepCacheHit, Detail: "cache_wan"}},
+			Attempts: []query_context.UpstreamTry{},
+		},
 	})
 	store.ObserveUpstream(query_context.UpstreamAttempt{Principal: principal, UpstreamID: "remote", Duration: 4 * time.Millisecond})
 	if err := store.Flush(ctx); err != nil {
@@ -57,8 +62,11 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 	if len(queries.Items) != 1 || queries.Items[0].ClientIP != "192.0.2.10" || len(queries.Items[0].AnswerIPs) != 1 || !queries.Items[0].EDNS.DNSSECOK || queries.Items[0].ResponseSource != query_context.ResponseSourceCache || queries.Items[0].UpstreamID != "" || queries.Items[0].EDNSTraceVersion != 1 || queries.Items[0].UpstreamStageStatus != "not_linked" || queries.Items[0].UpstreamRequestEDNS != nil || queries.Items[0].ResponseEDNS == nil || queries.Items[0].ResponseEDNS.Present {
 		t.Fatalf("queries=%+v", queries)
 	}
+	if got := queries.Items[0]; got.UpstreamLabel != "香港私有 DoH" || got.Trace == nil || len(got.Trace.Steps) != 1 || got.Trace.Steps[0].Detail != "cache_wan" {
+		t.Fatalf("label=%q trace=%+v", got.UpstreamLabel, got.Trace)
+	}
 	cacheHit := true
-	filtered, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{Name: "EXAMPLE.TEST", QType: "a", Rcode: "noerror", CredentialID: "credential-1", Protocol: "DOH", Address: "192.0.2.11", ResponseSource: "CACHE", CacheHit: &cacheHit}, Page{})
+	filtered, err := store.Queries(ctx, userID(principal), now.Add(-time.Hour), now.Add(time.Minute), QueryFilter{Name: "EXAMPLE.TEST", QType: "a", Rcode: "noerror", CredentialID: "credential-1", Protocol: "DOH", Address: "192.0.2.11", ResponseSource: "CACHE", UpstreamLabel: "香港私有 DoH", CacheHit: &cacheHit}, Page{})
 	if err != nil || len(filtered.Items) != 1 {
 		t.Fatalf("filtered queries=%+v err=%v", filtered, err)
 	}

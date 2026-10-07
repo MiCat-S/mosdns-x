@@ -80,6 +80,49 @@ describe("前端访问与秘密处理", () => {
               response_source: "upstream",
               response_source_id: "forward_remote",
               upstream_id: "forward_remote/0",
+              upstream_label: "forward_remote #1 (DoH)",
+              trace: {
+                steps: [
+                  {
+                    at_ms: 0.2,
+                    kind: "if",
+                    detail: "query_is_gfw_domain",
+                    hits: ["query_is_gfw_domain"],
+                  },
+                  {
+                    at_ms: 2500.4,
+                    kind: "secondary_started",
+                    detail: "fast_fallback",
+                  },
+                  {
+                    at_ms: 2540.1,
+                    kind: "branch_selected",
+                    detail: "secondary",
+                  },
+                ],
+                attempts: [
+                  {
+                    seq: 1,
+                    branch: "primary",
+                    plugin: "forward_easymosdns",
+                    upstream: "forward_easymosdns #1 (DoH)",
+                    start_ms: 0.3,
+                    duration_ms: 2540,
+                    done: false,
+                  },
+                  {
+                    seq: 2,
+                    branch: "secondary",
+                    plugin: "forward_remote",
+                    upstream: "forward_remote #1 (DoH)",
+                    start_ms: 2500.5,
+                    duration_ms: 39.6,
+                    done: true,
+                    rcode: "NOERROR",
+                    selected: true,
+                  },
+                ],
+              },
               edns: {
                 present: true,
                 version: 0,
@@ -176,7 +219,27 @@ describe("前端访问与秘密处理", () => {
       within(first).getByText("已观察报文：没有 EDNS"),
     ).toBeInTheDocument();
     expect(within(first).getByText("上游")).toBeInTheDocument();
-    expect(within(first).getByText("forward_remote/0")).toBeInTheDocument();
+    expect(
+      within(first).getAllByText("forward_remote #1 (DoH)").length,
+    ).toBeGreaterThanOrEqual(3);
+    expect(
+      within(first).getByText(
+        "命中规则 query_is_gfw_domain（query_is_gfw_domain）",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(first).getByText("主要上游未及时回应，同时启用备援"),
+    ).toBeInTheDocument();
+    expect(within(first).getByText("采用备援的结果")).toBeInTheDocument();
+    expect(
+      within(first).getByText("未完成（已先返回其他结果）"),
+    ).toBeInTheDocument();
+    expect(
+      within(first).getByText("forward_easymosdns #1 (DoH)"),
+    ).toBeInTheDocument();
+    expect(
+      within(first).queryByText(/forward_remote\/0/),
+    ).not.toBeInTheDocument();
     expect(within(first).queryByText("命中规则")).not.toBeInTheDocument();
     expect(within(first).queryByText("命中公共列表")).not.toBeInTheDocument();
     fireEvent.click(within(first).getByRole("button", { name: "关闭" }));
@@ -196,6 +259,9 @@ describe("前端访问与秘密处理", () => {
       within(legacy).getByText("历史记录未采集客户端响应快照"),
     ).toBeInTheDocument();
     expect(within(legacy).getByText("无地址记录")).toBeInTheDocument();
+    expect(
+      within(legacy).getByText("历史记录未采集出站路径。"),
+    ).toBeInTheDocument();
   });
   it("查询明细不会把缓存命中的空上游快照解释为未调用上游", async () => {
     vi.stubGlobal(
@@ -218,6 +284,11 @@ describe("前端访问与秘密处理", () => {
               answer_ips: ["192.0.2.1"],
               response_source: "cache",
               response_source_id: "cache_wan",
+              upstream_label: "223.5.5.5 (UDP)",
+              trace: {
+                steps: [{ at_ms: 0.1, kind: "cache_hit", detail: "cache_wan" }],
+                attempts: [],
+              },
               edns_trace_version: 1,
               upstream_stage_status: "not_linked",
               edns: {
@@ -254,7 +325,13 @@ describe("前端访问与秘密处理", () => {
     expect(within(detail).getAllByText("已观察报文：没有 EDNS")).toHaveLength(
       2,
     );
-    expect(within(detail).getByText("最终响应无对应上游")).toBeInTheDocument();
+    expect(
+      within(detail).getAllByText("缓存 · 原始 223.5.5.5 (UDP)").length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(within(detail).getByText("命中缓存 cache_wan")).toBeInTheDocument();
+    expect(
+      within(detail).getByText("本次由缓存直接回应，没有发出上游请求。"),
+    ).toBeInTheDocument();
     expect(within(detail).queryByText("未调用上游")).not.toBeInTheDocument();
   });
   it("查询日志将筛选条件发送到后端", async () => {
@@ -284,8 +361,8 @@ describe("前端访问与秘密处理", () => {
     fireEvent.change(screen.getByLabelText("处理来源"), {
       target: { value: "upstream" },
     });
-    fireEvent.change(screen.getByLabelText("最终上游"), {
-      target: { value: "forward_remote/0" },
+    fireEvent.change(screen.getByLabelText("出站 DNS"), {
+      target: { value: "223.5.5.5 (UDP)" },
     });
     fireEvent.click(screen.getByRole("button", { name: "查询" }));
 
@@ -301,7 +378,8 @@ describe("前端访问与秘密处理", () => {
     expect(url.searchParams.get("address")).toBe("192.0.2.1");
     expect(url.searchParams.get("cache")).toBe("miss");
     expect(url.searchParams.get("source")).toBe("upstream");
-    expect(url.searchParams.get("upstream_id")).toBe("forward_remote/0");
+    expect(url.searchParams.get("upstream")).toBe("223.5.5.5 (UDP)");
+    expect(url.searchParams.get("upstream_id")).toBeNull();
   });
   it("初始会话服务失败时显示错误和重试入口", async () => {
     vi.stubGlobal(

@@ -20,6 +20,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -167,7 +168,7 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		return executable_seq.ExecChainNode(ctx, qCtx, next)
 	}
 
-	cachedResp, lazyHit, err := c.lookupCache(msgKey)
+	cachedResp, origin, lazyHit, err := c.lookupCache(msgKey)
 	if err != nil {
 		c.L().Error("lookup cache", qCtx.InfoField(), zap.Error(err))
 	}
@@ -179,7 +180,8 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		c.hitTotal.Inc()
 		cachedResp.Id = q.Id // change msg id
 		c.L().Debug("cache hit", qCtx.InfoField())
-		qCtx.SetResponseWithTrace(cachedResp, query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: c.Tag()})
+		qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepCacheHit, c.Tag())
+		qCtx.SetResponseWithTrace(cachedResp, query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: c.Tag(), CacheOrigin: origin})
 		qCtx.SetCacheHit(true)
 		if c.whenHit != nil {
 			return c.whenHit.Exec(ctx, qCtx, nil)
@@ -192,11 +194,62 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 	err = executable_seq.ExecChainNode(ctx, qCtx, next)
 	r := qCtx.R()
 	if r != nil {
-		if err := c.tryStoreMsg(msgKey, r); err != nil {
+		if err := c.tryStoreMsg(msgKey, r, responseOrigin(qCtx)); err != nil {
 			c.L().Error("cache store", qCtx.InfoField(), zap.Error(err))
 		}
 	}
 	return err
+}
+
+// responseOrigin names the upstream behind qCtx's response, to keep with the
+// cached copy. A response that came from another cache keeps that origin.
+func responseOrigin(qCtx *query_context.Context) string {
+	trace := qCtx.ResponseTrace()
+	switch trace.Source {
+	case query_context.ResponseSourceUpstream:
+		return trace.UpstreamLabel
+	case query_context.ResponseSourceCache:
+		return trace.CacheOrigin
+	}
+	return ""
+}
+
+// A cached value may carry the label of the upstream that produced it, ahead
+// of the stored message:
+//
+//	originMagic | origin length (1 byte) | origin | message
+//
+// The magic cannot begin a packed message this plugin stores: as a header it
+// claims 21065 questions, and as a snappy block its first literal would be a
+// header without the response bit. A value without it is a message alone, as
+// stored by earlier versions. Earlier versions sharing a Redis cache treat a
+// labeled value as unreadable and miss.
+var originMagic = []byte("\xffMXORIG")
+
+func wrapOrigin(origin string, v []byte) []byte {
+	if origin == "" {
+		return v
+	}
+	if len(origin) > 255 {
+		origin = origin[:255]
+	}
+	out := make([]byte, 0, len(originMagic)+1+len(origin)+len(v))
+	out = append(out, originMagic...)
+	out = append(out, byte(len(origin)))
+	out = append(out, origin...)
+	return append(out, v...)
+}
+
+func unwrapOrigin(v []byte) (origin string, msg []byte) {
+	if len(v) <= len(originMagic) || !bytes.Equal(v[:len(originMagic)], originMagic) {
+		return "", v
+	}
+	n := int(v[len(originMagic)])
+	start := len(originMagic) + 1
+	if len(v) < start+n {
+		return "", v
+	}
+	return string(v[start : start+n]), v[start+n:]
 }
 
 // getMsgKey returns a string key for the query msg, or an empty
@@ -215,30 +268,31 @@ func (c *cachePlugin) getMsgKey(q *dns.Msg) (string, error) {
 
 // lookupCache returns the cached response. The ttl of returned msg will be changed properly.
 // Remember, caller must change the msg id.
-func (c *cachePlugin) lookupCache(msgKey string) (r *dns.Msg, lazyHit bool, err error) {
+func (c *cachePlugin) lookupCache(msgKey string) (r *dns.Msg, origin string, lazyHit bool, err error) {
 	// lookup in cache
 	v, storedTime, _ := c.backend.Get(msgKey)
 
 	// cache hit
 	if v != nil {
+		origin, v = unwrapOrigin(v)
 		if c.args.CompressResp {
 			decodeLen, err := snappy.DecodedLen(v)
 			if err != nil {
-				return nil, false, fmt.Errorf("snappy decode err: %w", err)
+				return nil, "", false, fmt.Errorf("snappy decode err: %w", err)
 			}
 			if decodeLen > dns.MaxMsgSize {
-				return nil, false, fmt.Errorf("invalid snappy data, not a dns msg, data len: %d", decodeLen)
+				return nil, "", false, fmt.Errorf("invalid snappy data, not a dns msg, data len: %d", decodeLen)
 			}
 			decompressBuf := pool.GetBuf(decodeLen)
 			defer decompressBuf.Release()
 			v, err = snappy.Decode(decompressBuf.Bytes(), v)
 			if err != nil {
-				return nil, false, fmt.Errorf("snappy decode err: %w", err)
+				return nil, "", false, fmt.Errorf("snappy decode err: %w", err)
 			}
 		}
 		r = new(dns.Msg)
 		if err := r.Unpack(v); err != nil {
-			return nil, false, fmt.Errorf("failed to unpack cached data, %w", err)
+			return nil, "", false, fmt.Errorf("failed to unpack cached data, %w", err)
 		}
 
 		var msgTTL time.Duration
@@ -251,25 +305,27 @@ func (c *cachePlugin) lookupCache(msgKey string) (r *dns.Msg, lazyHit bool, err 
 		// not expired
 		if storedTime.Add(msgTTL).After(time.Now()) {
 			dnsutils.SubtractTTL(r, uint32(time.Since(storedTime).Seconds()))
-			return r, false, nil
+			return r, origin, false, nil
 		}
 
 		// expired but lazy update enabled
 		if c.args.LazyCacheTTL > 0 {
 			// set the default ttl
 			dnsutils.SetTTL(r, uint32(c.args.LazyCacheReplyTTL))
-			return r, true, nil
+			return r, origin, true, nil
 		}
 	}
 
 	// cache miss
-	return nil, false, nil
+	return nil, "", false, nil
 }
 
 // doLazyUpdate starts a new goroutine to execute next node and update the cache in the background.
 // It has an inner singleflight.Group to de-duplicate same msgKey.
 func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, next executable_seq.ExecutableChainNode) {
 	lazyQCtx := qCtx.Copy()
+	lazyQCtx.EnterBranch("lazy_refresh")
+	qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepLazyRefresh, c.Tag())
 	releaseWork, ok := qCtx.ReqMeta().AcquireBackgroundWork()
 	if !ok {
 		return
@@ -287,7 +343,7 @@ func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, n
 
 		r := lazyQCtx.R()
 		if r != nil {
-			if err := c.tryStoreMsg(msgKey, r); err != nil {
+			if err := c.tryStoreMsg(msgKey, r, responseOrigin(lazyQCtx)); err != nil {
 				c.L().Error("cache store", qCtx.InfoField(), zap.Error(err))
 			}
 		}
@@ -302,7 +358,7 @@ func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, n
 }
 
 // tryStoreMsg tries to store r to cache. If r should be cached.
-func (c *cachePlugin) tryStoreMsg(key string, r *dns.Msg) error {
+func (c *cachePlugin) tryStoreMsg(key string, r *dns.Msg, origin string) error {
 	if r.Rcode != dns.RcodeSuccess || r.Truncated != false {
 		return nil
 	}
@@ -328,7 +384,7 @@ func (c *cachePlugin) tryStoreMsg(key string, r *dns.Msg) error {
 		v = snappy.Encode(compressBuf.Bytes(), v)
 		defer compressBuf.Release()
 	}
-	c.backend.Store(key, v, now, expirationTime)
+	c.backend.Store(key, wrapOrigin(origin, v), now, expirationTime)
 	return nil
 }
 

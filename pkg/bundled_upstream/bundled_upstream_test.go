@@ -90,12 +90,12 @@ func TestExchangeParallelCopiesQueriesAndObservesAttempts(t *testing.T) {
 		&fakeUpstream{id: "ff/0", rcode: dns.RcodeNameError, trusted: true, onQuery: check},
 		&fakeUpstream{id: "ff/1", err: errors.New("failed"), onQuery: check},
 	}
-	r, selectedID, err := ExchangeParallel(context.Background(), query_context.NewContext(q, meta), upstreams, nil)
-	if err != nil || r.Rcode != dns.RcodeNameError {
-		t.Fatalf("response=%v err=%v", r, err)
+	result, err := ExchangeParallel(context.Background(), query_context.NewContext(q, meta), upstreams, nil)
+	if err != nil || result.Response.Rcode != dns.RcodeNameError {
+		t.Fatalf("response=%v err=%v", result.Response, err)
 	}
-	if selectedID != "ff/0" {
-		t.Fatalf("selected upstream=%q", selectedID)
+	if result.UpstreamID != "ff/0" {
+		t.Fatalf("selected upstream=%q", result.UpstreamID)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -177,7 +177,7 @@ func (*pathFakeUpstream) ObserverID() string { return "ff/path" }
 func TestExchangeParallelLegacyPathDoesNotCaptureDetails(t *testing.T) {
 	u := new(pathFakeUpstream)
 	qCtx := query_context.NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), nil)
-	if _, _, err := ExchangeParallel(context.Background(), qCtx, []Upstream{u}, nil); err != nil {
+	if _, err := ExchangeParallel(context.Background(), qCtx, []Upstream{u}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if u.normalCalls != 1 || u.detailedCalls != 0 {
@@ -190,5 +190,52 @@ func TestExchangeParallelDetailedFallsBackWithoutGuessingUnsupportedBoundary(t *
 	result, err := ExchangeParallelDetailed(context.Background(), qCtx, []Upstream{&fakeUpstream{id: "ff/0", trusted: true}}, nil)
 	if err != nil || result.Response == nil || !result.Attempted || result.DetailsAvailable || result.RequestEDNS != nil || result.ResponseEDNS != nil {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+type labeledFakeUpstream struct {
+	*fakeUpstream
+	label string
+}
+
+func (u *labeledFakeUpstream) DisplayName() string { return u.label }
+func (u *labeledFakeUpstream) PluginTag() string   { return "forward" }
+
+func TestExchangeParallelJournalsEveryAttemptByLabel(t *testing.T) {
+	journal := query_context.NewJournal(time.Now())
+	meta := query_context.NewRequestMeta(netip.Addr{})
+	meta.SetJournal(journal)
+	qCtx := query_context.NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), meta)
+	qCtx.EnterBranch("secondary")
+	failed := make(chan struct{})
+	upstreams := []Upstream{
+		&labeledFakeUpstream{fakeUpstream: &fakeUpstream{id: "forward/0", err: context.DeadlineExceeded, onQuery: func(*dns.Msg) { close(failed) }}, label: "forward #1 (DoH)"},
+		&labeledFakeUpstream{fakeUpstream: &fakeUpstream{id: "forward/1", trusted: true, onQuery: func(*dns.Msg) { <-failed }}, label: "223.5.5.5 (UDP)"},
+	}
+	result, err := ExchangeParallelDetailed(context.Background(), qCtx, upstreams, nil)
+	if err != nil || result.UpstreamLabel != "223.5.5.5 (UDP)" || result.UpstreamID != "forward/1" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	trace := journal.Snapshot(result.AttemptSeq)
+	if len(trace.Attempts) != 2 {
+		t.Fatalf("attempts = %+v", trace.Attempts)
+	}
+	byLabel := map[string]query_context.UpstreamTry{}
+	for _, a := range trace.Attempts {
+		if a.Branch != "secondary" || a.Plugin != "forward" || !a.Done {
+			t.Fatalf("attempt = %+v", a)
+		}
+		byLabel[a.Upstream] = a
+	}
+	if a := byLabel["forward #1 (DoH)"]; a.Error != upstreamtrace.ErrorTimeout || a.Selected || a.Rcode != "" {
+		t.Fatalf("failed attempt = %+v", a)
+	}
+	if a := byLabel["223.5.5.5 (UDP)"]; a.Error != "" || !a.Selected || a.Rcode != "NOERROR" {
+		t.Fatalf("selected attempt = %+v", a)
+	}
+	for _, a := range trace.Attempts {
+		if a.Upstream == "contains-secret" {
+			t.Fatal("attempt named by address")
+		}
 	}
 }
