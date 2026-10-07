@@ -1,6 +1,12 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { expressionTokens, routeReason, routeSummary } from "./query-trace";
+import {
+  OutboundSection,
+  expressionTokens,
+  routeReason,
+  routeSummary,
+} from "./query-trace";
 import type { QueryRecord } from "./types";
 
 function record(patch: Partial<QueryRecord>): QueryRecord {
@@ -121,5 +127,67 @@ describe("查询路径", () => {
     expect(routeSummary(failed)).toBe(
       "未命中分流规则，1 次上游请求均未取得可用结果",
     );
+  });
+
+  it("把连续未命中的规则折叠成一行，展开后可查看", () => {
+    const miss = (detail: string, at: number) => ({
+      at_ms: at,
+      kind: "condition",
+      detail,
+      matched: false,
+      misses: [detail],
+      then: "continue" as const,
+    });
+    render(
+      <OutboundSection
+        record={record({
+          upstream_label: "223.5.5.5 (UDP)",
+          trace: {
+            steps: [
+              miss("query_is_cn_domain", 1),
+              miss("query_is_noncn_domain", 1.1),
+              miss("query_is_ad_domain", 1.2),
+              {
+                at_ms: 1.3,
+                kind: "condition",
+                detail: "ecs_is_lan",
+                matched: false,
+                misses: ["ecs_is_lan"],
+                then: "else",
+              },
+              miss("response_has_gfw_ip", 9),
+            ],
+            attempts: [
+              {
+                seq: 1,
+                plugin: "forward_local",
+                upstream: "223.5.5.5 (UDP)",
+                start_ms: 1.4,
+                duration_ms: 7,
+                done: true,
+                rcode: "NOERROR",
+                selected: true,
+              },
+            ],
+          },
+        })}
+      />,
+    );
+    const flow = screen.getByRole("list", { name: "查询路径" });
+    const nodes = within(flow).getAllByRole("listitem", { hidden: false });
+    const top = nodes.filter((node) => node.parentElement === flow);
+    // Received, three misses folded, the else branch, the request, the
+    // single later miss, returned.
+    expect(top).toHaveLength(6);
+    expect(top[1]).toHaveTextContent("未命中 3 条规则");
+    expect(top[2]).toHaveTextContent("ecs_is_lan否 · 进入 else 分支");
+    expect(top[4]).toHaveTextContent("response_has_gfw_ip否 · 继续往下");
+    fireEvent.click(within(top[1]).getByText("未命中 3 条规则"));
+    expect(
+      within(top[1]).getByLabelText("query_is_noncn_domain：未命中"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("figure", { name: "上游请求时间轴" }),
+    ).not.toBeInTheDocument();
   });
 });

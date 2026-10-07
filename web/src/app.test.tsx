@@ -242,23 +242,29 @@ describe("前端访问与秘密处理", () => {
     // Received, two conditions, primary attempt, fallback, secondary
     // attempt, branch chosen, returned.
     expect(nodes).toHaveLength(8);
-    expect(nodes[1]).toHaveTextContent("query_is_cn_domain未命中");
-    expect(nodes[1]).toHaveTextContent("否");
-    expect(nodes[1]).toHaveTextContent("继续往下");
-    expect(nodes[2]).toHaveTextContent("query_is_gfw_domain命中");
-    expect(nodes[2]).toHaveTextContent("qtype65未检查");
-    expect(nodes[2]).toHaveTextContent("进入此分支");
+    expect(nodes[1]).toHaveTextContent("query_is_cn_domain否 · 继续往下");
+    expect(
+      within(nodes[1]).getByLabelText("query_is_cn_domain：未命中"),
+    ).toBeInTheDocument();
+    expect(
+      within(nodes[2]).getByLabelText("query_is_gfw_domain：命中"),
+    ).toBeInTheDocument();
+    expect(
+      within(nodes[2]).getByLabelText(
+        "qtype65：未检查（前面的条件已决定结果）",
+      ),
+    ).toBeInTheDocument();
+    expect(nodes[2]).toHaveTextContent("是 · 进入此分支");
     expect(nodes[3]).toHaveTextContent("forward_easymosdns #1 (DoH)");
     expect(nodes[4]).toHaveTextContent("主要上游未及时回应，同时启用备援");
-    expect(nodes[5]).toHaveTextContent("采用");
+    expect(nodes[5]).toHaveTextContent("40 ms · NOERROR · 采用");
     expect(nodes[6]).toHaveTextContent("采用备援的结果");
     expect(nodes[7]).toHaveTextContent("返回NOERROR");
+    expect(nodes[7]).toHaveTextContent("共 1.3 ms");
     expect(
       within(first).getByRole("figure", { name: "上游请求时间轴" }),
     ).toBeInTheDocument();
-    expect(
-      within(first).getAllByText("未完成（已先返回其他结果）").length,
-    ).toBeGreaterThanOrEqual(1);
+    expect(nodes[3]).toHaveTextContent("未完成（已先返回其他结果）");
     expect(
       within(first).getAllByText("forward_easymosdns #1 (DoH)").length,
     ).toBeGreaterThanOrEqual(1);
