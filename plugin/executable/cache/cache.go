@@ -22,7 +22,9 @@ package cache
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -172,6 +174,9 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 	if err != nil {
 		c.L().Error("lookup cache", qCtx.InfoField(), zap.Error(err))
 	}
+	if cachedResp != nil {
+		qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepCacheHit, c.Tag())
+	}
 	if lazyHit {
 		c.lazyHitTotal.Inc()
 		c.doLazyUpdate(msgKey, qCtx, next)
@@ -180,7 +185,6 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		c.hitTotal.Inc()
 		cachedResp.Id = q.Id // change msg id
 		c.L().Debug("cache hit", qCtx.InfoField())
-		qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepCacheHit, c.Tag())
 		qCtx.SetResponseWithTrace(cachedResp, query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: c.Tag(), CacheOrigin: origin})
 		qCtx.SetCacheHit(true)
 		if c.whenHit != nil {
@@ -217,7 +221,7 @@ func responseOrigin(qCtx *query_context.Context) string {
 // A cached value may carry the label of the upstream that produced it, ahead
 // of the stored message:
 //
-//	originMagic | origin length (1 byte) | origin | message
+//	originMagic | origin length (2 bytes, big endian) | origin | message
 //
 // The magic cannot begin a packed message this plugin stores: as a header it
 // claims 21065 questions, and as a snappy block its first literal would be a
@@ -227,25 +231,24 @@ func responseOrigin(qCtx *query_context.Context) string {
 var originMagic = []byte("\xffMXORIG")
 
 func wrapOrigin(origin string, v []byte) []byte {
-	if origin == "" {
+	// Upstream names are bounded far below this; one that is not is dropped
+	// rather than cut mid-character.
+	if origin == "" || len(origin) > math.MaxUint16 {
 		return v
 	}
-	if len(origin) > 255 {
-		origin = origin[:255]
-	}
-	out := make([]byte, 0, len(originMagic)+1+len(origin)+len(v))
+	out := make([]byte, 0, len(originMagic)+2+len(origin)+len(v))
 	out = append(out, originMagic...)
-	out = append(out, byte(len(origin)))
+	out = binary.BigEndian.AppendUint16(out, uint16(len(origin)))
 	out = append(out, origin...)
 	return append(out, v...)
 }
 
 func unwrapOrigin(v []byte) (origin string, msg []byte) {
-	if len(v) <= len(originMagic) || !bytes.Equal(v[:len(originMagic)], originMagic) {
+	start := len(originMagic) + 2
+	if len(v) <= start || !bytes.Equal(v[:len(originMagic)], originMagic) {
 		return "", v
 	}
-	n := int(v[len(originMagic)])
-	start := len(originMagic) + 1
+	n := int(binary.BigEndian.Uint16(v[len(originMagic):start]))
 	if len(v) < start+n {
 		return "", v
 	}

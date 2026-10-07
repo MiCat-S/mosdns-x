@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 )
 
 const Version = 1
@@ -191,8 +191,8 @@ func Validate(config Config) error {
 				if upstream.IdleTimeout < 0 || upstream.MaxConns < 0 {
 					return fmt.Errorf("plugin %q upstream #%d has a negative limit", plugin.Tag, j)
 				}
-				if !validLabel(upstream.Label) {
-					return fmt.Errorf("plugin %q upstream #%d label must be at most %d characters without control characters", plugin.Tag, j, MaxUpstreamLabel)
+				if !upstreamtrace.ValidLabel(upstream.Label) {
+					return fmt.Errorf("plugin %q upstream #%d label must be at most %d characters without control characters", plugin.Tag, j, upstreamtrace.MaxLabel)
 				}
 			}
 		case "cache":
@@ -466,19 +466,4 @@ func readOnlyReason(err error) string {
 		return "sensitive_parameters"
 	}
 	return "unsupported_parameters"
-}
-
-// MaxUpstreamLabel bounds an upstream label shown in query logs.
-const MaxUpstreamLabel = 64
-
-func validLabel(label string) bool {
-	if utf8.RuneCountInString(label) > MaxUpstreamLabel {
-		return false
-	}
-	for _, r := range label {
-		if unicode.IsControl(r) {
-			return false
-		}
-	}
-	return true
 }

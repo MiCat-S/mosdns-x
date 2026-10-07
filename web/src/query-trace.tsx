@@ -4,6 +4,7 @@ const branchNames: Record<string, string> = {
   primary: "主要",
   secondary: "备援",
   lazy_refresh: "后台刷新",
+  reference: "参考查询",
 };
 
 export function branchName(branch?: string) {
@@ -20,7 +21,7 @@ export function branchName(branch?: string) {
 
 const attemptErrors: Record<string, string> = {
   timeout: "超时",
-  canceled: "已取消（其他上游先回应）",
+  canceled: "已取消",
   tls: "TLS 错误",
   connection_refused: "连接被拒绝",
   connection_reset: "连接中断",

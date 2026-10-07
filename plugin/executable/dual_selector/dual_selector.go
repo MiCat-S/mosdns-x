@@ -95,6 +95,7 @@ func (s *Selector) Exec(ctx context.Context, qCtx *query_context.Context, next e
 		refQtype = dns.TypeA
 	}
 	qCtxRef.Q().Question[0].Qtype = refQtype
+	qCtxRef.EnterBranch("reference")
 
 	ddl, ok := ctx.Deadline()
 	if !ok {

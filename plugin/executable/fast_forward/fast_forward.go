@@ -110,6 +110,9 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 		if len(c.Addr) == 0 {
 			return nil, errors.New("missing server addr")
 		}
+		if !upstreamtrace.ValidLabel(c.Label) {
+			return nil, fmt.Errorf("upstream #%d label must be at most %d characters without control characters", i, upstreamtrace.MaxLabel)
+		}
 
 		if strings.HasPrefix(c.Addr, "udpme://") {
 			u := newUDPME(c.Addr[8:], c.Trusted)

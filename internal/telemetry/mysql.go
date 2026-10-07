@@ -22,6 +22,9 @@ import (
 
 const mysqlTelemetrySchemaVersion = 3
 
+// mysqlPruneBatch bounds the expired query records one flush deletes.
+const mysqlPruneBatch = 10000
+
 type MySQLOptions struct {
 	DSN                string
 	MaxOpenConns       int
@@ -528,7 +531,10 @@ func (s *Store) writeMySQLBatch(events []event) error {
 				return rollback(err)
 			}
 		}
-		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<?`, now.Add(-settings.QueryRetention).UnixNano()); err != nil {
+		// Bounded so a large backlog, such as records kept under a longer
+		// retention before an upgrade, drains over several minutes instead of
+		// overrunning one operation timeout and failing every flush.
+		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<? ORDER BY time_ns LIMIT `+strconv.Itoa(mysqlPruneBatch), now.Add(-settings.QueryRetention).UnixNano()); err != nil {
 			return rollback(err)
 		}
 		if err = mysqlEvictOverCap(ctx, tx, settings.MaxQueryRecords); err != nil {

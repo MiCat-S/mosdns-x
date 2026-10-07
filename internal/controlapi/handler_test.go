@@ -111,6 +111,7 @@ func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
 		"address":       {"2001:db8::1"},
 		"source":        {"UPSTREAM"},
 		"upstream_id":   {"forward_remote/0"},
+		"upstream":      {" 香港私有 DoH "},
 		"cache":         {"hit"},
 	}
 	w := req(f.handler, http.MethodGet, "/api/v1/me/queries?"+values.Encode(), "", alice, "")
@@ -121,10 +122,10 @@ func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {
 	gotUser := f.telemetry.userIDs[len(f.telemetry.userIDs)-1]
 	gotFilter := f.telemetry.filters[len(f.telemetry.filters)-1]
 	f.telemetry.mu.Unlock()
-	if gotUser != f.user1.ID || gotFilter.Name != "Example.COM" || gotFilter.QType != "AAAA" || gotFilter.Rcode != "NXDOMAIN" || gotFilter.CredentialID != "device-1" || gotFilter.Protocol != "h3" || gotFilter.Address != "2001:db8::1" || gotFilter.ResponseSource != "upstream" || gotFilter.UpstreamID != "forward_remote/0" || gotFilter.CacheHit == nil || !*gotFilter.CacheHit {
+	if gotUser != f.user1.ID || gotFilter.Name != "Example.COM" || gotFilter.QType != "AAAA" || gotFilter.Rcode != "NXDOMAIN" || gotFilter.CredentialID != "device-1" || gotFilter.Protocol != "h3" || gotFilter.Address != "2001:db8::1" || gotFilter.ResponseSource != "upstream" || gotFilter.UpstreamID != "forward_remote/0" || gotFilter.UpstreamLabel != "香港私有 DoH" || gotFilter.CacheHit == nil || !*gotFilter.CacheHit {
 		t.Fatalf("user=%q filter=%+v", gotUser, gotFilter)
 	}
-	for _, path := range []string{"/api/v1/me/queries?address=not-an-ip", "/api/v1/me/queries?cache=maybe", "/api/v1/me/queries?source=unknown"} {
+	for _, path := range []string{"/api/v1/me/queries?address=not-an-ip", "/api/v1/me/queries?cache=maybe", "/api/v1/me/queries?source=unknown", "/api/v1/me/queries?source=public_list", "/api/v1/me/queries?upstream=" + url.QueryEscape(strings.Repeat("长", 129))} {
 		if invalid := req(f.handler, http.MethodGet, path, "", alice, ""); invalid.Code != http.StatusBadRequest {
 			t.Fatalf("invalid filter %q=%d", path, invalid.Code)
 		}

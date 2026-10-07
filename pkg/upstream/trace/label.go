@@ -12,7 +12,30 @@ import (
 	"net/url"
 	"strings"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 )
+
+// MaxLabel bounds a configured upstream label.
+const MaxLabel = 64
+
+// maxDisplayName bounds every upstream name a query log stores, so a cache
+// entry, a log record and its database column all hold the same string.
+const maxDisplayName = 128
+
+// ValidLabel reports whether a configured upstream label is short enough and
+// free of control characters.
+func ValidLabel(label string) bool {
+	if utf8.RuneCountInString(label) > MaxLabel {
+		return false
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 
 // publicResolvers lists well-known public DNS services, by IP or exact DoH,
 // DoT or DoQ host. Only these upstreams are shown by address in query logs;
@@ -93,13 +116,20 @@ func publicHost(addr string) (string, bool) {
 // private server's host, IP or URL token never reaches the log.
 func DisplayName(tag string, index int, addr, label string) string {
 	if label = strings.TrimSpace(label); label != "" {
-		return label
+		return truncateRunes(label, maxDisplayName)
 	}
 	protocol := ProtocolName(addr)
 	if host, ok := publicHost(addr); ok {
 		return fmt.Sprintf("%s (%s)", host, protocol)
 	}
-	return fmt.Sprintf("%s #%d (%s)", tag, index+1, protocol)
+	return truncateRunes(fmt.Sprintf("%s #%d (%s)", tag, index+1, protocol), maxDisplayName)
+}
+
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 // Error categories recorded for failed upstream attempts.

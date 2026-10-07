@@ -76,3 +76,18 @@ func TestErrorKindCategorizesWithoutTheMessage(t *testing.T) {
 		}
 	}
 }
+
+func TestLabelsAreBounded(t *testing.T) {
+	if !ValidLabel("香港私有 DoH") || !ValidLabel("") || !ValidLabel(strings.Repeat("长", MaxLabel)) {
+		t.Fatal("valid label rejected")
+	}
+	for _, label := range []string{strings.Repeat("长", MaxLabel+1), "line\nbreak", "tab\there"} {
+		if ValidLabel(label) {
+			t.Errorf("ValidLabel(%q) = true", label)
+		}
+	}
+	long := strings.Repeat("长", 200)
+	if got := DisplayName(long, 0, "https://private.example/dns-query", ""); len([]rune(got)) != maxDisplayName {
+		t.Fatalf("auto name has %d runes, want %d", len([]rune(got)), maxDisplayName)
+	}
+}

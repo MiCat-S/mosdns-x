@@ -30,7 +30,7 @@ func TestWriteMySQLBatchPrunesByRetentionThenFairly(t *testing.T) {
 	for _, table := range []string{"mosdns_telemetry_minutes", "mosdns_telemetry_rcodes", "mosdns_telemetry_latency", "mosdns_telemetry_upstreams"} {
 		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM ` + table + ` WHERE minute_epoch<?`)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
-	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_query_logs WHERE time_ns<?`)).
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_query_logs WHERE time_ns<? ORDER BY time_ns LIMIT 10000`)).
 		WithArgs(now.Add(-queryRetention).UnixNano()).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM mosdns_query_logs`)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1100))

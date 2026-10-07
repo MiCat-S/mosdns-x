@@ -2,6 +2,7 @@ package fastforward
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -76,5 +77,34 @@ func TestFastForwardDetailedModeFallsBackWithUnavailableSnapshots(t *testing.T) 
 	trace := qCtx.ResponseTrace()
 	if u.calls != 1 || qCtx.R() == nil || trace.UpstreamID != "forward/0" || trace.UpstreamStageStatus != query_context.UpstreamStageUnavailable || trace.UpstreamRequestEDNS != nil || trace.UpstreamResponseEDNS != nil {
 		t.Fatalf("calls=%d response=%v trace=%+v", u.calls, qCtx.R(), trace)
+	}
+}
+
+func TestFastForwardRejectsInvalidLabel(t *testing.T) {
+	for _, label := range []string{"bad\nlabel", strings.Repeat("长", 65)} {
+		_, err := newFastForward(coremain.NewBP("forward", PluginType, nil, nil), &Args{Upstream: []*UpstreamConfig{{Addr: "223.5.5.5", Label: label}}})
+		if err == nil || !strings.Contains(err.Error(), "label") {
+			t.Fatalf("label %q: err=%v", label, err)
+		}
+	}
+}
+
+func TestFastForwardNamesUpstreamsWithoutPrivateAddresses(t *testing.T) {
+	f, err := newFastForward(coremain.NewBP("forward_remote", PluginType, nil, nil), &Args{Upstream: []*UpstreamConfig{
+		{Addr: "223.5.5.5"},
+		{Addr: "https://hk.example.net/token/dns-query"},
+		{Addr: "https://hk.example.net/token/dns-query", Label: "香港私有 DoH"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Shutdown()
+	var got []string
+	for _, u := range f.upstreamWrappers {
+		got = append(got, u.(*upstreamWrapper).DisplayName())
+	}
+	want := []string{"223.5.5.5 (UDP)", "forward_remote #2 (DoH)", "香港私有 DoH"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("names = %q, want %q", got, want)
 	}
 }

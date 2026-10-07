@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 )
 
 func validTelemetry() Telemetry {
@@ -192,7 +194,7 @@ func TestUpstreamLabelSurvivesInspectAndApply(t *testing.T) {
 	if !strings.Contains(string(encoded), "label: 私有 DoH 2") {
 		t.Fatalf("applied args lost the label:\n%s", encoded)
 	}
-	for _, label := range []string{strings.Repeat("长", MaxUpstreamLabel+1), "bad\nlabel"} {
+	for _, label := range []string{strings.Repeat("长", upstreamtrace.MaxLabel+1), "bad\nlabel"} {
 		desired.Plugins[0].FastForward.Upstreams[0].Label = label
 		if err := Validate(desired); err == nil || !strings.Contains(err.Error(), "label") {
 			t.Fatalf("Validate(%q) error = %v", label, err)

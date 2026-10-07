@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +109,54 @@ func TestCacheReadsValuesWithoutOrigin(t *testing.T) {
 	}
 	if got := wrapOrigin("", packed); !bytes.Equal(got, packed) {
 		t.Fatal("empty origin changed the value")
+	}
+}
+
+func TestCacheOriginKeepsLongMultibyteLabels(t *testing.T) {
+	label := strings.Repeat("长", 128)
+	origin, msg := unwrapOrigin(wrapOrigin(label, []byte{1, 2, 3}))
+	if origin != label || !bytes.Equal(msg, []byte{1, 2, 3}) {
+		t.Fatalf("origin=%q msg=%v", origin, msg)
+	}
+}
+
+func TestLazyCacheHitRecordsHitBeforeRefresh(t *testing.T) {
+	p := newTestCache(false)
+	defer p.backend.Close()
+	p.args.LazyCacheTTL = 3600
+	p.args.LazyCacheReplyTTL = 5
+	q := new(dns.Msg).SetQuestion("example.org.", dns.TypeA)
+	r := new(dns.Msg)
+	r.SetReply(q)
+	rr, _ := dns.NewRR("example.org. 60 IN A 192.0.2.1")
+	r.Answer = []dns.RR{rr}
+	packed, err := r.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := p.getMsgKey(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := time.Now().Add(-time.Hour)
+	p.backend.Store(key, wrapOrigin("223.5.5.5 (UDP)", packed), stored, time.Now().Add(time.Hour))
+
+	journal := query_context.NewJournal(time.Now())
+	meta := query_context.NewRequestMeta(netip.Addr{})
+	meta.SetJournal(journal)
+	refreshed := make(chan struct{})
+	next := executable_seq.WrapExecutable(execFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		defer close(refreshed)
+		qCtx.SetResponse(r.Copy())
+		return nil
+	}))
+	hit := query_context.NewContext(q.Copy(), meta)
+	if err := p.Exec(context.Background(), hit, next); err != nil {
+		t.Fatal(err)
+	}
+	<-refreshed
+	steps := journal.Snapshot(0).Steps
+	if len(steps) < 2 || steps[0].Kind != query_context.RouteStepCacheHit || steps[1].Kind != query_context.RouteStepLazyRefresh {
+		t.Fatalf("steps = %+v", steps)
 	}
 }

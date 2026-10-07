@@ -22,7 +22,6 @@ const (
 	RouteStepSecondaryStarted  = "secondary_started"
 	RouteStepBranchSelected    = "branch_selected"
 	RouteStepPrimaryUnhealthy  = "primary_unhealthy"
-	RouteStepParallelSelected  = "parallel_selected"
 	RouteStepLoadBalanceChosen = "load_balance"
 )
 
