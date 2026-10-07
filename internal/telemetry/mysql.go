@@ -15,15 +15,21 @@ import (
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 
+	"github.com/pmkol/mosdns-x/internal/mysqlschema"
 	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 )
 
 const mysqlTelemetrySchemaVersion = 3
 
-// mysqlPruneBatch bounds the expired query records one flush deletes.
+// mysqlPruneBatch bounds the expired query records one prune deletes.
 const mysqlPruneBatch = 10000
+
+// mysqlPruneTimeout bounds one prune. Pruning runs apart from the batch write,
+// so it may take longer than an ordinary operation.
+const mysqlPruneTimeout = 30 * time.Second
 
 type MySQLOptions struct {
 	DSN                string
@@ -39,6 +45,8 @@ type MySQLOptions struct {
 	QueryRetention     time.Duration
 	MaxQueryRecords    int
 	Now                func() time.Time
+	// Logger reports schema upgrades and failed prunes. Nil discards them.
+	Logger *zap.Logger
 }
 
 var mysqlTelemetryMigrations = []string{
@@ -172,6 +180,9 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*Store, error)
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	if opts.Logger == nil {
+		opts.Logger = zap.NewNop()
+	}
 	aggregateRetentionValue, queryRetentionValue, maxQueryRecordsValue, err := normalizeRetention(opts.AggregateRetention, opts.QueryRetention, opts.MaxQueryRecords)
 	if err != nil {
 		return nil, err
@@ -190,11 +201,11 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*Store, error)
 		_ = db.Close()
 		return nil, fmt.Errorf("mysql telemetry: %w", err)
 	}
-	if err := initializeMySQLTelemetry(ctx, db); err != nil {
+	if err := upgradeMySQLTelemetry(parent, parsed, opts.Logger); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{mysql: db, mysqlTimeout: opts.OperationTimeout, queue: make(chan event, opts.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), batchSize: opts.BatchSize, flushInterval: opts.FlushInterval, queryLogEnabled: opts.QueryLogEnabled, aggregateRetention: aggregateRetentionValue, queryRetention: queryRetentionValue, maxQueryRecords: maxQueryRecordsValue, now: opts.Now, droppedByWindow: make(map[string]uint64)}
+	s := &Store{mysql: db, mysqlTimeout: opts.OperationTimeout, queue: make(chan event, opts.QueueSize), stop: make(chan struct{}), done: make(chan struct{}), batchSize: opts.BatchSize, flushInterval: opts.FlushInterval, queryLogEnabled: opts.QueryLogEnabled, aggregateRetention: aggregateRetentionValue, queryRetention: queryRetentionValue, maxQueryRecords: maxQueryRecordsValue, now: opts.Now, droppedByWindow: make(map[string]uint64), logger: opts.Logger}
 	var updated int64
 	if err := db.QueryRowContext(ctx, `SELECT updated_at_ns FROM mosdns_telemetry_meta WHERE id=1`).Scan(&updated); err != nil {
 		_ = db.Close()
@@ -205,7 +216,21 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*Store, error)
 	return s, nil
 }
 
-func initializeMySQLTelemetry(ctx context.Context, db *sql.DB) error {
+// upgradeMySQLTelemetry brings the schema up to date on its own connection,
+// free of the DSN's read and write timeouts and bounded by
+// mysqlschema.Timeout instead of the startup timeout.
+func upgradeMySQLTelemetry(parent context.Context, cfg *mysqlDriver.Config, logger *zap.Logger) error {
+	db, err := mysqlschema.Open(cfg)
+	if err != nil {
+		return fmt.Errorf("mysql telemetry: %w", err)
+	}
+	defer db.Close()
+	ctx, cancel := mysqlschema.Context(parent)
+	defer cancel()
+	return initializeMySQLTelemetry(ctx, db, logger)
+}
+
+func initializeMySQLTelemetry(ctx context.Context, db *sql.DB, logger *zap.Logger) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
@@ -228,13 +253,13 @@ func initializeMySQLTelemetry(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("mysql telemetry: %w", err)
 		}
 	}
-	if err := convergeMySQLTelemetrySchema(ctx, conn); err != nil {
+	if err := convergeMySQLTelemetrySchema(ctx, conn, logger); err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
 	}
 	return nil
 }
 
-func convergeMySQLTelemetrySchema(ctx context.Context, conn *sql.Conn) error {
+func convergeMySQLTelemetrySchema(ctx context.Context, conn *sql.Conn, logger *zap.Logger) error {
 	var version int
 	err := conn.QueryRowContext(ctx, `SELECT version FROM mosdns_schema_migrations WHERE component='telemetry'`).Scan(&version)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -243,7 +268,7 @@ func convergeMySQLTelemetrySchema(ctx context.Context, conn *sql.Conn) error {
 	if err == nil && (version < 1 || version > mysqlTelemetrySchemaVersion) {
 		return fmt.Errorf("unsupported mysql telemetry schema version %d", version)
 	}
-	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn); err != nil {
+	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn, logger); err != nil {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, `INSERT INTO mosdns_schema_migrations (component, version) VALUES ('telemetry', ?)
@@ -285,7 +310,7 @@ func truncateLabel(label string) string {
 	return string(runes[:128])
 }
 
-func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) error {
+func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn, logger *zap.Logger) error {
 	for _, column := range mysqlTelemetryQueryLogColumns {
 		var columnType, nullable string
 		var defaultVal sql.NullString
@@ -293,7 +318,7 @@ func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) err
 			FROM information_schema.columns
 			WHERE table_schema=DATABASE() AND table_name='mosdns_query_logs' AND column_name=?`, column.name).Scan(&columnType, &nullable, &defaultVal)
 		if errors.Is(err, sql.ErrNoRows) {
-			if _, err := conn.ExecContext(ctx, `ALTER TABLE mosdns_query_logs ADD COLUMN `+column.name+` `+column.definition); err != nil {
+			if err := mysqlschema.Exec(ctx, conn, logger, "mosdns_query_logs", `ALTER TABLE mosdns_query_logs ADD COLUMN `+column.name+` `+column.definition); err != nil {
 				return err
 			}
 			continue
@@ -311,7 +336,7 @@ func ensureMySQLTelemetryQueryLogSchema(ctx context.Context, conn *sql.Conn) err
 			return err
 		}
 		if count == 0 {
-			if _, err := conn.ExecContext(ctx, `ALTER TABLE mosdns_query_logs ADD KEY `+index.name+` (`+index.columns+`)`); err != nil {
+			if err := mysqlschema.Exec(ctx, conn, logger, "mosdns_query_logs", `ALTER TABLE mosdns_query_logs ADD KEY `+index.name+` (`+index.columns+`)`); err != nil {
 				return err
 			}
 		}
@@ -525,33 +550,59 @@ func (s *Store) writeMySQLBatch(events []event) error {
 			return rollback(err)
 		}
 	}
-	if shouldPrune {
-		for _, table := range []string{"mosdns_telemetry_minutes", "mosdns_telemetry_rcodes", "mosdns_telemetry_latency", "mosdns_telemetry_upstreams"} {
-			if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE minute_epoch<?`, now.Add(-settings.AggregateRetention).Unix()); err != nil {
-				return rollback(err)
-			}
-		}
-		// Bounded so a large backlog, such as records kept under a longer
-		// retention before an upgrade, drains over several minutes instead of
-		// overrunning one operation timeout and failing every flush.
-		if _, err = tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<? ORDER BY time_ns LIMIT `+strconv.Itoa(mysqlPruneBatch), now.Add(-settings.QueryRetention).UnixNano()); err != nil {
-			return rollback(err)
-		}
-		if err = mysqlEvictOverCap(ctx, tx, settings.MaxQueryRecords); err != nil {
-			return rollback(err)
-		}
-	}
 	if _, err = tx.ExecContext(ctx, `UPDATE mosdns_telemetry_meta SET updated_at_ns=? WHERE id=1`, now.UnixNano()); err != nil {
 		return rollback(err)
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
 	}
-	if shouldPrune {
-		s.mysqlPrunedAt.Store(minute)
-	}
 	s.updatedUnixNano.Store(now.UnixNano())
+	if shouldPrune {
+		// Pruning runs after the batch commits, in its own transaction, so a
+		// slow or failed prune never loses the records just written. It is
+		// retried the next minute rather than on every flush.
+		s.mysqlPrunedAt.Store(minute)
+		if err := s.mysqlPrune(now, settings); err != nil {
+			s.log().Warn("mysql telemetry prune failed; retrying next minute", zap.Error(err))
+		}
+	}
 	return nil
+}
+
+func (s *Store) log() *zap.Logger {
+	if s.logger == nil {
+		return zap.NewNop()
+	}
+	return s.logger
+}
+
+// mysqlPrune removes expired aggregates and query records, and query records
+// over the configured cap.
+func (s *Store) mysqlPrune(now time.Time, settings Settings) error {
+	ctx, cancel := context.WithTimeout(context.Background(), max(s.mysqlTimeout, mysqlPruneTimeout))
+	defer cancel()
+	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	rollback := func(err error) error {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, table := range []string{"mosdns_telemetry_minutes", "mosdns_telemetry_rcodes", "mosdns_telemetry_latency", "mosdns_telemetry_upstreams"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE minute_epoch<?`, now.Add(-settings.AggregateRetention).Unix()); err != nil {
+			return rollback(err)
+		}
+	}
+	// Bounded so a large backlog, such as records kept under a longer
+	// retention before an upgrade, drains over several minutes.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mosdns_query_logs WHERE time_ns<? ORDER BY time_ns LIMIT `+strconv.Itoa(mysqlPruneBatch), now.Add(-settings.QueryRetention).UnixNano()); err != nil {
+		return rollback(err)
+	}
+	if err := mysqlEvictOverCap(ctx, tx, settings.MaxQueryRecords); err != nil {
+		return rollback(err)
+	}
+	return tx.Commit()
 }
 
 func randomTelemetryID() (string, error) {

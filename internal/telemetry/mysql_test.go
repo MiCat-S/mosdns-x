@@ -79,7 +79,7 @@ func TestEnsureMySQLTelemetryQueryLogSchemaRepairsPartialMigration(t *testing.T)
 		mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM information_schema.statistics`)).WithArgs(index).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec(regexp.QuoteMeta(`ALTER TABLE mosdns_query_logs ADD KEY ` + index)).WillReturnResult(sqlmock.NewResult(0, 0))
 	}
-	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn); err != nil {
+	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -103,7 +103,7 @@ func TestEnsureMySQLTelemetryQueryLogSchemaRejectsIncompatibleColumn(t *testing.
 	column := mysqlTelemetryQueryLogColumns[0]
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT`)).WithArgs(column.name).
 		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_TYPE", "IS_NULLABLE", "COLUMN_DEFAULT"}).AddRow("varchar(16)", "NO", ""))
-	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn); err == nil {
+	if err := ensureMySQLTelemetryQueryLogSchema(ctx, conn, nil); err == nil {
 		t.Fatal("incompatible column accepted")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -147,7 +147,7 @@ func TestConvergeMySQLTelemetrySchemaSupportsKnownAndMissingVersions(t *testing.
 			expectCurrentMySQLTelemetrySchema(mock)
 			mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_schema_migrations (component, version) VALUES ('telemetry', ?)`)).
 				WithArgs(mysqlTelemetrySchemaVersion).WillReturnResult(sqlmock.NewResult(1, 1))
-			if err := convergeMySQLTelemetrySchema(ctx, conn); err != nil {
+			if err := convergeMySQLTelemetrySchema(ctx, conn, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
@@ -175,7 +175,7 @@ func TestConvergeMySQLTelemetrySchemaDoesNotAdvanceIncompleteSchema(t *testing.T
 	column := mysqlTelemetryQueryLogColumns[0]
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT`)).WithArgs(column.name).
 		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_TYPE", "IS_NULLABLE", "COLUMN_DEFAULT"}).AddRow("varchar(16)", "NO", ""))
-	if err := convergeMySQLTelemetrySchema(ctx, conn); err == nil {
+	if err := convergeMySQLTelemetrySchema(ctx, conn, nil); err == nil {
 		t.Fatal("incomplete schema advanced")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

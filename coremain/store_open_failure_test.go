@@ -25,16 +25,16 @@ func TestStoreOpenFailuresReturnNilInterfaces(t *testing.T) {
 		open func() (any, error)
 	}{
 		{"control mysql", func() (any, error) {
-			return openControlStore(ctx, &ControlConfig{Storage: StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: unreachableMySQL}}})
+			return openControlStore(ctx, &ControlConfig{Storage: StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: unreachableMySQL}}}, nil)
 		}},
 		{"control bbolt", func() (any, error) {
-			return openControlStore(ctx, &ControlConfig{Database: ""})
+			return openControlStore(ctx, &ControlConfig{Database: ""}, nil)
 		}},
 		{"telemetry mysql", func() (any, error) {
-			return openTelemetryStore(ctx, &ControlConfig{Storage: StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: unreachableMySQL}}})
+			return openTelemetryStore(ctx, &ControlConfig{Storage: StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: unreachableMySQL}}}, nil)
 		}},
 		{"telemetry bbolt", func() (any, error) {
-			return openTelemetryStore(ctx, &ControlConfig{StatsDatabase: unwritable})
+			return openTelemetryStore(ctx, &ControlConfig{StatsDatabase: unwritable}, nil)
 		}},
 	}
 	for _, c := range cases {

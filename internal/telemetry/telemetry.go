@@ -21,6 +21,7 @@ import (
 	"github.com/miekg/dns"
 	bolt "go.etcd.io/bbolt"
 	bolterrors "go.etcd.io/bbolt/errors"
+	"go.uber.org/zap"
 
 	"github.com/pmkol/mosdns-x/pkg/dnsutils"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
@@ -208,6 +209,7 @@ type Store struct {
 	closeErr            error
 	runErr              error
 	enqueueMu           sync.RWMutex
+	logger              *zap.Logger
 }
 
 func Open(opts Options) (*Store, error) {

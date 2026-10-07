@@ -85,7 +85,7 @@ func TestInitializeMySQLControlUpgradesV1Schema(t *testing.T) {
 	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -111,7 +111,7 @@ func TestInitializeMySQLControlUpgradesV2PolicySettings(t *testing.T) {
 	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -135,7 +135,7 @@ func TestInitializeMySQLControlUpgradesV3PublicLists(t *testing.T) {
 	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -164,7 +164,7 @@ func TestInitializeMySQLControlResumesV3UpgradeAfterAlter(t *testing.T) {
 	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_schema_migrations SET version=? WHERE component='control'`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -188,7 +188,7 @@ func TestInitializeMySQLControlConvergesSchemaWhenVersionRowIsMissing(t *testing
 	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_schema_migrations (component, version) VALUES ('control', ?)`)).WithArgs(mysqlControlSchemaVersion).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -262,7 +262,7 @@ func TestInitializeMySQLControlAddsAnswerFamilyWithoutVersionBump(t *testing.T) 
 	}
 	expectMySQLAdditivePolicyColumnsAdded(mock)
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -290,7 +290,7 @@ func TestInitializeMySQLControlSkipsExistingAnswerFamilyColumn(t *testing.T) {
 	}
 	mock.ExpectQuery(regexp.QuoteMeta(mysqlAdditivePolicyColumnsQuery())).WillReturnRows(existing)
 	mock.ExpectExec(regexp.QuoteMeta(`SELECT RELEASE_LOCK('mosdns_x_control_schema')`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := initializeMySQLControl(context.Background(), db); err != nil {
+	if err := initializeMySQLControl(context.Background(), db, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

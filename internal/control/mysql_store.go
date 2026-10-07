@@ -16,6 +16,9 @@ import (
 	"time"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
+	"go.uber.org/zap"
+
+	"github.com/pmkol/mosdns-x/internal/mysqlschema"
 )
 
 const (
@@ -39,6 +42,8 @@ type MySQLOptions struct {
 	ConnMaxLifetime  time.Duration
 	OperationTimeout time.Duration
 	Clock            Clock
+	// Logger reports schema upgrades. Nil discards them.
+	Logger *zap.Logger
 }
 
 type MySQLStore struct {
@@ -295,14 +300,28 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*MySQLStore, e
 		_ = db.Close()
 		return nil, mysqlStoreError(err)
 	}
-	if err := initializeMySQLControl(ctx, db); err != nil {
+	if err := upgradeMySQLControl(parent, parsed, opts.Logger); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
+// upgradeMySQLControl brings the schema up to date on its own connection,
+// free of the DSN's read and write timeouts and bounded by
+// mysqlschema.Timeout instead of the startup timeout.
+func upgradeMySQLControl(parent context.Context, cfg *mysqlDriver.Config, logger *zap.Logger) error {
+	db, err := mysqlschema.Open(cfg)
+	if err != nil {
+		return mysqlStoreError(err)
+	}
+	defer db.Close()
+	ctx, cancel := mysqlschema.Context(parent)
+	defer cancel()
+	return initializeMySQLControl(ctx, db, logger)
+}
+
+func initializeMySQLControl(ctx context.Context, db *sql.DB, logger *zap.Logger) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return mysqlStoreError(err)
@@ -332,7 +351,7 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("%w: unsupported mysql control schema version %d", ErrUnavailable, version)
 	}
 	if err == nil && version == policyMySQLControlSchemaVersion {
-		if migrationErr := ensureMySQLControlV3Columns(ctx, conn); migrationErr != nil {
+		if migrationErr := ensureMySQLControlV3Columns(ctx, conn, logger); migrationErr != nil {
 			return mysqlStoreError(migrationErr)
 		}
 	}
@@ -342,7 +361,7 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	if errors.Is(err, sql.ErrNoRows) || version < publicListV5MySQLSchemaVersion {
-		if migrationErr := ensureMySQLControlV5PublicListColumns(ctx, conn); migrationErr != nil {
+		if migrationErr := ensureMySQLControlV5PublicListColumns(ctx, conn, logger); migrationErr != nil {
 			return mysqlStoreError(migrationErr)
 		}
 		if _, migrationErr := conn.ExecContext(ctx, `UPDATE mosdns_public_lists SET default_enabled=enabled, published=TRUE, snapshot_status=IF(last_refresh_status='success','current',IF(entry_count>0,'stale','missing')), snapshot_sha256='', last_successful_at_ns=IF(last_refresh_status='success',last_refreshed_at_ns,NULL)`); migrationErr != nil {
@@ -353,7 +372,7 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 	// start instead of behind a version bump. An older binary names its
 	// columns in every statement and never reads them, so it can still open
 	// this database, which keeps rolling back the binary possible.
-	if migrationErr := ensureMySQLAdditivePolicyColumns(ctx, conn); migrationErr != nil {
+	if migrationErr := ensureMySQLAdditivePolicyColumns(ctx, conn, logger); migrationErr != nil {
 		return mysqlStoreError(migrationErr)
 	}
 	switch {
@@ -368,7 +387,7 @@ func initializeMySQLControl(ctx context.Context, db *sql.DB) error {
 	}
 }
 
-func ensureMySQLControlV5PublicListColumns(ctx context.Context, conn *sql.Conn) error {
+func ensureMySQLControlV5PublicListColumns(ctx context.Context, conn *sql.Conn, logger *zap.Logger) error {
 	rows, err := conn.QueryContext(ctx, mysqlControlV5PublicListColumnsQuery)
 	if err != nil {
 		return err
@@ -392,8 +411,7 @@ func ensureMySQLControlV5PublicListColumns(ctx context.Context, conn *sql.Conn) 
 	if migration == "" {
 		return nil
 	}
-	_, err = conn.ExecContext(ctx, migration)
-	return err
+	return mysqlschema.Exec(ctx, conn, logger, "mosdns_public_lists", migration)
 }
 
 func mysqlControlV5PublicListAlter(existing map[string]struct{}) string {
@@ -409,7 +427,7 @@ func mysqlControlV5PublicListAlter(existing map[string]struct{}) string {
 	return `ALTER TABLE mosdns_public_lists ` + strings.Join(missing, ", ")
 }
 
-func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn) error {
+func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn, logger *zap.Logger) error {
 	rows, err := conn.QueryContext(ctx, mysqlControlV3ColumnsQuery)
 	if err != nil {
 		return err
@@ -433,8 +451,7 @@ func ensureMySQLControlV3Columns(ctx context.Context, conn *sql.Conn) error {
 	if migration == "" {
 		return nil
 	}
-	_, err = conn.ExecContext(ctx, migration)
-	return err
+	return mysqlschema.Exec(ctx, conn, logger, "mosdns_dns_policy_settings", migration)
 }
 
 // mysqlAdditivePolicyColumns are per-user settings added after schema v5.
@@ -482,7 +499,7 @@ func mysqlAdditivePolicyAlter(existing map[string]struct{}) string {
 // in one ALTER. It reads the live column list, so a table that already has
 // them, including one created fresh or upgraded earlier, is left untouched.
 // It runs under the schema lock, so concurrent starts cannot both alter.
-func ensureMySQLAdditivePolicyColumns(ctx context.Context, conn *sql.Conn) error {
+func ensureMySQLAdditivePolicyColumns(ctx context.Context, conn *sql.Conn, logger *zap.Logger) error {
 	rows, err := conn.QueryContext(ctx, mysqlAdditivePolicyColumnsQuery())
 	if err != nil {
 		return err
@@ -506,8 +523,7 @@ func ensureMySQLAdditivePolicyColumns(ctx context.Context, conn *sql.Conn) error
 	if migration == "" {
 		return nil
 	}
-	_, err = conn.ExecContext(ctx, migration)
-	return err
+	return mysqlschema.Exec(ctx, conn, logger, "mosdns_dns_policy_settings", migration)
 }
 
 func mysqlControlV3Alter(existing map[string]struct{}) string {

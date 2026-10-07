@@ -134,7 +134,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		}
 		m.trustedProxies = trustedProxies
 		m.controlCfg = cfg.Control
-		m.control, err = openControlStore(ctx, cfg.Control)
+		m.control, err = openControlStore(ctx, cfg.Control, m.logger)
 		if err != nil {
 			return fmt.Errorf("failed to open control database: %w", err)
 		}
@@ -145,7 +145,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if !ready {
 			return errors.New("control database has no enabled administrator; run control init-admin first")
 		}
-		m.telemetry, err = openTelemetryStore(ctx, cfg.Control)
+		m.telemetry, err = openTelemetryStore(ctx, cfg.Control, m.logger)
 		if err != nil {
 			return fmt.Errorf("failed to open telemetry database: %w", err)
 		}

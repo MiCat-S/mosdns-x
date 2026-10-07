@@ -31,10 +31,10 @@ func TestStorageStartupHonorsCancellation(t *testing.T) {
 	for _, driver := range []string{"bbolt", "mysql"} {
 		t.Run(driver, func(t *testing.T) {
 			c := &ControlConfig{Storage: StorageConfig{Driver: driver}, Telemetry: TelemetryConfig{Driver: driver}}
-			if _, err := openControlStore(ctx, c); !errors.Is(err, context.Canceled) {
+			if _, err := openControlStore(ctx, c, nil); !errors.Is(err, context.Canceled) {
 				t.Fatalf("control startup=%v", err)
 			}
-			if _, err := openTelemetryStore(ctx, c); !errors.Is(err, context.Canceled) {
+			if _, err := openTelemetryStore(ctx, c, nil); !errors.Is(err, context.Canceled) {
 				t.Fatalf("telemetry startup=%v", err)
 			}
 		})
@@ -150,7 +150,7 @@ func TestHealthScanLimitFromYAMLToStore(t *testing.T) {
 				t.Fatalf("scan budget not decoded: %+v", cfg.Control)
 			}
 			ctx := context.Background()
-			store, err := openControlStore(ctx, cfg.Control)
+			store, err := openControlStore(ctx, cfg.Control, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
@@ -197,7 +199,7 @@ func mysqlDurations(c MySQLConfig) (time.Duration, time.Duration) {
 	return time.Duration(c.ConnMaxLifetimeSec) * time.Second, time.Duration(c.OperationTimeoutMS) * time.Millisecond
 }
 
-func openControlStore(ctx context.Context, c *ControlConfig) (control.Service, error) {
+func openControlStore(ctx context.Context, c *ControlConfig, logger *zap.Logger) (control.Service, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -219,14 +221,14 @@ func openControlStore(ctx context.Context, c *ControlConfig) (control.Service, e
 		return store, nil
 	}
 	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
-	store, err := control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout})
+	store, err := control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, Logger: logger})
 	if err != nil {
 		return nil, err
 	}
 	return store, nil
 }
 
-func openTelemetryStore(ctx context.Context, c *ControlConfig) (telemetry.Service, error) {
+func openTelemetryStore(ctx context.Context, c *ControlConfig, logger *zap.Logger) (telemetry.Service, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -241,7 +243,7 @@ func openTelemetryStore(ctx context.Context, c *ControlConfig) (telemetry.Servic
 	}
 	mysqlCfg := effectiveTelemetryMySQL(c)
 	lifetime, timeout := mysqlDurations(mysqlCfg)
-	store, err := telemetry.OpenMySQLContext(ctx, telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords})
+	store, err := telemetry.OpenMySQLContext(ctx, telemetry.MySQLOptions{DSN: mysqlCfg.DSN, MaxOpenConns: mysqlCfg.MaxOpenConns, MaxIdleConns: mysqlCfg.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, QueueSize: c.Telemetry.QueueSize, BatchSize: c.Telemetry.BatchSize, FlushInterval: time.Duration(c.Telemetry.FlushIntervalMS) * time.Millisecond, QueryLogEnabled: c.QueryLog, AggregateRetention: settings.AggregateRetention, QueryRetention: settings.QueryRetention, MaxQueryRecords: settings.MaxQueryRecords, Logger: logger})
 	if err != nil {
 		return nil, err
 	}
