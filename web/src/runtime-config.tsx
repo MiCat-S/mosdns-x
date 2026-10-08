@@ -13,6 +13,14 @@ import {
   useUnsavedGuard,
 } from "./components";
 import { msg, t } from "./i18n";
+import {
+  parseProxyLink,
+  proxyDraftError,
+  proxyTypeNames,
+  shadowsocksMethods,
+  updateProxy,
+  validProxyServer,
+} from "./proxy";
 import type {
   RuntimeApplyResult,
   RuntimeCache,
@@ -20,6 +28,7 @@ import type {
   RuntimeFastForward,
   RuntimePlugin,
   RuntimeProbe,
+  RuntimeProxy,
   RuntimeReloadResult,
   RuntimeRevision,
   RuntimeState,
@@ -61,6 +70,17 @@ function runtimeDraftError(config: RuntimeConfig) {
     )
   )
     return t("上游地址不能为空，请检查标记的字段。");
+  if (
+    config.plugins.some(
+      (plugin) =>
+        plugin.editable &&
+        plugin.fast_forward?.upstreams.some(
+          (upstream) =>
+            upstream.proxy && proxyDraftError(upstream.proxy, upstream.addr),
+        ),
+    )
+  )
+    return t("请先修正标记的代理设置。");
   return "";
 }
 
@@ -137,6 +157,217 @@ function RuntimeSwitch({
   );
 }
 
+function RuntimeProxyEditor({
+  proxy,
+  addr,
+  index,
+  disabled,
+  onChange,
+}: {
+  proxy?: RuntimeProxy;
+  addr: string;
+  index: number;
+  disabled: boolean;
+  onChange: (proxy: RuntimeProxy | undefined) => void;
+}) {
+  const [link, setLink] = useState("");
+  const [linkError, setLinkError] = useState("");
+  const number = index + 1;
+  const problem = proxy ? proxyDraftError(proxy, addr) : "";
+  // Show the problem under the field it is about.
+  const typeProblem =
+    problem && /^udpme:\/\//i.test(addr.trim()) ? problem : "";
+  const serverProblem =
+    !typeProblem && proxy && !validProxyServer(proxy.server.trim())
+      ? problem
+      : "";
+  const secretProblem = typeProblem || serverProblem ? "" : problem;
+  const update = (patch: Partial<RuntimeProxy>) => {
+    if (proxy) onChange(updateProxy(proxy, patch));
+  };
+  const changeType = (value: string) => {
+    if (value !== "shadowsocks" && value !== "socks5") {
+      onChange(undefined);
+      return;
+    }
+    const base: RuntimeProxy = proxy ?? { type: value, server: "" };
+    onChange(
+      updateProxy(base, {
+        type: value,
+        method:
+          value === "shadowsocks"
+            ? (proxy?.method ?? shadowsocksMethods[0])
+            : undefined,
+        username: value === "socks5" ? proxy?.username : undefined,
+        password: undefined,
+      }),
+    );
+  };
+  const importLink = () => {
+    const parsed = parseProxyLink(link);
+    if (!parsed) {
+      setLinkError(
+        t(
+          "无法识别该链接。支持 ss:// 与 socks5:// 链接，加密方式需为 2022 或 AEAD。",
+        ),
+      );
+      return;
+    }
+    onChange(parsed);
+    setLink("");
+    setLinkError("");
+  };
+  const savedHint = t("已保存；留空则保持不变，填写则替换。");
+  return (
+    <details className="runtime-proxy" open={proxy ? true : undefined}>
+      <summary>
+        {t("代理")}
+        <span className="runtime-proxy-summary">
+          {proxy
+            ? `${proxyTypeNames[proxy.type]} · ${proxy.server || t("未填写服务器")}`
+            : t("不使用")}
+        </span>
+      </summary>
+      <div className="runtime-proxy-import">
+        <Field
+          label={t("从链接导入")}
+          hint={
+            linkError ||
+            t("支持 ss:// 与 socks5:// 链接，在浏览器中解析后填入下方字段。")
+          }
+        >
+          <input
+            aria-label={t("上游 {index} 代理链接", { index: number })}
+            value={link}
+            disabled={disabled}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="ss://…"
+            aria-invalid={linkError ? true : undefined}
+            onChange={(event) => {
+              setLink(event.target.value);
+              setLinkError("");
+            }}
+          />
+        </Field>
+        <button
+          type="button"
+          disabled={disabled || !link.trim()}
+          onClick={importLink}
+        >
+          {t("导入")}
+        </button>
+      </div>
+      <div className="form-grid">
+        <Field label={t("代理类型")} hint={typeProblem || undefined}>
+          <select
+            aria-label={t("上游 {index} 代理类型", { index: number })}
+            value={proxy?.type ?? ""}
+            disabled={disabled}
+            aria-invalid={typeProblem ? true : undefined}
+            onChange={(event) => changeType(event.target.value)}
+          >
+            <option value="">{t("不使用代理")}</option>
+            <option value="shadowsocks">Shadowsocks</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+        </Field>
+        {proxy ? (
+          <Field label={t("代理服务器")} hint={serverProblem || t("主机:端口")}>
+            <input
+              aria-label={t("上游 {index} 代理服务器", { index: number })}
+              value={proxy.server}
+              disabled={disabled}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="hk.example.net:8388"
+              aria-invalid={serverProblem ? true : undefined}
+              onChange={(event) => update({ server: event.target.value })}
+            />
+          </Field>
+        ) : null}
+        {proxy?.type === "shadowsocks" ? (
+          <>
+            <Field label={t("加密方式")}>
+              <select
+                aria-label={t("上游 {index} 加密方式", { index: number })}
+                value={proxy.method ?? ""}
+                disabled={disabled}
+                onChange={(event) => update({ method: event.target.value })}
+              >
+                {shadowsocksMethods.map((method) => (
+                  <option key={method} value={method}>
+                    {method}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field
+              label={t("密钥")}
+              hint={
+                secretProblem ||
+                (proxy.password_set
+                  ? savedHint
+                  : t("2022 加密方式填写 Base64 密钥，其他方式填写密码。"))
+              }
+            >
+              <input
+                type="password"
+                aria-label={t("上游 {index} 代理密钥", { index: number })}
+                value={proxy.password ?? ""}
+                disabled={disabled}
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder={proxy.password_set ? t("已保存") : ""}
+                aria-invalid={secretProblem ? true : undefined}
+                onChange={(event) =>
+                  update({ password: event.target.value || undefined })
+                }
+              />
+            </Field>
+          </>
+        ) : null}
+        {proxy?.type === "socks5" ? (
+          <>
+            <Field label={t("用户名")} hint={t("可选")}>
+              <input
+                aria-label={t("上游 {index} 代理用户名", { index: number })}
+                value={proxy.username ?? ""}
+                disabled={disabled}
+                autoComplete="off"
+                onChange={(event) =>
+                  update({ username: event.target.value || undefined })
+                }
+              />
+            </Field>
+            <Field
+              label={t("密码")}
+              hint={proxy.password_set ? savedHint : t("可选")}
+            >
+              <input
+                type="password"
+                aria-label={t("上游 {index} 代理密码", { index: number })}
+                value={proxy.password ?? ""}
+                disabled={disabled}
+                autoComplete="new-password"
+                placeholder={proxy.password_set ? t("已保存") : ""}
+                onChange={(event) =>
+                  update({ password: event.target.value || undefined })
+                }
+              />
+            </Field>
+          </>
+        ) : null}
+      </div>
+      <p className="caption">
+        {t(
+          "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。",
+        )}
+      </p>
+    </details>
+  );
+}
+
 function RuntimeUpstreamEditor({
   upstream,
   index,
@@ -196,6 +427,13 @@ function RuntimeUpstreamEditor({
           {t("删除")}
         </button>
       </div>
+      <RuntimeProxyEditor
+        proxy={upstream.proxy}
+        addr={upstream.addr}
+        index={index}
+        disabled={disabled}
+        onChange={(proxy) => update("proxy", proxy)}
+      />
       <details>
         <summary>{t("高级连接选项")}</summary>
         <div className="form-grid">

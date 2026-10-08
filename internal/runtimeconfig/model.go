@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/pmkol/mosdns-x/pkg/upstream/dialer"
 	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 )
 
@@ -55,6 +56,11 @@ type Upstream struct {
 	Insecure       bool   `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 	KernelTX       bool   `json:"kernel_tx,omitempty" yaml:"kernel_tx,omitempty"`
 	KernelRX       bool   `json:"kernel_rx,omitempty" yaml:"kernel_rx,omitempty"`
+	// Proxy is the upstream's ss:// or socks5:// URL, secret included. It
+	// lives in the managed file and plugin args and is never encoded to
+	// JSON; the panel reads and writes ProxySettings instead (proxy.go).
+	Proxy         string         `json:"-" yaml:"proxy,omitempty"`
+	ProxySettings *ProxySettings `json:"proxy,omitempty" yaml:"-"`
 }
 
 type Cache struct {
@@ -101,7 +107,6 @@ type forwardUpstream struct {
 	Socks5     string `yaml:"socks5"`
 	S5Username string `yaml:"s5_username"`
 	S5Password string `yaml:"s5_password"`
-	Proxy      string `yaml:"proxy"`
 }
 
 type cacheArgs struct {
@@ -195,6 +200,18 @@ func Validate(config Config) error {
 				if !upstreamtrace.ValidLabel(upstream.Label) {
 					return fmt.Errorf("plugin %q upstream #%d label must be at most %d characters without control characters", plugin.Tag, j, upstreamtrace.MaxLabel)
 				}
+				if upstream.ProxySettings != nil {
+					return fmt.Errorf("plugin %q upstream #%d proxy settings were not resolved", plugin.Tag, j)
+				}
+				if upstream.Proxy != "" && strings.HasPrefix(strings.TrimSpace(upstream.Addr), "udpme://") {
+					return fmt.Errorf("plugin %q upstream #%d: udpme upstreams cannot use a proxy", plugin.Tag, j)
+				}
+				if upstream.Proxy != "" {
+					// Errors from the proxy parser never quote the URL.
+					if err := dialer.ValidateProxyURL(upstream.Proxy); err != nil {
+						return fmt.Errorf("plugin %q upstream #%d proxy: %w", plugin.Tag, j, err)
+					}
+				}
 			}
 		case "cache":
 			if plugin.Cache == nil || plugin.FastForward != nil {
@@ -252,7 +269,10 @@ func Apply(sources []PluginSource, desired Config) ([]PluginSource, error) {
 			continue
 		}
 		if !plugin.Editable {
-			return nil, fmt.Errorf("editable plugin %q cannot be changed to read-only", plugin.Tag)
+			// A managed file written while this plugin was read-only (for
+			// example before proxies became editable) holds nothing for it:
+			// keep the source configuration.
+			continue
 		}
 		overrides[plugin.Tag] = plugin
 	}
@@ -355,10 +375,27 @@ func inspectFastForward(args any) (*FastForward, error) {
 	}
 	forward := &FastForward{Upstreams: make([]Upstream, 0, len(decoded.Upstream))}
 	for _, upstream := range decoded.Upstream {
-		if upstream.Socks5 != "" || upstream.S5Username != "" || upstream.S5Password != "" || upstream.Proxy != "" ||
-			hasURLCredentials(upstream.Addr) || hasURLCredentials(upstream.DialAddr) || hasURLCredentials(upstream.Bootstrap) {
+		if hasURLCredentials(upstream.Addr) || hasURLCredentials(upstream.DialAddr) || hasURLCredentials(upstream.Bootstrap) {
 			return nil, errSensitiveArgs
 		}
+		// The legacy socks5 fields become the same proxy URL the panel
+		// edits; writing the plugin back stores them as "proxy".
+		switch {
+		case upstream.Socks5 != "" && upstream.Proxy != "":
+			return nil, errUnknownArgs
+		case upstream.Socks5 != "":
+			upstream.Proxy = dialer.ProxySpec{
+				Type: dialer.ProxySocks5, Server: upstream.Socks5,
+				Username: upstream.S5Username, Password: upstream.S5Password,
+			}.URL()
+		case upstream.S5Username != "" || upstream.S5Password != "":
+			return nil, errUnknownArgs
+		}
+		if upstream.Proxy != "" && (dialer.ValidateProxyURL(upstream.Proxy) != nil ||
+			strings.HasPrefix(strings.TrimSpace(upstream.Addr), "udpme://")) {
+			return nil, errUnknownArgs
+		}
+		upstream.ProxySettings = nil
 		forward.Upstreams = append(forward.Upstreams, upstream.Upstream)
 	}
 	return forward, nil

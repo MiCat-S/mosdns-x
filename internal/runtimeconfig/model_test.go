@@ -148,23 +148,6 @@ func TestSnapshotRedactsSecretsWithoutChangingManagedConfig(t *testing.T) {
 	}
 }
 
-func TestInspectKeepsProxiedUpstreamsReadOnly(t *testing.T) {
-	config, err := Inspect(false, validTelemetry(), []PluginSource{{
-		Tag: "forward", Type: "fast_forward", Args: map[string]any{
-			"upstream": []any{map[string]any{
-				"addr": "udp://192.0.2.1", "proxy": "ss://2022-blake3-aes-128-gcm:secret@203.0.113.8:8388",
-			}},
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plugin := config.Plugins[0]
-	if plugin.Editable || plugin.FastForward != nil || plugin.ReadOnlyReason != "sensitive_parameters" {
-		t.Fatalf("proxied upstream must stay read-only: %+v", plugin)
-	}
-}
-
 func TestInspectKeepsURLQueryCredentialsOutOfWritableConfig(t *testing.T) {
 	config, err := Inspect(false, validTelemetry(), []PluginSource{{
 		Tag: "forward", Type: "fast_forward", Args: map[string]any{

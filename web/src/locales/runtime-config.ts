@@ -172,6 +172,37 @@ export const en: Record<string, string> = {
   查看安全摘要: "View safe summary",
   只读插件: "Read-only plugins",
   当前配置没有只读插件: "The current config has no read-only plugins",
+  "请先修正标记的代理设置。": "Fix the marked proxy settings first.",
+  "无法识别该链接。支持 ss:// 与 socks5:// 链接，加密方式需为 2022 或 AEAD。":
+    "This link wasn't recognized. ss:// and socks5:// links are supported, with a 2022 or AEAD cipher.",
+  "已保存；留空则保持不变，填写则替换。":
+    "Saved. Leave empty to keep it, or enter a new one to replace it.",
+  代理: "Proxy",
+  未填写服务器: "no server yet",
+  不使用: "Not used",
+  从链接导入: "Import from link",
+  "支持 ss:// 与 socks5:// 链接，在浏览器中解析后填入下方字段。":
+    "Accepts ss:// and socks5:// links. The link is parsed in your browser and fills in the fields below.",
+  "上游 {index} 代理链接": "Upstream {index} proxy link",
+  导入: "Import",
+  代理类型: "Proxy type",
+  "上游 {index} 代理类型": "Upstream {index} proxy type",
+  不使用代理: "No proxy",
+  代理服务器: "Proxy server",
+  "主机:端口": "host:port",
+  "上游 {index} 代理服务器": "Upstream {index} proxy server",
+  加密方式: "Cipher",
+  "上游 {index} 加密方式": "Upstream {index} cipher",
+  密钥: "Key",
+  "2022 加密方式填写 Base64 密钥，其他方式填写密码。":
+    "2022 ciphers take a Base64 key; other ciphers take a password.",
+  "上游 {index} 代理密钥": "Upstream {index} proxy key",
+  已保存: "Saved",
+  可选: "Optional",
+  "上游 {index} 代理用户名": "Upstream {index} proxy username",
+  "上游 {index} 代理密码": "Upstream {index} proxy password",
+  "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。":
+    "Both TCP and UDP queries go through the proxy; UDP, DoQ and DoH3 upstreams need a proxy server that relays UDP. The key is stored only on the server and is not shown again after saving.",
 };
 
 export const ja: Record<string, string> = {
@@ -351,4 +382,36 @@ export const ja: Record<string, string> = {
   查看安全摘要: "安全な概要を表示",
   只读插件: "読み取り専用プラグイン",
   当前配置没有只读插件: "現在の設定に読み取り専用プラグインはありません",
+  "请先修正标记的代理设置。":
+    "先に、マークされたプロキシ設定を修正してください。",
+  "无法识别该链接。支持 ss:// 与 socks5:// 链接，加密方式需为 2022 或 AEAD。":
+    "このリンクを認識できません。ss:// と socks5:// のリンクに対応しており、暗号方式は 2022 または AEAD である必要があります。",
+  "已保存；留空则保持不变，填写则替换。":
+    "保存済みです。空欄のままなら変更せず、入力すると置き換えます。",
+  代理: "プロキシ",
+  未填写服务器: "サーバー未入力",
+  不使用: "使用しない",
+  从链接导入: "リンクから読み込む",
+  "支持 ss:// 与 socks5:// 链接，在浏览器中解析后填入下方字段。":
+    "ss:// と socks5:// のリンクに対応しています。リンクはブラウザー内で解析され、下の項目に入力されます。",
+  "上游 {index} 代理链接": "アップストリーム {index} のプロキシリンク",
+  导入: "読み込む",
+  代理类型: "プロキシの種類",
+  "上游 {index} 代理类型": "アップストリーム {index} のプロキシの種類",
+  不使用代理: "プロキシを使用しない",
+  代理服务器: "プロキシサーバー",
+  "主机:端口": "ホスト:ポート",
+  "上游 {index} 代理服务器": "アップストリーム {index} のプロキシサーバー",
+  加密方式: "暗号方式",
+  "上游 {index} 加密方式": "アップストリーム {index} の暗号方式",
+  密钥: "キー",
+  "2022 加密方式填写 Base64 密钥，其他方式填写密码。":
+    "2022 暗号方式では Base64 のキーを、その他の方式ではパスワードを入力します。",
+  "上游 {index} 代理密钥": "アップストリーム {index} のプロキシキー",
+  已保存: "保存済み",
+  可选: "任意",
+  "上游 {index} 代理用户名": "アップストリーム {index} のプロキシユーザー名",
+  "上游 {index} 代理密码": "アップストリーム {index} のプロキシパスワード",
+  "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。":
+    "TCP と UDP のクエリはどちらもプロキシ経由で転送されます。UDP・DoQ・DoH3 のアップストリームには UDP を中継できるプロキシサーバーが必要です。キーはサーバーにのみ保存され、保存後はパネルに表示されません。",
 };

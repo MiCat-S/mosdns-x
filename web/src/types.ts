@@ -112,6 +112,18 @@ export interface RuntimeUpstream {
   insecure?: boolean;
   kernel_tx?: boolean;
   kernel_rx?: boolean;
+  proxy?: RuntimeProxy;
+}
+// An upstream's proxy as the server shows it: the key or password is never
+// sent back (password_set says one is saved); leaving password empty keeps
+// the saved one for the same type, server, method and username.
+export interface RuntimeProxy {
+  type: "shadowsocks" | "socks5";
+  server: string;
+  method?: string;
+  username?: string;
+  password?: string;
+  password_set?: boolean;
 }
 export interface RuntimeFastForward {
   upstreams: RuntimeUpstream[];

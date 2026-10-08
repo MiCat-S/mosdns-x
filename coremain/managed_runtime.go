@@ -142,6 +142,12 @@ func (s *ManagedRuntimeService) Validate(ctx context.Context, sessionID, expecte
 	if expectedRevision != s.revision {
 		return ManagedRuntimeValidation{}, runtimeconfig.ErrRevisionConflict
 	}
+	// The panel sends proxy settings with write-only secrets; turn them
+	// into URLs, keeping saved secrets, before anything else sees them.
+	desired, err := runtimeconfig.ResolveProxies(s.view, desired)
+	if err != nil {
+		return ManagedRuntimeValidation{}, err
+	}
 	effective, _, err := s.prepareCandidateLocked(desired)
 	if err != nil {
 		return ManagedRuntimeValidation{}, err
@@ -330,7 +336,7 @@ func (s *ManagedRuntimeService) Probe(ctx context.Context, tag string) ([]Runtim
 		} else {
 			var client upstream.Upstream
 			client, err = upstream.NewUpstream(config.Addr, &upstream.Opt{
-				DialAddr: config.DialAddr, SoMark: config.SoMark, BindToDevice: config.BindToDevice,
+				DialAddr: config.DialAddr, Proxy: config.Proxy, SoMark: config.SoMark, BindToDevice: config.BindToDevice,
 				IdleTimeout: time.Duration(config.IdleTimeout) * time.Second, MaxConns: config.MaxConns,
 				EnablePipeline: config.EnablePipeline, Bootstrap: config.Bootstrap, Insecure: config.Insecure,
 				RootCAs: rootCAs, KernelTX: config.KernelTX, KernelRX: config.KernelRX, Logger: s.host.logger,
@@ -550,7 +556,7 @@ func (s *ManagedRuntimeService) stateLocked() (ManagedRuntimeState, error) {
 		capabilities.Probe = hasSafeManagedForward(view)
 	}
 	return ManagedRuntimeState{
-		Revision: s.revision, Config: view, Mode: mode, Setup: setup, Capabilities: capabilities,
+		Revision: s.revision, Config: runtimeconfig.PublicView(view), Mode: mode, Setup: setup, Capabilities: capabilities,
 		Sources: runtimeconfig.Sources{
 			Running: running,
 			Base:    base,

@@ -3,6 +3,7 @@ import * as app from "./app";
 import * as components from "./components";
 import * as healthPanel from "./health-panel";
 import * as pages from "./pages";
+import * as proxy from "./proxy";
 import * as queryTrace from "./query-trace";
 import * as runtimeConfig from "./runtime-config";
 import * as shell from "./shell";
@@ -17,6 +18,7 @@ export const localeParts = {
   components,
   "health-panel": healthPanel,
   pages,
+  proxy,
   "query-trace": queryTrace,
   "runtime-config": runtimeConfig,
   shell,

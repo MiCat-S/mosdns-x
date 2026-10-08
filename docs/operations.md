@@ -117,7 +117,7 @@ control:
 - 没有 Redis 后端的 `cache` 插件的大小、懒缓存 TTL、应答 TTL 与压缩开关；
 - `query_log` 和 `control.telemetry` 的三项保留策略。
 
-其他插件，含有未知参数或敏感参数的上游，以及 Redis 缓存均显示为只读，响应中也不会返回其参数。托管文件不能新增、删除、重排插件，不能改变数据提供者、日志、监听器、TLS、API、安全配置或控制存储。需要这些变更时编辑主配置并执行 `systemctl restart mosdns`。
+其他插件，含有未知参数或地址里带凭据的上游，以及 Redis 缓存均显示为只读，响应中也不会返回其参数。经 Shadowsocks 或 SOCKS5 代理的上游可以编辑，但代理密钥只写不读，见[服务配置](service-config.md#经代理连接上游proxy)。托管文件不能新增、删除、重排插件，不能改变数据提供者、日志、监听器、TLS、API、安全配置或控制存储。需要这些变更时编辑主配置并执行 `systemctl restart mosdns`。
 
 ### 热重载和回滚
 

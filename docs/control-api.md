@@ -93,7 +93,7 @@
 | POST | `/admin/runtime/upstreams/{tag}/probe` | 每个上游的安全标识、耗时、RCODE 和成功状态 |
 | GET | `/admin/data-providers` | 主配置数据源声明、文件状态和可用的运行状态；未知值为 `null` 或 `unsupported` |
 
-安全视图只包含不含敏感参数的 `fast_forward`、非 Redis 内存缓存、`query_log` 和统计保留策略。应用前完整构建候选运行代；失败时当前运行代保持不变。成功后所有入口一次切换，旧运行代等待在途请求和后台上游工作完成再关闭。修改任何需要重建运行代的配置且当前存在内存缓存时，验证结果会提示缓存清空。
+安全视图只包含 `fast_forward` 上游、非 Redis 内存缓存、`query_log` 和统计保留策略；地址里带凭据的上游仍为只读。上游代理以 `proxy` 对象表示：`{type, server, method?, username?, password?, password_set?}`，其中 `type` 为 `shadowsocks` 或 `socks5`。响应从不包含 `password`，只用 `password_set: true` 表示已保存密钥；验证请求中 `password` 为空时沿用代理类型、服务器、加密方式和用户名都相同的已保存密钥，否则必须提供新密钥。应用前完整构建候选运行代；失败时当前运行代保持不变。成功后所有入口一次切换，旧运行代等待在途请求和后台上游工作完成再关闭。修改任何需要重建运行代的配置且当前存在内存缓存时，验证结果会提示缓存清空。
 
 ## 受理与兼容边界
 

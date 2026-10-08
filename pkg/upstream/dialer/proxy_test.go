@@ -48,8 +48,10 @@ func TestParseShadowsocksURLRejects(t *testing.T) {
 		"ss://aes-128-gcm:@192.0.2.1:8388",                                  // no password
 		"ss://aes-128-gcm:" + secret + "@192.0.2.1:8388/?plugin=obfs-local", // plugin
 		"ss://%%%" + secret,
+		"ss://" + secret + ":aes-128-gcm@192.0.2.1:8388", // method and password swapped
+		secret + "://192.0.2.1:8388",                     // secret in the scheme
 	} {
-		_, err := ParseShadowsocksURL(raw)
+		_, err := ParseProxyURL(raw)
 		if err == nil {
 			t.Fatalf("%q was accepted", raw)
 		}
@@ -81,5 +83,25 @@ func TestNewDialerProxy(t *testing.T) {
 	_, err = NewDialer(DialerOpts{Dialer: base, Proxy: "ss://2022-blake3-aes-256-gcm:c2hvcnQta2V5@127.0.0.1:1"})
 	if err == nil || strings.Contains(err.Error(), "c2hvcnQta2V5") {
 		t.Fatalf("short 2022 key: %v", err)
+	}
+}
+
+func TestProxySpecRoundTrip(t *testing.T) {
+	for _, spec := range []ProxySpec{
+		{Type: ProxyShadowsocks, Server: "hk.example.net:8388", Method: "2022-blake3-aes-128-gcm", Password: "AAECAwQFBgcICQoLDA0ODw=="},
+		{Type: ProxyShadowsocks, Server: "[2001:db8::1]:443", Method: "aes-256-gcm", Password: "p:a/s+s@w=rd"},
+		{Type: ProxySocks5, Server: "127.0.0.1:1080", Username: "u@x", Password: "p:w"},
+		{Type: ProxySocks5, Server: "proxy.example:1080"},
+	} {
+		got, err := ParseProxyURL(spec.URL())
+		if err != nil {
+			t.Fatalf("%+v: %v", spec, err)
+		}
+		if got != spec {
+			t.Fatalf("round trip of %+v gave %+v", spec, got)
+		}
+		if err := ValidateProxyURL(spec.URL()); err != nil {
+			t.Fatalf("%+v: %v", spec, err)
+		}
 	}
 }

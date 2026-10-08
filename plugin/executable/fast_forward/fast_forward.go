@@ -117,6 +117,10 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 		}
 
 		if strings.HasPrefix(c.Addr, "udpme://") {
+			// udpme dials by itself and would silently bypass a proxy.
+			if c.Proxy != "" || c.Socks5 != "" {
+				return nil, fmt.Errorf("upstream #%d: udpme upstreams cannot use a proxy", i)
+			}
 			u := newUDPME(c.Addr[8:], c.Trusted)
 			u.observerID = fmt.Sprintf("%s/%d", bp.Tag(), i)
 			u.label = upstreamtrace.DisplayName(bp.Tag(), i, c.Addr, c.Label)

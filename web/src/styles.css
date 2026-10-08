@@ -1038,6 +1038,7 @@ tbody tr:last-child td {
 .field {
   display: grid;
   min-width: 0;
+  align-content: start; /* a taller neighbour must not stretch the control */
   gap: var(--sp-2);
   margin-bottom: var(--sp-4);
 }
@@ -1945,6 +1946,33 @@ summary {
   margin-top: var(--sp-3);
   padding-top: var(--sp-3);
   border-top: 1px solid var(--line);
+}
+
+.runtime-proxy-summary {
+  margin-left: var(--sp-2);
+  color: var(--text-3);
+  font-weight: var(--w-regular);
+}
+
+/* Link import: field and button on one row, the button on the input line. */
+.runtime-proxy-import {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-3);
+  margin: var(--sp-3) 0;
+}
+
+.runtime-proxy-import .field {
+  margin: 0;
+}
+
+.runtime-proxy-import > button {
+  margin-top: calc(var(--text-sm) * var(--lh-snug) + var(--sp-2));
+}
+
+.runtime-proxy .caption {
+  margin: var(--sp-2) 0 0;
 }
 
 .runtime-switches {

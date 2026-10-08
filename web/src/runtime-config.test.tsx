@@ -150,6 +150,117 @@ describe("管理端运行配置", () => {
     ).toBeInTheDocument();
   });
 
+  it("在面板中编辑代理，已保存的密钥不回传、留空则沿用", async () => {
+    const proxied = {
+      ...config,
+      plugins: [
+        {
+          tag: "forward",
+          type: "fast_forward",
+          editable: true,
+          fast_forward: {
+            upstreams: [
+              {
+                addr: "https://dns.google/dns-query",
+                proxy: {
+                  type: "shadowsocks",
+                  server: "hk.example.net:8388",
+                  method: "2022-blake3-aes-128-gcm",
+                  password_set: true,
+                },
+              },
+              { addr: "udp://223.5.5.5" },
+            ],
+          },
+        },
+      ],
+    };
+    const fetcher = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/admin/runtime/history"))
+        return Promise.resolve(response({ items: [] }));
+      if (url.endsWith("/admin/runtime/config/validate"))
+        return Promise.resolve(
+          response({
+            token: "t",
+            expires_at: "2026-09-12T00:05:00Z",
+            revision: "current-revision",
+            will_clear_caches: false,
+          }),
+        );
+      if (url.endsWith("/admin/runtime/config"))
+        return Promise.resolve(
+          response({ revision: "current-revision", config: proxied }),
+        );
+      return Promise.reject(new Error(`unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    renderRuntime();
+
+    const server = await screen.findByRole("textbox", {
+      name: "上游 1 代理服务器",
+    });
+    expect(server).toHaveValue("hk.example.net:8388");
+    expect(screen.getByLabelText("上游 1 代理密钥")).toHaveValue("");
+    expect(screen.getByLabelText("上游 1 代理密钥")).toHaveAttribute(
+      "placeholder",
+      "已保存",
+    );
+    expect(screen.getByText("Shadowsocks · hk.example.net:8388")).toBeVisible();
+
+    // Import a link into the second upstream.
+    fireEvent.change(screen.getByLabelText("上游 2 代理链接"), {
+      target: { value: "socks5://u:p@127.0.0.1:1080" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "导入" })[1]);
+    expect(
+      screen.getByRole("textbox", { name: "上游 2 代理服务器" }),
+    ).toHaveValue("127.0.0.1:1080");
+
+    // Moving the first proxy to another server needs the key again.
+    fireEvent.change(server, { target: { value: "jp.example.net:8388" } });
+    fireEvent.click(screen.getByRole("button", { name: "验证修改" }));
+    expect(
+      await screen.findByText("请先修正标记的代理设置。"),
+    ).toBeInTheDocument();
+    expect(
+      fetcher.mock.calls.some(([url]) => String(url).endsWith("/validate")),
+    ).toBe(false);
+
+    fireEvent.change(server, { target: { value: "hk.example.net:8388" } });
+    fireEvent.change(screen.getByLabelText("上游 1 代理密钥"), {
+      target: { value: "AAECAwQFBgcICQoLDA0ODw==" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "验证修改" }));
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.some(([url]) => String(url).endsWith("/validate")),
+      ).toBe(true),
+    );
+    const body = JSON.parse(
+      String(
+        (
+          fetcher.mock.calls.find(([url]) =>
+            String(url).endsWith("/validate"),
+          )?.[1] as RequestInit
+        ).body,
+      ),
+    );
+    const upstreams = body.config.plugins[0].fast_forward.upstreams;
+    expect(upstreams[0].proxy).toEqual({
+      type: "shadowsocks",
+      server: "hk.example.net:8388",
+      method: "2022-blake3-aes-128-gcm",
+      password: "AAECAwQFBgcICQoLDA0ODw==",
+      password_set: false,
+    });
+    expect(upstreams[1].proxy).toEqual({
+      type: "socks5",
+      server: "127.0.0.1:1080",
+      username: "u",
+      password: "p",
+    });
+  });
+
   it("重读主配置、探测可编辑上游且不展示探测原始错误", async () => {
     const fetcher = vi
       .fn()

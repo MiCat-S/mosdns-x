@@ -58,7 +58,7 @@ func Snapshot(kind string, config Config, sources []PluginSource, providers []Da
 		providers = []DataProviderSummary{}
 	}
 	return ConfigSnapshot{
-		Kind: kind, Status: "available", Config: config, Plugins: plugins,
+		Kind: kind, Status: "available", Config: PublicView(config), Plugins: plugins,
 		DataProviders: providers, Components: components,
 	}, nil
 }

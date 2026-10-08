@@ -21,34 +21,93 @@ import (
 // Errors from this file never quote the proxy URL: it carries the
 // Shadowsocks key or SOCKS5 password.
 
-// newProxyDialer returns a dialer for an upstream "proxy" URL:
+// Proxy types in a ProxySpec.
+const (
+	ProxyShadowsocks = "shadowsocks"
+	ProxySocks5      = "socks5"
+)
+
+// ProxySpec is a parsed upstream "proxy" URL.
+type ProxySpec struct {
+	Type     string // ProxyShadowsocks or ProxySocks5
+	Server   string // host:port
+	Method   string // Shadowsocks cipher
+	Username string // SOCKS5
+	Password string // Shadowsocks key or SOCKS5 password
+}
+
+// ParseProxyURL accepts:
 //
 //	ss://METHOD:PASSWORD@HOST:PORT   SIP022 (password percent-encoded)
 //	ss://BASE64(METHOD:PASSWORD)@HOST:PORT   SIP002
 //	ss://BASE64(METHOD:PASSWORD@HOST:PORT)   legacy share link
 //	socks5://[USER:PASS@]HOST:PORT
-func newProxyDialer(dialer *net.Dialer, raw string) (Dialer, error) {
+func ParseProxyURL(raw string) (ProxySpec, error) {
 	scheme, _, ok := strings.Cut(raw, "://")
 	if !ok {
-		return nil, errors.New("proxy must be a URL such as ss://… or socks5://…")
+		return ProxySpec{}, errors.New("proxy must be a URL such as ss://… or socks5://…")
 	}
 	switch strings.ToLower(scheme) {
 	case "ss":
 		cfg, err := ParseShadowsocksURL(raw)
 		if err != nil {
-			return nil, err
+			return ProxySpec{}, err
 		}
-		return newShadowsocksDialer(dialer, cfg)
+		return ProxySpec{Type: ProxyShadowsocks, Server: cfg.Server, Method: cfg.Method, Password: cfg.Password}, nil
 	case "socks5", "socks5h":
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" {
-			return nil, errors.New("invalid socks5 proxy URL")
+			return ProxySpec{}, errors.New("invalid socks5 proxy URL")
+		}
+		if _, err := ParseSocksAddr(u.Host); err != nil {
+			return ProxySpec{}, errors.New("socks5 server must be host:port")
 		}
 		password, _ := u.User.Password()
-		return newSocksDialer(dialer, u.Host, u.User.Username(), password)
+		return ProxySpec{Type: ProxySocks5, Server: u.Host, Username: u.User.Username(), Password: password}, nil
 	default:
-		return nil, fmt.Errorf("unsupported proxy scheme %q; use ss:// or socks5://", scheme)
+		// The scheme is not echoed: a malformed URL may put the secret there.
+		return ProxySpec{}, errors.New("unsupported proxy scheme; use ss:// or socks5://")
 	}
+}
+
+// URL renders the spec in the form ParseProxyURL reads back (SIP022 for
+// Shadowsocks).
+func (p ProxySpec) URL() string {
+	u := url.URL{Host: p.Server}
+	switch p.Type {
+	case ProxyShadowsocks:
+		u.Scheme = "ss"
+		u.User = url.UserPassword(p.Method, p.Password)
+	default:
+		u.Scheme = "socks5"
+		if p.Username != "" || p.Password != "" {
+			u.User = url.UserPassword(p.Username, p.Password)
+		}
+	}
+	return u.String()
+}
+
+// ValidateProxyURL checks a proxy URL, including the Shadowsocks key,
+// without dialing anything.
+func ValidateProxyURL(raw string) error {
+	_, err := newProxyDialer(&net.Dialer{}, raw)
+	return err
+}
+
+// ShadowsocksMethods lists the accepted Shadowsocks ciphers.
+func ShadowsocksMethods() []string {
+	return slices.Clone(shadowsocksMethods)
+}
+
+func newProxyDialer(dialer *net.Dialer, raw string) (Dialer, error) {
+	spec, err := ParseProxyURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if spec.Type == ProxySocks5 {
+		return newSocksDialer(dialer, spec.Server, spec.Username, spec.Password)
+	}
+	return newShadowsocksDialer(dialer, ShadowsocksConfig{Method: spec.Method, Password: spec.Password, Server: spec.Server})
 }
 
 // ShadowsocksConfig is a parsed ss:// URL.
@@ -109,8 +168,10 @@ func ParseShadowsocksURL(raw string) (ShadowsocksConfig, error) {
 	}
 	cfg.Method = strings.ToLower(cfg.Method)
 	if !slices.Contains(shadowsocksMethods, cfg.Method) {
-		return ShadowsocksConfig{}, fmt.Errorf("unsupported shadowsocks method %q; use one of %s",
-			cfg.Method, strings.Join(shadowsocksMethods, ", "))
+		// The method is not echoed: with method and password swapped it
+		// would be the password.
+		return ShadowsocksConfig{}, fmt.Errorf("unsupported shadowsocks method; use one of %s",
+			strings.Join(shadowsocksMethods, ", "))
 	}
 	if cfg.Password == "" {
 		return ShadowsocksConfig{}, errors.New("shadowsocks password is empty")

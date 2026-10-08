@@ -519,3 +519,61 @@ func TestManagedRuntimeProbeSupportsUDPME(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestManagedRuntimeProxySecretIsWriteOnly(t *testing.T) {
+	const key = "c2VjcmV0LWtleS0xNmJ5dA==" // 16-byte 2022 key
+	config := managedRuntimeTestConfig(t)
+	config.Plugins[0].Args = map[string]any{"upstream": []any{map[string]any{
+		"addr": "udp://127.0.0.1:9", "proxy": "ss://2022-blake3-aes-128-gcm:" + strings.ReplaceAll(key, "=", "%3D") + "@hk.example.net:8388",
+	}}}
+	service, host := newManagedRuntimeTestService(t, config)
+	state, err := service.Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(state)
+	if strings.Contains(string(encoded), "c2VjcmV0LWtleS0xNmJ5dA") {
+		t.Fatalf("state leaked the key: %s", encoded)
+	}
+	settings := state.Config.Plugins[0].FastForward.Upstreams[0].ProxySettings
+	if settings == nil || settings.Server != "hk.example.net:8388" || !settings.PasswordSet || settings.Password != "" {
+		t.Fatalf("panel proxy settings = %+v", settings)
+	}
+
+	// Resubmitting the panel's view unchanged is not a change.
+	validation, err := service.Validate(context.Background(), "admin-session", state.Revision, state.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validation.WillClearCaches {
+		t.Fatal("an untouched proxy was treated as a change")
+	}
+
+	// Editing the label keeps the saved key.
+	desired := state.Config
+	desired.Plugins[0].FastForward.Upstreams[0].Label = "香港 SS"
+	applied := applyManagedRuntimeTestConfig(t, service, state.Revision, desired)
+	if err := host.runtimeManager.WaitForPreviousDrain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(config.Control.ManagedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stored), "hk.example.net:8388") || !strings.Contains(string(stored), "c2VjcmV0LWtleS0xNmJ5dA") {
+		t.Fatalf("managed file lost the proxy: %s", stored)
+	}
+	if info, err := os.Stat(config.Control.ManagedConfig); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("managed file mode = %v, %v", info.Mode(), err)
+	}
+	if encoded, _ := json.Marshal(applied); strings.Contains(string(encoded), "c2VjcmV0LWtleS0xNmJ5dA") {
+		t.Fatalf("apply result leaked the key: %s", encoded)
+	}
+
+	// The saved key does not follow the proxy to another server.
+	moved := applied.Config
+	moved.Plugins[0].FastForward.Upstreams[0].ProxySettings.Server = "attacker.example:8388"
+	if _, err := service.Validate(context.Background(), "admin-session", applied.Revision, moved); err == nil {
+		t.Fatal("the saved key was sent to another server")
+	}
+}

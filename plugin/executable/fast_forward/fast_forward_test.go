@@ -108,3 +108,14 @@ func TestFastForwardNamesUpstreamsWithoutPrivateAddresses(t *testing.T) {
 		t.Fatalf("names = %q, want %q", got, want)
 	}
 }
+
+func TestFastForwardRejectsProxyOnUDPME(t *testing.T) {
+	for _, upstream := range []*UpstreamConfig{
+		{Addr: "udpme://1.1.1.1", Proxy: "socks5://127.0.0.1:1080"},
+		{Addr: "udpme://1.1.1.1", Socks5: "127.0.0.1:1080"},
+	} {
+		if _, err := newFastForward(coremain.NewBP("forward", PluginType, nil, nil), &Args{Upstream: []*UpstreamConfig{upstream}}); err == nil {
+			t.Fatalf("udpme with a proxy was accepted: %+v", upstream)
+		}
+	}
+}
