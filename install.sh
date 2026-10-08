@@ -49,20 +49,27 @@ validate_version() {
   is_release_tag "$version" ||
     die "无效 Release 版本 ${version@Q}；格式必须为 vYY.MM.DD 或 vYY.MM.DD.N"
 }
-# first_release_tag prints the first line of stdin that is a release tag.
-first_release_tag() {
-  local tag
+# newest_release_tag prints the highest release tag among stdin lines. The
+# list is ordered by creation time, which a hotfix for an older line would
+# break, so tags are compared as numbers (vYY.MM.DD[.N], N defaulting to 0).
+newest_release_tag() {
+  local tag key best='' best_key=''
+  local -a parts
   while IFS= read -r tag || [[ -n $tag ]]; do
-    if is_release_tag "$tag"; then
-      printf '%s\n' "$tag"
-      return 0
+    is_release_tag "$tag" || continue
+    IFS=. read -r -a parts <<<"${tag#v}"
+    key=$(printf '%02d%02d%02d%06d' "$((10#${parts[0]}))" "$((10#${parts[1]}))" "$((10#${parts[2]}))" "$((10#${parts[3]:-0}))")
+    if [[ -z $best_key || $key > $best_key ]]; then
+      best=$tag
+      best_key=$key
     fi
   done
-  return 1
+  [[ -n $best ]] || return 1
+  printf '%s\n' "$best"
 }
 # latest_release_tag prints the newest published release. Every Mosdns-x
 # build is published as a pre-release, which GitHub's "latest release"
-# endpoint skips, so this reads the release list (newest first) instead:
+# endpoint skips, so this reads the release list instead:
 # the API directly, then the API through the download proxy, then the
 # Atom feed on github.com. Drafts are never listed publicly.
 latest_release_tag() {
@@ -75,11 +82,11 @@ latest_release_tag() {
       --connect-timeout 5 --max-time 20 \
       --header 'Accept: application/vnd.github+json' "$url" 2>/dev/null) || continue
     grep -o '"tag_name":[[:space:]]*"[^"]*"' <<<"$body" |
-      sed -E 's/.*"([^"]*)"$/\1/' | first_release_tag && return 0
+      sed -E 's/.*"([^"]*)"$/\1/' | newest_release_tag && return 0
   done
   body=$(curl --fail --silent --location --proto '=https' --proto-redir '=https' \
     --connect-timeout 5 --max-time 20 "$RELEASES_FEED" 2>/dev/null) || return 1
-  grep -o '/releases/tag/[^"<]*' <<<"$body" | sed 's#.*/##' | first_release_tag
+  grep -o '/releases/tag/[^"<]*' <<<"$body" | sed 's#.*/##' | newest_release_tag
 }
 asset_for_arch() {
   local arch=$1

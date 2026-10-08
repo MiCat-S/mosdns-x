@@ -236,7 +236,8 @@ curl() {
   case "$url" in
     "$RELEASES_API")
       [[ ${API_DOWN:-} == 1 ]] && return 22
-      printf '[{"tag_name": "nightly"}, {"tag_name": "v26.10.08.4"}, {"tag_name":"v26.10.08.3"}]'
+      # A hotfix for an older line was published after the newest release.
+      printf '[{"tag_name": "nightly"}, {"tag_name": "v26.10.07.9"}, {"tag_name": "v26.10.08.4"}, {"tag_name":"v26.10.08"}]'
       ;;
     https://proxy.example/*)
       [[ ${PROXY_DOWN:-} == 1 ]] && return 22
@@ -249,7 +250,7 @@ curl() {
   esac
 }
 : >"$latest_calls"
-assert_eq v26.10.08.4 "$(latest_release_tag '')" 'latest tag from the API, skipping invalid tags'
+assert_eq v26.10.08.4 "$(latest_release_tag '')" 'highest valid tag from the API, not the first listed'
 assert_eq 1 "$(wc -l <"$latest_calls" | tr -d ' ')" 'the API answered, so nothing else is fetched'
 assert_eq v26.10.09 "$(API_DOWN=1 latest_release_tag 'https://proxy.example/')" \
   'the API through the proxy is tried after the direct API'
