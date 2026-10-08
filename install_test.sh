@@ -227,6 +227,39 @@ assert_eq "https://proxy.example/$FAKE_UNREACHABLE/v1/SHA256SUMS" "$(tail -n 1 "
 unset -f curl
 printf 'install.sh checksum tests passed\n'
 
+# latest_release_tag takes the newest valid tag from the release list, going
+# from the API to the API through the proxy to the Atom feed.
+latest_calls="$checksum_dir/latest-calls"
+curl() {
+  local url=${*: -1}
+  printf '%s\n' "$url" >>"$latest_calls"
+  case "$url" in
+    "$RELEASES_API")
+      [[ ${API_DOWN:-} == 1 ]] && return 22
+      printf '[{"tag_name": "nightly"}, {"tag_name": "v26.10.08.4"}, {"tag_name":"v26.10.08.3"}]'
+      ;;
+    https://proxy.example/*)
+      [[ ${PROXY_DOWN:-} == 1 ]] && return 22
+      printf '[{"tag_name": "v26.10.09"}]'
+      ;;
+    "$RELEASES_FEED")
+      printf '<link rel="alternate" type="text/html" href="https://github.com/o/r/releases/tag/v26.10.10.2"/>'
+      ;;
+    *) return 22 ;;
+  esac
+}
+: >"$latest_calls"
+assert_eq v26.10.08.4 "$(latest_release_tag '')" 'latest tag from the API, skipping invalid tags'
+assert_eq 1 "$(wc -l <"$latest_calls" | tr -d ' ')" 'the API answered, so nothing else is fetched'
+assert_eq v26.10.09 "$(API_DOWN=1 latest_release_tag 'https://proxy.example/')" \
+  'the API through the proxy is tried after the direct API'
+assert_eq v26.10.10.2 "$(API_DOWN=1 PROXY_DOWN=1 latest_release_tag 'https://proxy.example/')" \
+  'the Atom feed is the last resort'
+curl() { return 22; }
+assert_fails 'latest_release_tag must fail when nothing answers' latest_release_tag ''
+unset -f curl
+printf 'install.sh latest release tests passed\n'
+
 # The drop-in must order mosdns after MySQL and shorten the restart delay, and
 # rewriting it must be idempotent.
 dropin_dir=$(mktemp -d)

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly DEFAULT_VERSION="v26.10.08.4"
 readonly RELEASE_REPOSITORY="MiCat-S/mosdns-x"
+readonly RELEASES_API="https://api.github.com/repos/${RELEASE_REPOSITORY}/releases?per_page=30"
+readonly RELEASES_FEED="https://github.com/${RELEASE_REPOSITORY}/releases.atom"
 readonly DEFAULT_GITHUB_PROXY="https://gh-proxy.com/"
 readonly CLOUDFLARE_TRACE_URL="https://www.cloudflare.com/cdn-cgi/trace"
 readonly BINARY_PATH="/usr/local/bin/mosdns"
@@ -28,7 +29,7 @@ usage() {
 缺失的默认配置，然后安装或重启 mosdns systemd 服务。
 
 选项：
-  --version TAG          安装指定 Release；默认 v26.10.08.4
+  --version TAG          安装指定 Release；默认安装 GitHub 上最新的 Release
   --no-github-proxy     禁用中国 IP 自动使用的 GitHub 下载代理
   --github-proxy PREFIX 指定并强制使用 HTTPS GitHub 下载代理前缀
   --print-asset ARCH    输出 ARCH 对应的 Release 资产；省略 ARCH 时使用 uname -m
@@ -36,14 +37,49 @@ usage() {
 
 示例：
   curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | sudo bash
-  sudo bash install.sh --version v26.10.08.4
+  sudo bash install.sh --version v26.10.08
   sudo bash install.sh --github-proxy https://gh-proxy.com/
 EOF
 }
+is_release_tag() {
+  [[ $1 =~ ^v[0-9]{2}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])(\.[1-9][0-9]*)?$ ]]
+}
 validate_version() {
   local version=$1
-  [[ $version =~ ^v[0-9]{2}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])(\.[1-9][0-9]*)?$ ]] ||
+  is_release_tag "$version" ||
     die "无效 Release 版本 ${version@Q}；格式必须为 vYY.MM.DD 或 vYY.MM.DD.N"
+}
+# first_release_tag prints the first line of stdin that is a release tag.
+first_release_tag() {
+  local tag
+  while IFS= read -r tag || [[ -n $tag ]]; do
+    if is_release_tag "$tag"; then
+      printf '%s\n' "$tag"
+      return 0
+    fi
+  done
+  return 1
+}
+# latest_release_tag prints the newest published release. Every Mosdns-x
+# build is published as a pre-release, which GitHub's "latest release"
+# endpoint skips, so this reads the release list (newest first) instead:
+# the API directly, then the API through the download proxy, then the
+# Atom feed on github.com. Drafts are never listed publicly.
+latest_release_tag() {
+  local github_proxy=$1
+  local body url
+  local -a api_urls=("$RELEASES_API")
+  [[ -n $github_proxy ]] && api_urls+=("$(github_download_url "$github_proxy" "$RELEASES_API")")
+  for url in "${api_urls[@]}"; do
+    body=$(curl --fail --silent --location --proto '=https' --proto-redir '=https' \
+      --connect-timeout 5 --max-time 20 \
+      --header 'Accept: application/vnd.github+json' "$url" 2>/dev/null) || continue
+    grep -o '"tag_name":[[:space:]]*"[^"]*"' <<<"$body" |
+      sed -E 's/.*"([^"]*)"$/\1/' | first_release_tag && return 0
+  done
+  body=$(curl --fail --silent --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 5 --max-time 20 "$RELEASES_FEED" 2>/dev/null) || return 1
+  grep -o '/releases/tag/[^"<]*' <<<"$body" | sed 's#.*/##' | first_release_tag
 }
 asset_for_arch() {
   local arch=$1
@@ -332,7 +368,7 @@ cleanup() {
   return "$status"
 }
 main() {
-  local version=$DEFAULT_VERSION
+  local version=
   local print_asset=false
   local requested_arch=''
   local github_proxy_mode=auto
@@ -378,7 +414,7 @@ main() {
       *) die "未知参数 ${1@Q}；使用 --help 查看用法" ;;
     esac
   done
-  validate_version "$version"
+  [[ -z $version ]] || validate_version "$version"
   if [[ $github_proxy_mode == custom ]]; then
     github_proxy_arg=$(normalize_github_proxy "$github_proxy_arg")
   fi
@@ -400,7 +436,6 @@ main() {
   local arch asset release_base github_proxy asset_url
   arch=$(uname -m)
   asset=$(asset_for_arch "$arch")
-  release_base="https://github.com/${RELEASE_REPOSITORY}/releases/download/${version}"
   github_proxy=$(choose_github_proxy "$github_proxy_mode" "$github_proxy_arg")
   if [[ -n $github_proxy ]]; then
     if [[ $github_proxy_mode == auto ]]; then
@@ -413,6 +448,12 @@ main() {
   else
     printf 'GitHub 下载：未检测到中国 IP，使用直连。\n'
   fi
+  if [[ -z $version ]]; then
+    version=$(latest_release_tag "$github_proxy") ||
+      die '无法从 GitHub 获取最新 Release；请用 --version 指定版本'
+    printf '最新 Release：%s\n' "$version"
+  fi
+  release_base="https://github.com/${RELEASE_REPOSITORY}/releases/download/${version}"
   asset_url=$(github_download_url "$github_proxy" "$release_base/$asset")
   install_temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/mosdns-x-install.XXXXXXXX") || die '无法创建临时目录'
   chmod 0700 "$install_temp_dir"

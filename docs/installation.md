@@ -40,7 +40,7 @@ mosdns control status --config /etc/mosdns/config.yaml
 
 该命令只输出 `ready`、`disabled`、`uninitialized` 或 `storage_error`，不会输出数据库 DSN 或密码。对应退出码依次为 0、10、11、12；详情见[运维文档](operations.md#控制存储状态)。脚本升级已初始化的实例不会再次询问管理员密码；检查 bbolt 存储前会先停止正在运行的服务，然后在状态正常时重新启动。
 
-默认安装 `v26.10.08.4`。指定其他日期版本或同日修订版：
+默认安装 GitHub 上最新发布的 Release（包括预发布），依次通过 GitHub API、经下载代理的 GitHub API 和 Release 订阅源查询；都无法访问时安装会停止，请用 `--version` 指定版本。指定其他日期版本或同日修订版：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MiCat-S/mosdns-x/main/install.sh | \
