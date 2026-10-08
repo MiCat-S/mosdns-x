@@ -203,6 +203,11 @@ export const en: Record<string, string> = {
   "上游 {index} 代理密码": "Upstream {index} proxy password",
   "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。":
     "Both TCP and UDP queries go through the proxy; UDP, DoQ and DoH3 upstreams need a proxy server that relays UDP. The key is stored only on the server and is not shown again after saving.",
+  "{label}（备用）": "{label} (backup)",
+  "已添加上游 {index} 作为副本，并为原上游和副本开启“信任上游应答”。请为副本换一个代理节点和显示名称，然后验证并应用。":
+    'Added upstream {index} as a copy and turned on "Trust upstream responses" for it and the original. Give the copy another proxy node and display name, then validate and apply.',
+  "复制上游 {index}": "Copy upstream {index}",
+  复制此上游: "Copy this upstream",
 };
 
 export const ja: Record<string, string> = {
@@ -414,4 +419,9 @@ export const ja: Record<string, string> = {
   "上游 {index} 代理密码": "アップストリーム {index} のプロキシパスワード",
   "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。":
     "TCP と UDP のクエリはどちらもプロキシ経由で転送されます。UDP・DoQ・DoH3 のアップストリームには UDP を中継できるプロキシサーバーが必要です。キーはサーバーにのみ保存され、保存後はパネルに表示されません。",
+  "{label}（备用）": "{label}（予備）",
+  "已添加上游 {index} 作为副本，并为原上游和副本开启“信任上游应答”。请为副本换一个代理节点和显示名称，然后验证并应用。":
+    "アップストリーム {index} をコピーとして追加し、元のアップストリームとコピーの両方で「アップストリームの応答を信頼」をオンにしました。コピーには別のプロキシノードと表示名を設定してから、検証して適用してください。",
+  "复制上游 {index}": "アップストリーム {index} をコピー",
+  复制此上游: "このアップストリームをコピー",
 };

@@ -1934,7 +1934,10 @@ summary {
   gap: var(--sp-3);
 }
 
-.runtime-upstream-main > button {
+.runtime-upstream-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
   margin-top: calc(var(--text-sm) * var(--lh-snug) + var(--sp-2));
 }
 

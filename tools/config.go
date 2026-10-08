@@ -104,7 +104,10 @@ plugins:
     args:
       upstream:
         - addr: https://8.8.8.8/dns-query
+          # Name shown in query logs instead of the address. Optional.
+          # label: Google DoH
           # Answers are accepted without further validation when trusted.
+          # The first upstream is always trusted.
           trusted: false
           # Seconds an idle connection is reused. 0 selects the protocol default.
           idle_timeout: 0
@@ -113,6 +116,20 @@ plugins:
           enable_pipeline: false
           # Skips upstream certificate verification when true. Leave false.
           insecure: false
+          # Relays this upstream through a proxy, for TCP and UDP alike:
+          #   ss://METHOD:KEY@HOST:PORT  Shadowsocks 2022 or AEAD; in the key
+          #                              write + as %2B, / as %2F, = as %3D
+          #   socks5://[USER:PASS@]HOST:PORT
+          # proxy: ss://2022-blake3-aes-128-gcm:BASE64KEY%3D%3D@hk.example.net:8388
+
+        # A backup through another proxy node: upstreams of one plugin are
+        # queried together and the first good answer is used, so a node that
+        # goes down is covered. Mark the backup trusted too, or its negative
+        # answers (NXDOMAIN and the like) are ignored while the first is down.
+        # - addr: https://8.8.8.8/dns-query
+        #   label: Google DoH (backup)
+        #   trusted: true
+        #   proxy: ss://2022-blake3-aes-128-gcm:BASE64KEY%3D%3D@jp.example.net:8388
 
 servers:
   - exec: forward_google

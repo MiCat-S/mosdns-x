@@ -374,6 +374,7 @@ function RuntimeUpstreamEditor({
   disabled,
   onChange,
   onRemove,
+  onDuplicate,
   removable,
 }: {
   upstream: RuntimeUpstream;
@@ -381,6 +382,7 @@ function RuntimeUpstreamEditor({
   disabled: boolean;
   onChange: (patch: Partial<RuntimeUpstream>) => void;
   onRemove: () => void;
+  onDuplicate: () => void;
   removable: boolean;
 }) {
   const update = <K extends keyof RuntimeUpstream>(
@@ -418,14 +420,24 @@ function RuntimeUpstreamEditor({
             onChange={(event) => update("label", event.target.value)}
           />
         </Field>
-        <button
-          type="button"
-          className="danger"
-          disabled={disabled || !removable}
-          onClick={onRemove}
-        >
-          {t("删除")}
-        </button>
+        <div className="runtime-upstream-actions">
+          <button
+            type="button"
+            disabled={disabled}
+            aria-label={t("复制上游 {index}", { index: number })}
+            onClick={onDuplicate}
+          >
+            {t("复制此上游")}
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={disabled || !removable}
+            onClick={onRemove}
+          >
+            {t("删除")}
+          </button>
+        </div>
       </div>
       <RuntimeProxyEditor
         proxy={upstream.proxy}
@@ -535,8 +547,30 @@ function RuntimeForwardEditor({
   probes?: RuntimeProbe[];
   probing: boolean;
 }) {
+  const [copied, setCopied] = useState(0);
   const forward = plugin.fast_forward;
   if (!forward) return null;
+  // A copy is a backup: same server, usually through another proxy node.
+  // Upstreams in one plugin are queried together and the first good answer
+  // wins, but only trusted ones may answer NXDOMAIN and the like, and only
+  // the first is trusted by default, so both are marked trusted.
+  const duplicate = (index: number) => {
+    const source = forward.upstreams[index];
+    const label = source.label
+      ? t("{label}（备用）", { label: source.label }).slice(0, 64)
+      : undefined;
+    const copy: RuntimeUpstream = {
+      ...source,
+      label,
+      trusted: true,
+      proxy: source.proxy ? { ...source.proxy } : undefined,
+    };
+    const upstreams = forward.upstreams.flatMap((item, current) =>
+      current === index ? [{ ...item, trusted: true }, copy] : [item],
+    );
+    onChange({ upstreams });
+    setCopied(index + 2);
+  };
   const update = (index: number, patch: Partial<RuntimeUpstream>) => {
     const upstreams = forward.upstreams.map((item, current) =>
       current === index ? { ...item, ...patch } : item,
@@ -559,6 +593,7 @@ function RuntimeForwardEditor({
           disabled={disabled}
           removable={forward.upstreams.length > 1}
           onChange={(patch) => update(index, patch)}
+          onDuplicate={() => duplicate(index)}
           onRemove={() =>
             onChange({
               upstreams: forward.upstreams.filter(
@@ -568,6 +603,14 @@ function RuntimeForwardEditor({
           }
         />
       ))}
+      {copied ? (
+        <p className="caption" role="status">
+          {t(
+            "已添加上游 {index} 作为副本，并为原上游和副本开启“信任上游应答”。请为副本换一个代理节点和显示名称，然后验证并应用。",
+            { index: copied },
+          )}
+        </p>
+      ) : null}
       <div className="actions runtime-plugin-actions">
         <button
           type="button"

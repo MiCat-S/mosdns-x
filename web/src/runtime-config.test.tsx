@@ -261,6 +261,108 @@ describe("管理端运行配置", () => {
     });
   });
 
+  it("复制上游生成紧随其后的备用副本，并为两条开启信任", async () => {
+    const proxied = {
+      ...config,
+      plugins: [
+        {
+          tag: "forward",
+          type: "fast_forward",
+          editable: true,
+          fast_forward: {
+            upstreams: [
+              {
+                addr: "https://dns.google/dns-query",
+                label: "Google DoH",
+                proxy: {
+                  type: "shadowsocks",
+                  server: "hk.example.net:8388",
+                  method: "2022-blake3-aes-128-gcm",
+                  password_set: true,
+                },
+              },
+              { addr: "udp://223.5.5.5" },
+            ],
+          },
+        },
+      ],
+    };
+    const fetcher = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/admin/runtime/history"))
+        return Promise.resolve(response({ items: [] }));
+      if (url.endsWith("/admin/runtime/config/validate"))
+        return Promise.resolve(
+          response({
+            token: "t",
+            expires_at: "2026-09-12T00:05:00Z",
+            revision: "current-revision",
+            will_clear_caches: false,
+          }),
+        );
+      if (url.endsWith("/admin/runtime/config"))
+        return Promise.resolve(
+          response({ revision: "current-revision", config: proxied }),
+        );
+      return Promise.reject(new Error(`unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    renderRuntime();
+
+    fireEvent.click(await screen.findByRole("button", { name: "复制上游 1" }));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "已添加上游 2 作为副本",
+    );
+    // The copy sits right after the original; the old #2 moved to #3.
+    expect(screen.getByLabelText("上游 2 日志显示名称")).toHaveValue(
+      "Google DoH（备用）",
+    );
+    expect(screen.getByLabelText("上游 3 地址")).toHaveValue("udp://223.5.5.5");
+    const copyServer = screen.getByRole("textbox", {
+      name: "上游 2 代理服务器",
+    });
+    expect(copyServer).toHaveValue("hk.example.net:8388");
+
+    // Point the copy at another node with its own key.
+    fireEvent.change(copyServer, { target: { value: "jp.example.net:8388" } });
+    fireEvent.change(screen.getByLabelText("上游 2 代理密钥"), {
+      target: { value: "AAECAwQFBgcICQoLDA0ODw==" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "验证修改" }));
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.some(([url]) => String(url).endsWith("/validate")),
+      ).toBe(true),
+    );
+    const body = JSON.parse(
+      String(
+        (
+          fetcher.mock.calls.find(([url]) =>
+            String(url).endsWith("/validate"),
+          )?.[1] as RequestInit
+        ).body,
+      ),
+    );
+    const upstreams = body.config.plugins[0].fast_forward.upstreams;
+    expect(upstreams).toHaveLength(3);
+    expect(upstreams[0]).toMatchObject({ trusted: true, label: "Google DoH" });
+    expect(upstreams[0].proxy).toMatchObject({
+      server: "hk.example.net:8388",
+      password_set: true,
+    });
+    expect(upstreams[0].proxy.password).toBeUndefined();
+    expect(upstreams[1]).toMatchObject({
+      addr: "https://dns.google/dns-query",
+      label: "Google DoH（备用）",
+      trusted: true,
+    });
+    expect(upstreams[1].proxy).toMatchObject({
+      server: "jp.example.net:8388",
+      password: "AAECAwQFBgcICQoLDA0ODw==",
+      password_set: false,
+    });
+    expect(upstreams[2]).toEqual({ addr: "udp://223.5.5.5" });
+  });
+
   it("重读主配置、探测可编辑上游且不展示探测原始错误", async () => {
     const fetcher = vi
       .fn()

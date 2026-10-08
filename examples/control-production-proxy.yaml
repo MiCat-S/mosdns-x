@@ -43,6 +43,19 @@ plugins:
         # Replace these example resolvers with the upstreams for your deployment.
         - addr: udp://1.1.1.1:53
         - addr: udp://9.9.9.9:53
+        # A backup through another proxy node: upstreams of one plugin are
+        # queried together and the first good answer is used. Mark backups
+        # trusted so their negative answers count. Proxy URL forms:
+        # ss://METHOD:KEY@HOST:PORT (Shadowsocks 2022 or AEAD; write + / =
+        # in the key as %2B %2F %3D) or socks5://[USER:PASS@]HOST:PORT.
+        # - addr: https://8.8.8.8/dns-query
+        #   label: Google DoH (via HK)
+        #   trusted: true
+        #   proxy: ss://2022-blake3-aes-128-gcm:BASE64KEY%3D%3D@hk.example.net:8388
+        # - addr: https://8.8.8.8/dns-query
+        #   label: Google DoH (via JP)
+        #   trusted: true
+        #   proxy: ss://2022-blake3-aes-128-gcm:BASE64KEY%3D%3D@jp.example.net:8388
 
   - tag: main
     type: sequence
