@@ -109,6 +109,11 @@ func TestSnapshotRedactsSecretsWithoutChangingManagedConfig(t *testing.T) {
 		{Tag: "forward", Type: "fast_forward", Args: map[string]any{
 			"upstream": []any{map[string]any{
 				"addr": "https://user:password@dns.example/dns-query?token=url-secret", "s5_username": "alice", "s5_password": "secret",
+			}, map[string]any{
+				"addr": "udp://192.0.2.1", "proxy": "ss://2022-blake3-aes-128-gcm:ss2022-secret@203.0.113.8:8388",
+			}, map[string]any{
+				// legacy share link: the key is inside the base64 "host"
+				"addr": "udp://192.0.2.2", "proxy": "ss://YWVzLTI1Ni1nY206bGVnYWN5LXNlY3JldEAyMDMuMC4xMTMuOTo4Mzg4",
 			}},
 		}},
 		{Tag: "sequence", Type: "sequence", Args: map[string]any{
@@ -129,6 +134,7 @@ func TestSnapshotRedactsSecretsWithoutChangingManagedConfig(t *testing.T) {
 	for _, secret := range []string{
 		"user:password@", `"s5_username":"alice"`, `"s5_password":"secret"`, "secret-token", "url-secret",
 		"db-secret", "url-user", "url-password", "private-key-secret",
+		"ss2022-secret", "203.0.113.8", "YWVzLTI1Ni1nY206bGVnYWN5LXNlY3JldEAyMDMuMC4xMTMuOTo4Mzg4",
 	} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("snapshot leaked %q: %s", secret, text)
@@ -139,6 +145,23 @@ func TestSnapshotRedactsSecretsWithoutChangingManagedConfig(t *testing.T) {
 	}
 	if managed.Plugins[0].FastForward.Upstreams[0].Addr != "https://dns.example/dns-query" {
 		t.Fatalf("snapshot changed managed config: %+v", managed)
+	}
+}
+
+func TestInspectKeepsProxiedUpstreamsReadOnly(t *testing.T) {
+	config, err := Inspect(false, validTelemetry(), []PluginSource{{
+		Tag: "forward", Type: "fast_forward", Args: map[string]any{
+			"upstream": []any{map[string]any{
+				"addr": "udp://192.0.2.1", "proxy": "ss://2022-blake3-aes-128-gcm:secret@203.0.113.8:8388",
+			}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin := config.Plugins[0]
+	if plugin.Editable || plugin.FastForward != nil || plugin.ReadOnlyReason != "sensitive_parameters" {
+		t.Fatalf("proxied upstream must stay read-only: %+v", plugin)
 	}
 }
 

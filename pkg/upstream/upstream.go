@@ -74,6 +74,11 @@ type Opt struct {
 	S5Username string
 	S5Password string
 
+	// Proxy relays the upstream through a proxy given as a URL:
+	// ss://method:password@host:port (Shadowsocks AEAD or 2022, TCP and
+	// UDP) or socks5://[user:pass@]host:port. Exclusive with Socks5.
+	Proxy string
+
 	// SoMark sets the socket SO_MARK option in unix system.
 	SoMark int
 
@@ -146,6 +151,7 @@ func NewUpstream(addr string, opt *Opt) (Upstream, error) {
 		SocksAddr:  opt.Socks5,
 		S5Username: opt.S5Username,
 		S5Password: opt.S5Password,
+		Proxy:      opt.Proxy,
 	})
 	if err != nil {
 		return nil, err

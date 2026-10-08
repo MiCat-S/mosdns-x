@@ -97,6 +97,27 @@ MySQL 表会在首次连接时自动创建。首次管理员使用 `mosdns contr
 
 控制模式禁用 TLS early data 与 QUIC 0-RTT，避免可重放请求重复扣减额度。停止服务时会先关闭 listener、拒绝新请求并等待在途 DNS/API 请求完成，随后才关闭插件、统计库和账户库。
 
+## 经代理连接上游（`proxy`）
+
+`fast_forward` 的上游可以用 `proxy` 经 Shadowsocks 或 SOCKS5 代理连接，例如经香港的 Shadowsocks 2022 节点访问 Google DoH：
+
+```yaml
+- tag: forward_remote
+  type: fast_forward
+  args:
+    upstream:
+      - addr: https://dns.google/dns-query
+        label: Google DoH（经香港）
+        proxy: ss://2022-blake3-aes-128-gcm:BASE64%2BKEY%3D%3D@hk.example.net:8388
+```
+
+- Shadowsocks 支持 2022 加密方式（`2022-blake3-aes-128-gcm`、`2022-blake3-aes-256-gcm`、`2022-blake3-chacha20-poly1305`）和 AEAD 加密方式（`aes-128-gcm`、`aes-192-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`、`xchacha20-ietf-poly1305`）。不支持没有完整性保护的流加密与明文方式，也不支持 SIP003 插件。
+- 链接可以写成 SIP022 的 `ss://方法:密码@主机:端口`、SIP002 的 `ss://BASE64(方法:密码)@主机:端口`，或客户端导出的整段 Base64 分享链接。SIP022 写法中密码里的 `+`、`/`、`=`、`:` 等字符需要百分号编码，例如 `=` 写作 `%3D`、`+` 写作 `%2B`。2022 方式的密码是对应长度的 Base64 密钥（AES-128 为 16 字节，其余为 32 字节），多用户节点可用冒号连接多个密钥。
+- TCP 与 UDP 都经代理转发，因此 UDP、TCP、DoT、DoH、DoQ、DoH3 上游都可以使用。UDP 和基于 QUIC 的上游要求 Shadowsocks 服务器开启 UDP 转发。
+- 代理直接在上游的连接层实现，不需要额外开放本地 SOCKS5 端口。
+- `proxy` 也接受 `socks5://[用户名:密码@]主机:端口`。原有的 `socks5`、`s5_username`、`s5_password` 字段仍然可用，但不能与 `proxy` 同时设置。
+- `proxy` 含有密钥：管理面板的运行配置页把这类上游显示为只读，配置摘要中整项脱敏；查询日志仍按上节规则只显示上游名称，不记录代理地址。配置错误时的报错不会包含密钥。
+
 ## 受理路径调优（`control.admit`）
 
 每个经鉴权的 DoH/DoH3 查询在放行前都要提交一次受理事务（扣额度、扣 QPS 令牌、写用量）。这个约束不可调：`admit` 下的参数只改变"多少次受理共用一次提交"和"槽位占满时等多久"，不会跳过落盘、异步补扣或超额放行。

@@ -105,7 +105,9 @@ func sanitizeValue(parentKey string, value any) any {
 
 func sensitiveKey(key string) bool {
 	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", "_"), ".", "_"))
-	if normalized == "key" || normalized == "username" || normalized == "user" {
+	// An upstream "proxy" URL carries its key; a legacy ss:// share link
+	// even hides it in the host part, so the whole value is redacted.
+	if normalized == "key" || normalized == "username" || normalized == "user" || normalized == "proxy" {
 		return true
 	}
 	for _, fragment := range []string{"password", "passwd", "secret", "token", "credential", "private_key", "api_key", "access_key", "auth", "bearer", "cookie", "session", "signature", "s5_username"} {

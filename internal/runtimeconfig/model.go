@@ -81,7 +81,7 @@ var fastForwardTopKeys = map[string]struct{}{
 }
 
 var fastForwardUpstreamKeys = map[string]struct{}{
-	"addr": {}, "label": {}, "dial_addr": {}, "trusted": {}, "socks5": {}, "s5_username": {}, "s5_password": {},
+	"addr": {}, "label": {}, "dial_addr": {}, "trusted": {}, "socks5": {}, "s5_username": {}, "s5_password": {}, "proxy": {},
 	"so_mark": {}, "bind_to_device": {}, "idle_timeout": {}, "max_conns": {}, "enable_pipeline": {},
 	"bootstrap": {}, "insecure": {}, "kernel_tx": {}, "kernel_rx": {},
 }
@@ -101,6 +101,7 @@ type forwardUpstream struct {
 	Socks5     string `yaml:"socks5"`
 	S5Username string `yaml:"s5_username"`
 	S5Password string `yaml:"s5_password"`
+	Proxy      string `yaml:"proxy"`
 }
 
 type cacheArgs struct {
@@ -354,7 +355,7 @@ func inspectFastForward(args any) (*FastForward, error) {
 	}
 	forward := &FastForward{Upstreams: make([]Upstream, 0, len(decoded.Upstream))}
 	for _, upstream := range decoded.Upstream {
-		if upstream.Socks5 != "" || upstream.S5Username != "" || upstream.S5Password != "" ||
+		if upstream.Socks5 != "" || upstream.S5Username != "" || upstream.S5Password != "" || upstream.Proxy != "" ||
 			hasURLCredentials(upstream.Addr) || hasURLCredentials(upstream.DialAddr) || hasURLCredentials(upstream.Bootstrap) {
 			return nil, errSensitiveArgs
 		}

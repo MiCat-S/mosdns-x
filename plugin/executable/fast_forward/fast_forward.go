@@ -65,12 +65,14 @@ type UpstreamConfig struct {
 	// Label names this upstream in query logs. Without one, a well-known
 	// public resolver shows its address and any other server shows only the
 	// plugin tag and position, so a private address is never logged.
-	Label          string `yaml:"label"`
-	DialAddr       string `yaml:"dial_addr"`
-	Trusted        bool   `yaml:"trusted"`
-	Socks5         string `yaml:"socks5"`
-	S5Username     string `yaml:"s5_username"`
-	S5Password     string `yaml:"s5_password"`
+	Label      string `yaml:"label"`
+	DialAddr   string `yaml:"dial_addr"`
+	Trusted    bool   `yaml:"trusted"`
+	Socks5     string `yaml:"socks5"`
+	S5Username string `yaml:"s5_username"`
+	S5Password string `yaml:"s5_password"`
+	// Proxy is an ss:// (Shadowsocks AEAD or 2022) or socks5:// URL.
+	Proxy          string `yaml:"proxy"`
 	SoMark         int    `yaml:"so_mark"`
 	BindToDevice   string `yaml:"bind_to_device"`
 	IdleTimeout    int    `yaml:"idle_timeout"`
@@ -131,6 +133,7 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 			Socks5:         c.Socks5,
 			S5Username:     c.S5Username,
 			S5Password:     c.S5Password,
+			Proxy:          c.Proxy,
 			SoMark:         c.SoMark,
 			BindToDevice:   c.BindToDevice,
 			IdleTimeout:    time.Duration(c.IdleTimeout) * time.Second,

@@ -21,6 +21,7 @@ package dialer
 
 import (
 	"context"
+	"errors"
 	"net"
 )
 
@@ -33,12 +34,19 @@ type DialerOpts struct {
 	SocksAddr  string
 	S5Username string
 	S5Password string
+	// Proxy is an ss:// or socks5:// URL; see newProxyDialer.
+	Proxy string
 }
 
 func NewDialer(opts DialerOpts) (Dialer, error) {
-	if len(opts.SocksAddr) == 0 {
-		return newPlainDialer(opts.Dialer), nil
-	} else {
+	switch {
+	case opts.Proxy != "" && opts.SocksAddr != "":
+		return nil, errors.New("set either proxy or socks5, not both")
+	case opts.Proxy != "":
+		return newProxyDialer(opts.Dialer, opts.Proxy)
+	case opts.SocksAddr != "":
 		return newSocksDialer(opts.Dialer, opts.SocksAddr, opts.S5Username, opts.S5Password)
+	default:
+		return newPlainDialer(opts.Dialer), nil
 	}
 }
