@@ -73,12 +73,12 @@ export function timeAxisBounds(from: string, to: string) {
 
 // Light-mode values, used when the stylesheet is not loaded (tests).
 const fallbackTheme = {
-  accent: "rgb(0, 102, 204)",
+  accent: "rgb(182, 85, 50)",
   danger: "rgb(200, 16, 46)",
   success: "rgb(30, 123, 55)",
-  muted: "rgb(110, 110, 115)",
-  line: "rgba(0, 0, 0, 0.08)",
-  lineStrong: "rgba(0, 0, 0, 0.16)",
+  muted: "rgb(107, 106, 101)",
+  line: "rgba(20, 20, 19, 0.1)",
+  lineStrong: "rgba(20, 20, 19, 0.18)",
   surface: "rgb(255, 255, 255)",
 };
 type ChartTheme = typeof fallbackTheme;
@@ -201,11 +201,11 @@ export default function UsageChart({
         trigger: "axis",
         formatter: tooltip,
         confine: true,
-        backgroundColor: "rgba(29, 29, 31, 0.94)",
+        backgroundColor: "rgba(20, 20, 19, 0.94)",
         borderColor: "rgba(255, 255, 255, 0.16)",
         borderWidth: 1,
         padding: [10, 12],
-        textStyle: { color: "#f5f5f7", fontSize: 12, lineHeight: 20 },
+        textStyle: { color: "#faf9f5", fontSize: 12, lineHeight: 20 },
         extraCssText: "border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18)",
         axisPointer: {
           type: "line",

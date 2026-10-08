@@ -1,9 +1,9 @@
 /* MosDNS X panel styles.
-   Direction: macOS System Settings / iCloud web. Flat grouped cards with
-   1px borders, one type scale of seven sizes, weights 400/500/600 only,
-   and every color, size, radius and shadow taken from the tokens below.
-   Type follows Claude's pairing: a serif for titles and figures, the
-   system sans for everything you read or operate. */
+   Flat grouped cards with 1px borders, one type scale of seven sizes,
+   weights 400/500/600 only, and every color, size, radius and shadow taken
+   from the tokens below. Type and color follow Claude: a serif for titles
+   and figures, the system sans for everything you read or operate, warm
+   cream surfaces and a clay-orange accent. */
 
 :root {
   font-family:
@@ -59,21 +59,24 @@
   --shadow-pop: 0 1px 2px rgb(0 0 0 / 6%), 0 12px 32px rgb(0 0 0 / 12%);
   --shadow-focus: 0 0 0 3px var(--focus-ring);
 
-  /* color, light */
-  --bg: #f5f5f7;
+  /* color, light. Claude's brand orange (#d97757) is under 3:1 on cream,
+     so text and buttons use a deeper clay that clears 4.5:1; the brand
+     tone is kept for the logo only. */
+  --bg: #faf9f5;
   --surface: #ffffff;
-  --surface-2: #f7f7f9;
-  --surface-3: #e9e9ec;
-  --text: #1d1d1f;
-  --text-2: #515154;
-  --text-3: #6e6e73;
-  --line: rgb(0 0 0 / 8%);
-  --line-strong: rgb(0 0 0 / 16%);
-  --accent: #0066cc;
-  --accent-hover: #0055ad;
-  --accent-soft: #e8f1fb;
+  --surface-2: #f5f4ed;
+  --surface-3: #e8e6dc;
+  --text: #141413;
+  --text-2: #3d3d3a;
+  --text-3: #6b6a65;
+  --line: rgb(20 20 19 / 10%);
+  --line-strong: rgb(20 20 19 / 18%);
+  --brand: #d97757;
+  --accent: #b65532;
+  --accent-hover: #9e4728;
+  --accent-soft: #f6e9e2;
   --on-accent: #ffffff;
-  --focus-ring: rgb(0 102 204 / 55%);
+  --focus-ring: rgb(182 85 50 / 45%);
   --success: #1e7b37;
   --success-soft: #e6f4ea;
   --warning: #8a5a00;
@@ -82,9 +85,9 @@
   --danger-soft: #fdeef0;
   --info: #2457a7;
   --info-soft: #edf4ff;
-  --sidebar-bg: #f0f0f3;
-  --nav-active: rgb(0 0 0 / 6%);
-  --nav-hover: rgb(0 0 0 / 4%);
+  --sidebar-bg: #f5f4ed;
+  --nav-active: rgb(20 20 19 / 7%);
+  --nav-hover: rgb(20 20 19 / 4%);
   --backdrop: rgb(0 0 0 / 32%);
 
   color: var(--text);
@@ -93,31 +96,33 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #1c1c1e;
-    --surface: #2c2c2e;
-    --surface-2: #363638;
-    --surface-3: #48484a;
-    --text: #f5f5f7;
-    --text-2: #c7c7cc;
-    --text-3: #98989d;
-    --line: rgb(255 255 255 / 10%);
-    --line-strong: rgb(255 255 255 / 20%);
-    --accent: #3b9bff;
-    --accent-hover: #5fadff;
-    --accent-soft: rgb(10 132 255 / 18%);
-    --on-accent: #0b1a2b;
-    --focus-ring: rgb(59 155 255 / 60%);
+    --bg: #262624;
+    --surface: #30302e;
+    --surface-2: #3a3a37;
+    --surface-3: #4a4945;
+    --text: #faf9f5;
+    --text-2: #c2c0b6;
+    --text-3: #a6a39a;
+    --line: rgb(250 249 245 / 10%);
+    --line-strong: rgb(250 249 245 / 20%);
+    --brand: #d97757;
+    --accent: #e0896b;
+    --accent-hover: #e99c81;
+    --accent-soft: rgb(217 119 87 / 18%);
+    --on-accent: #141413;
+    --focus-ring: rgb(224 137 107 / 55%);
     --success: #30d158;
     --success-soft: rgb(48 209 88 / 16%);
     --warning: #ffd60a;
     --warning-soft: rgb(255 214 10 / 14%);
-    --danger: #ff6961;
-    --danger-soft: rgb(255 69 58 / 16%);
+    /* rose rather than coral, so it stays apart from the orange accent */
+    --danger: #ff6b81;
+    --danger-soft: rgb(255 107 129 / 16%);
     --info: #64d2ff;
     --info-soft: rgb(100 210 255 / 16%);
-    --sidebar-bg: #161618;
-    --nav-active: rgb(255 255 255 / 10%);
-    --nav-hover: rgb(255 255 255 / 6%);
+    --sidebar-bg: #1f1e1d;
+    --nav-active: rgb(250 249 245 / 9%);
+    --nav-hover: rgb(250 249 245 / 5%);
     --backdrop: rgb(0 0 0 / 55%);
   }
 }
@@ -356,8 +361,8 @@ aside {
   flex: 0 0 2rem;
   place-items: center;
   border-radius: var(--r-sm);
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--brand);
+  color: #ffffff;
   font-size: var(--text-md);
   font-weight: var(--w-semibold);
 }
