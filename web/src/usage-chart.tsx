@@ -73,9 +73,9 @@ export function timeAxisBounds(from: string, to: string) {
 
 // Light-mode values, used when the stylesheet is not loaded (tests).
 const fallbackTheme = {
-  accent: "rgb(182, 85, 50)",
-  danger: "rgb(200, 16, 46)",
-  success: "rgb(30, 123, 55)",
+  accent: "rgb(173, 78, 45)",
+  danger: "rgb(179, 32, 58)",
+  success: "rgb(53, 114, 38)",
   muted: "rgb(107, 106, 101)",
   line: "rgba(20, 20, 19, 0.1)",
   lineStrong: "rgba(20, 20, 19, 0.18)",

@@ -591,6 +591,7 @@ export function OutboundSection({
         <>
           <p className="route-summary">{routeSummary(record)}</p>
           <p className="route-legend" aria-hidden="true">
+            <span>图例</span>
             <span className="route-matcher hit">
               <span className="route-check">✓</span>命中
             </span>

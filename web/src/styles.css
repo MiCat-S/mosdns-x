@@ -60,8 +60,8 @@
   --shadow-focus: 0 0 0 3px var(--focus-ring);
 
   /* color, light. Claude's brand orange (#d97757) is under 3:1 on cream,
-     so text and buttons use a deeper clay that clears 4.5:1; the brand
-     tone is kept for the logo only. */
+     so text and buttons use a deeper clay that clears 4.5:1 on every
+     surface; the brand tone is kept for the logo only. */
   --bg: #faf9f5;
   --surface: #ffffff;
   --surface-2: #f5f4ed;
@@ -72,19 +72,22 @@
   --line: rgb(20 20 19 / 10%);
   --line-strong: rgb(20 20 19 / 18%);
   --brand: #d97757;
-  --accent: #b65532;
-  --accent-hover: #9e4728;
-  --accent-soft: #f6e9e2;
+  --accent: #ad4e2d;
+  --accent-hover: #94422a;
+  --accent-soft: #f6ebe6;
   --on-accent: #ffffff;
-  --focus-ring: rgb(182 85 50 / 45%);
-  --success: #1e7b37;
-  --success-soft: #e6f4ea;
+  --focus-ring: rgb(173 78 45 / 45%);
+  /* Semantic colours are warm-shifted to sit with cream and clay; each
+     -soft tint is the colour at 12% over white, and every colour reads at
+     4.5:1 or better on white, --surface-2 and its own tint. */
+  --success: #357226;
+  --success-soft: #ebf1e4;
   --warning: #8a5a00;
-  --warning-soft: #fff4d6;
-  --danger: #c8102e;
-  --danger-soft: #fdeef0;
-  --info: #2457a7;
-  --info-soft: #edf4ff;
+  --warning-soft: #f6ecd4;
+  --danger: #b3203a;
+  --danger-soft: #f8e7e5;
+  --info: #3e5f8a;
+  --info-soft: #e8ecf1;
   --sidebar-bg: #f5f4ed;
   --nav-active: rgb(20 20 19 / 7%);
   --nav-hover: rgb(20 20 19 / 4%);
@@ -106,20 +109,22 @@
     --line: rgb(250 249 245 / 10%);
     --line-strong: rgb(250 249 245 / 20%);
     --brand: #d97757;
-    --accent: #e0896b;
-    --accent-hover: #e99c81;
-    --accent-soft: rgb(217 119 87 / 18%);
+    --accent: #e58f72;
+    --accent-hover: #ec9f84;
+    --accent-soft: #463b36;
     --on-accent: #141413;
-    --focus-ring: rgb(224 137 107 / 55%);
-    --success: #30d158;
-    --success-soft: rgb(48 209 88 / 16%);
-    --warning: #ffd60a;
-    --warning-soft: rgb(255 214 10 / 14%);
-    /* rose rather than coral, so it stays apart from the orange accent */
-    --danger: #ff6b81;
-    --danger-soft: rgb(255 107 129 / 16%);
-    --info: #64d2ff;
-    --info-soft: rgb(100 210 255 / 16%);
+    --focus-ring: rgb(229 143 114 / 55%);
+    /* Muted, warm versions of the semantic colours; tints are solid so
+       they do not drift when stacked on --surface-2 or --surface-3.
+       Danger stays rose so it is apart from the orange accent. */
+    --success: #8fc27a;
+    --success-soft: #3b4237;
+    --warning: #e2b34a;
+    --warning-soft: #454031;
+    --danger: #f28d9b;
+    --danger-soft: #473b3b;
+    --info: #9bb9dc;
+    --info-soft: #3d4043;
     --sidebar-bg: #1f1e1d;
     --nav-active: rgb(250 249 245 / 9%);
     --nav-hover: rgb(250 249 245 / 5%);
@@ -919,42 +924,48 @@ tbody tr:last-child td {
 
 /* Badges */
 
+/* One neutral outline family; a status shows only as a dot and text. */
 .badge {
   display: inline-flex;
   min-height: 1.25rem;
   align-items: center;
+  gap: 6px;
   padding: 0 var(--sp-2);
+  border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  background: var(--surface-3);
+  background: var(--surface);
   color: var(--text-2);
   font-size: var(--text-xs);
-  font-weight: var(--w-semibold);
+  font-weight: var(--w-medium);
   line-height: var(--lh-tight);
   white-space: nowrap;
 }
 
+.badge.ok::before,
+.badge.error::before,
+.badge.warning::before,
+.badge.cache::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: currentcolor;
+  content: "";
+}
+
 .badge.ok {
-  background: var(--success-soft);
   color: var(--success);
 }
 
-.badge.off {
-  background: var(--surface-3);
-  color: var(--text-2);
-}
-
 .badge.error {
-  background: var(--danger-soft);
   color: var(--danger);
 }
 
 .badge.warning {
-  background: var(--warning-soft);
   color: var(--warning);
 }
 
 .badge.cache {
-  background: var(--info-soft);
   color: var(--info);
 }
 
@@ -1271,8 +1282,8 @@ summary {
   margin: 0 auto;
   place-items: center;
   border-radius: var(--r-md);
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--brand);
+  color: #ffffff;
   font-size: var(--text-xl);
   font-weight: var(--w-semibold);
 }
@@ -1412,7 +1423,7 @@ summary {
 }
 
 .runtime-switch input:checked + .runtime-switch-control {
-  background: var(--success);
+  background: var(--accent);
 }
 
 .runtime-switch input:checked + .runtime-switch-control::after {
@@ -1536,8 +1547,9 @@ summary {
   color: var(--text-2);
 }
 
+/* Cache is info everywhere: here and on the detail badge. */
 .cache-text {
-  color: var(--success);
+  color: var(--info);
 }
 
 .query-more {
@@ -1553,11 +1565,7 @@ summary {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
-  margin-bottom: var(--sp-4);
-  padding: var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
+  margin-bottom: var(--sp-3);
 }
 
 .log-detail-summary time {
@@ -1628,13 +1636,14 @@ summary {
   counter-reset: edns-stage;
 }
 
+/* Stage cards are white with one border; nothing inside is filled. */
 .edns-stage {
   position: relative;
   min-width: 0;
   padding: var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  background: var(--surface-2);
+  background: var(--surface);
   counter-increment: edns-stage;
 }
 
@@ -1654,7 +1663,7 @@ summary {
   border: 1px solid var(--line-strong);
   border-radius: 50%;
   background: var(--surface);
-  color: var(--text-2);
+  color: var(--text-3);
   content: counter(edns-stage);
   font-size: var(--text-xs);
   font-weight: var(--w-semibold);
@@ -1678,10 +1687,38 @@ summary {
 
 .log-detail .edns-stage dl {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
 }
 
 .log-detail .edns-stage dl > div {
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+
+.log-detail .edns-stage dl > div:nth-child(odd):not(.edns-stage-wide) {
+  padding-right: var(--sp-2);
+}
+
+.log-detail .edns-stage dl > div:nth-child(even):not(.edns-stage-wide) {
+  padding-left: var(--sp-2);
+  border-left: 1px solid var(--line);
+}
+
+.log-detail .edns-stage dl > div:last-child,
+.log-detail
+  .edns-stage
+  dl
+  > div:nth-last-child(2):nth-child(odd):not(.edns-stage-wide) {
+  border-bottom: 0;
+}
+
+.edns-stage .badge {
+  min-height: 1.125rem;
 }
 
 .log-detail .edns-stage-wide {
@@ -1690,12 +1727,10 @@ summary {
 
 .edns-stage-missing,
 .edns-stage-empty {
-  min-height: 3rem;
   margin: 0;
-  padding: var(--sp-2);
-  border-radius: var(--r-xs);
-  background: var(--surface-3);
-  color: var(--text-2);
+  padding: var(--sp-2) 0 0;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
   font-size: var(--text-sm);
   line-height: var(--lh-normal);
 }
@@ -1709,7 +1744,6 @@ summary {
   padding: var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  background: var(--surface-2);
   color: var(--text-2);
   font-size: var(--text-sm);
 }
@@ -2000,22 +2034,25 @@ summary {
   --route-size: var(--text-sm);
 }
 
+/* The one-line answer: text with a clay rule, not a filled bar. */
 .route-summary {
-  margin: 0 0 var(--sp-2);
-  padding: var(--sp-3);
-  border-radius: var(--r-sm);
-  background: var(--accent-soft);
+  margin: 0 0 var(--sp-3);
+  padding: 2px 0 2px var(--sp-3);
+  border-left: 3px solid var(--accent);
   color: var(--text);
   font-size: var(--route-size);
-  font-weight: var(--w-semibold);
+  font-weight: var(--w-medium);
   line-height: var(--lh-normal);
 }
 
 .route-legend {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--sp-2);
-  margin: 0 0 var(--sp-3);
+  margin: 0 0 var(--sp-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
 }
 
 .route-flow {
@@ -2082,22 +2119,19 @@ summary {
 
 .route-node.ok .route-marker {
   border-color: var(--success);
-  background: var(--success-soft);
 }
 
 .route-node.fail .route-marker {
   border-color: var(--danger);
-  background: var(--danger-soft);
 }
 
 .route-node.warn .route-marker {
   border-color: var(--warning);
-  background: var(--warning-soft);
 }
 
 .route-node.info .route-marker {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--text);
+  background: var(--text);
 }
 
 .route-node.neutral .route-marker {
@@ -2144,10 +2178,12 @@ summary {
 
 .route-aside.ok {
   color: var(--success);
+  font-weight: var(--w-medium);
 }
 
 .route-aside.fail {
   color: var(--danger);
+  font-weight: var(--w-medium);
 }
 
 .route-aside.warn,
@@ -2156,10 +2192,10 @@ summary {
 }
 
 .route-branch {
-  padding: 0 var(--sp-2);
-  border-radius: var(--r-pill);
-  background: var(--surface-3);
-  color: var(--text-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: var(--w-semibold);
+  letter-spacing: 0.02em;
 }
 
 .route-expression {
@@ -2180,6 +2216,7 @@ summary {
   padding: 0 var(--sp-2);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-xs);
+  background: var(--surface);
   color: var(--text-2);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -2188,22 +2225,24 @@ summary {
 
 .route-legend .route-matcher {
   font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: 18px;
 }
 
 .route-matcher.hit {
   border-color: var(--success);
-  background: var(--success-soft);
   color: var(--success);
-  font-weight: var(--w-semibold);
+  font-weight: var(--w-medium);
 }
 
 .route-matcher.miss {
-  background: var(--surface-2);
+  background: transparent;
   color: var(--text-3);
 }
 
 .route-matcher.skipped {
   border-style: dashed;
+  background: transparent;
   color: var(--text-3);
 }
 
@@ -2227,6 +2266,7 @@ summary {
 .route-misses summary::after {
   color: var(--accent);
   content: "展开";
+  font-weight: var(--w-medium);
 }
 
 .route-misses[open] summary::after {
@@ -2286,7 +2326,7 @@ summary {
 
 .waterfall-track {
   position: relative;
-  height: 12px;
+  height: 10px;
   border-radius: var(--r-xs);
   background: var(--surface-3);
 }
@@ -2311,7 +2351,7 @@ summary {
   background: repeating-linear-gradient(
     45deg,
     var(--warning) 0 4px,
-    var(--warning-soft) 4px 8px
+    var(--surface) 4px 8px
   );
 }
 
@@ -2327,7 +2367,7 @@ summary {
   top: -3px;
   bottom: -3px;
   width: 0;
-  border-left: 2px dashed var(--warning);
+  border-left: 2px dashed var(--text-3);
 }
 
 .waterfall-marker-key {
