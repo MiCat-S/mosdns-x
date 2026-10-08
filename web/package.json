@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fontsource-variable/source-serif-4": "5.3.0",
     "echarts": "6.1.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",

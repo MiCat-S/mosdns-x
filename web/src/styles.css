@@ -1,7 +1,9 @@
 /* MosDNS X panel styles.
    Direction: macOS System Settings / iCloud web. Flat grouped cards with
    1px borders, one type scale of seven sizes, weights 400/500/600 only,
-   and every color, size, radius and shadow taken from the tokens below. */
+   and every color, size, radius and shadow taken from the tokens below.
+   Type follows Claude's pairing: a serif for titles and figures, the
+   system sans for everything you read or operate. */
 
 :root {
   font-family:
@@ -28,6 +30,13 @@
   --w-semibold: 600;
   --font-mono:
     ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  /* Source Serif 4 (OFL, bundled) stands in for Claude's licensed serifs;
+     Chinese uses the system Song face, or YaHei on Windows where SimSun
+     reads poorly at title sizes. */
+  --font-serif:
+    "Source Serif 4 Variable", "Songti SC", STSong, "Noto Serif SC",
+    "Noto Serif CJK SC", "Source Han Serif SC", "Microsoft YaHei", Georgia,
+    serif;
 
   /* spacing */
   --sp-1: 4px;
@@ -546,8 +555,9 @@ main:focus-visible {
 .page-title h1 {
   margin: 0;
   color: var(--text);
+  font-family: var(--font-serif);
   font-size: var(--text-2xl);
-  font-weight: var(--w-semibold);
+  font-weight: var(--w-medium);
   line-height: var(--lh-tight);
   text-wrap: balance;
 }
@@ -609,9 +619,10 @@ main:focus-visible {
   margin-top: var(--sp-1);
   overflow-wrap: anywhere;
   color: var(--text);
+  font-family: var(--font-serif);
   font-size: var(--text-num);
-  font-variant-numeric: tabular-nums;
-  font-weight: var(--w-semibold);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-weight: var(--w-medium);
   line-height: var(--lh-tight);
 }
 
@@ -634,6 +645,7 @@ main:focus-visible {
 .card h2 {
   margin: 0 0 var(--sp-4);
   color: var(--text);
+  font-family: var(--font-serif);
   font-size: var(--text-lg);
   font-weight: var(--w-semibold);
   line-height: var(--lh-snug);
@@ -1163,6 +1175,7 @@ summary {
 .modal-header h2 {
   margin: 0;
   color: var(--text);
+  font-family: var(--font-serif);
   font-size: var(--text-lg);
   font-weight: var(--w-semibold);
   line-height: var(--lh-snug);
@@ -1262,8 +1275,9 @@ summary {
 .login h1 {
   margin: 0;
   color: var(--text);
+  font-family: var(--font-serif);
   font-size: var(--text-xl);
-  font-weight: var(--w-semibold);
+  font-weight: var(--w-medium);
   line-height: var(--lh-tight);
 }
 
