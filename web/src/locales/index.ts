@@ -1,5 +1,6 @@
 import * as api from "./api";
 import * as app from "./app";
+import * as cachePurge from "./cache-purge";
 import * as components from "./components";
 import * as healthPanel from "./health-panel";
 import * as pages from "./pages";
@@ -15,6 +16,7 @@ import * as usageChart from "./usage-chart";
 export const localeParts = {
   api,
   app,
+  "cache-purge": cachePurge,
   components,
   "health-panel": healthPanel,
   pages,

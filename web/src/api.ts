@@ -104,6 +104,8 @@ export function message(error: unknown) {
       runtime_inspector_unavailable: t(
         "当前节点无法提供运行配置摘要，请检查节点版本与运行状态。",
       ),
+      invalid_domain: t("请输入有效的域名，例如 example.com。"),
+      cache_purge_failed: t("部分缓存未能清除，请查看服务日志后重试。"),
     };
     if (messages[error.code]) return messages[error.code];
   }

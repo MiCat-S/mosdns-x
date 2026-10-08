@@ -31,6 +31,7 @@ import {
 } from "./components";
 import { useSession } from "./session";
 import { locale, msg, t } from "./i18n";
+import { CachePurgeCard, PurgeDomainButton } from "./cache-purge";
 import { HealthPanel } from "./health-panel";
 import { OutboundSection, outboundName, routeReason } from "./query-trace";
 export { RuntimeConfigPage } from "./runtime-config";
@@ -397,6 +398,7 @@ export function AdminLogs() {
             path="/admin/queries"
             enabled={data.query_log_enabled}
             showPrincipal
+            cachePurge
           />
         </>
       ) : null}
@@ -1066,6 +1068,7 @@ function UserDetailContent({ id }: { id: string }) {
             path={`/admin/queries?user_id=${encodeURIComponent(id)}`}
             enabled={data[1].query_log_enabled}
             credentialsPath={`${base}/credentials`}
+            cachePurge
           />
           {edit ? (
             <Modal title={t("编辑账户")} onClose={() => setEdit(false)}>
@@ -1548,10 +1551,12 @@ function QueryLogDetail({
   record,
   deviceName,
   showPrincipal,
+  cachePurge,
 }: {
   record: QueryRecord;
   deviceName: string;
   showPrincipal: boolean;
+  cachePurge: boolean;
 }) {
   const differences = ednsDifferences(record);
   return (
@@ -1573,7 +1578,12 @@ function QueryLogDetail({
         <dl>
           <div>
             <dt>{t("查询名称")}</dt>
-            <dd>{record.name}</dd>
+            <dd>
+              {record.name}
+              {cachePurge && record.name ? (
+                <PurgeDomainButton domain={record.name} />
+              ) : null}
+            </dd>
           </div>
           <div>
             <dt>{t("设备")}</dt>
@@ -1702,12 +1712,15 @@ export function QueryDetails({
   enabled,
   credentialsPath,
   showPrincipal = false,
+  cachePurge = false,
   title = t("查询日志"),
 }: {
   path: string;
   enabled: boolean;
   credentialsPath?: string;
   showPrincipal?: boolean;
+  // Admin views offer to purge the selected name from the caches.
+  cachePurge?: boolean;
   title?: string;
 }) {
   const [draft, setDraft] = useState<QueryFilters>({ ...emptyQueryFilters });
@@ -2086,6 +2099,7 @@ export function QueryDetails({
                 record={selected}
                 deviceName={deviceName(selected)}
                 showPrincipal={showPrincipal}
+                cachePurge={cachePurge}
               />
             </Modal>
           ) : null}
@@ -2558,6 +2572,7 @@ export function SystemPage() {
               size="text"
             />
           </div>
+          <CachePurgeCard />
           <Card title={t("公共 DNS 地址")}>
             <code className="block">{data.public_dns_url}</code>
           </Card>

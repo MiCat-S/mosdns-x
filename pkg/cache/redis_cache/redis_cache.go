@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"sync/atomic"
@@ -200,6 +201,46 @@ func (r *RedisCache) Close() error {
 		return f.Close()
 	}
 	return nil
+}
+
+// purgeScanCount is the SCAN batch size hint used by Purge.
+const purgeScanCount = 1000
+
+// Purge scans the keys that match glob and deletes those match accepts.
+// Each round trip gets the client timeout; ctx bounds the whole scan.
+func (r *RedisCache) Purge(ctx context.Context, glob string, match func(key string) bool) (int, error) {
+	if r.disabled() {
+		return 0, errors.New("redis is temporarily unavailable")
+	}
+	removed := 0
+	var cursor uint64
+	for {
+		scanCtx, cancel := context.WithTimeout(ctx, r.opts.ClientTimeout)
+		keys, next, err := r.opts.Client.Scan(scanCtx, cursor, glob, purgeScanCount).Result()
+		cancel()
+		if err != nil {
+			return removed, fmt.Errorf("redis scan: %w", err)
+		}
+		selected := keys[:0]
+		for _, key := range keys {
+			if match(key) {
+				selected = append(selected, key)
+			}
+		}
+		if len(selected) > 0 {
+			delCtx, cancel := context.WithTimeout(ctx, r.opts.ClientTimeout)
+			n, err := r.opts.Client.Del(delCtx, selected...).Result()
+			cancel()
+			removed += int(n)
+			if err != nil {
+				return removed, fmt.Errorf("redis del: %w", err)
+			}
+		}
+		if next == 0 {
+			return removed, nil
+		}
+		cursor = next
+	}
 }
 
 func (r *RedisCache) Len() int {

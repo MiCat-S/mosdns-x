@@ -339,3 +339,9 @@ export interface SystemConfig {
   control_storage: string;
   telemetry_storage: string;
 }
+export interface CachePurgeResult {
+  domain: string;
+  subdomains: boolean;
+  caches: number;
+  removed: number;
+}

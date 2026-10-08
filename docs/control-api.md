@@ -58,6 +58,7 @@
 | GET | `/admin/queries` | 管理员查询日志；可用 `user_id` 筛选 |
 | GET | `/admin/audit` | `PageResult<AuditRecord>` |
 | GET | `/admin/system` | 安全的系统与配置概览，省略原始插件参数及秘密 |
+| POST | `/admin/runtime/cache/purge` | `{domain,subdomains}` → `{domain,subdomains,caches,removed}`，清除指定域名的缓存 |
 
 `StatsSnapshot`：`from`、`to`、`completed`、`failed`、`cache_hits`、`avg_latency_ms`、`p95_latency_ms`、`rcode_counts`、`series`、`upstreams`、`dropped`、`updated_at`、`query_log_enabled`。
 
@@ -76,6 +77,7 @@
 - `edns` 包含 `present`、`version`、`udp_size`、`dnssec_ok`、`option_codes`，以及可选的 `ecs`。`ecs` 包含规范化网络地址 `address`、`family`、`source_prefix`、`scope_prefix`。系统只记录 EDNS option code，不保存 Cookie、Padding、NSID 或其他 option 载荷。
 - `completed` 是结果统计采集量，`failed` 是其中的失败量；扣费次数以事务保存的 usage / quota 为准。`dropped` 是当前进程观测到的异步事件丢弃量，包含响应或上游尝试事件，重启后不能据此判断历史数据完整性。统计窗口和更新时刻必须展示。
 - 响应聚合默认保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细默认保留 24 小时且最多 100,000 条，均可通过 `control.telemetry` 在允许范围内调整。查询更久区间不会补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。
+- `cache/purge` 从当前运行代的全部 `cache` 插件（内存与 Redis，包括预置的 `_default_cache`）中删除问题名称等于 `domain` 的缓存条目，不分查询类型；`subdomains` 为 `true` 时同时删除其下所有子域名。不需要 `managed_config`。`domain` 不区分大小写，可带结尾的点，非 ASCII 域名自动转换为 Punycode；只接受字母、数字、`-` 和 `_`，不接受 `*` 或根域，否则返回 400 `invalid_domain`。响应中的 `domain` 是规范化后的 FQDN，`caches` 是检查过的缓存插件数，`removed` 是删除的条目数。某个缓存清除失败（如 Redis 不可用）时返回 503 `cache_purge_failed`，其他缓存照常清除，原因只写入服务日志。每次清除都会以 `cache purged` 写一条 info 日志，含管理员 ID、域名与删除数量。
 - `system` 至少提供 `version`、`started_at`、`public_dns_url`、`query_log_enabled`、`config`（配置白名单概览）。`config` 包含 `dns_protocols`、`management_enabled`、`pprof_enabled`、`control_storage` 和 `telemetry_storage`，不会返回数据库路径或 MySQL DSN。查询明细默认关闭，关闭时接口返回空数组和页面说明。
 
 ## 托管运行配置

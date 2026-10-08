@@ -141,3 +141,22 @@ type Manager interface {
 	Rollback(context.Context, string, string) (ApplyResult, error)
 	Probe(context.Context, string) ([]Probe, error)
 }
+
+// ErrInvalidDomain is returned for a cache purge whose domain is not a valid
+// host name.
+var ErrInvalidDomain = errors.New("invalid domain")
+
+// CachePurge reports a purge across the cache plugins of the running
+// generation. Domain is the normalized FQDN that was purged.
+type CachePurge struct {
+	Domain     string `json:"domain"`
+	Subdomains bool   `json:"subdomains"`
+	Caches     int    `json:"caches"`
+	Removed    int    `json:"removed"`
+}
+
+// CachePurger removes cached responses for a domain, and with subdomains
+// also for every name below it.
+type CachePurger interface {
+	PurgeDomainCache(ctx context.Context, domain string, subdomains bool) (CachePurge, error)
+}

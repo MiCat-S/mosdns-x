@@ -369,6 +369,65 @@ func TestManagedRuntimeRoutesUseAdminSessionAndRevisionChecks(t *testing.T) {
 	}
 }
 
+type fakeCachePurger struct {
+	domain     string
+	subdomains bool
+	err        error
+}
+
+func (f *fakeCachePurger) PurgeDomainCache(_ context.Context, domain string, subdomains bool) (runtimeconfig.CachePurge, error) {
+	f.domain, f.subdomains = domain, subdomains
+	if domain == "bad domain" {
+		return runtimeconfig.CachePurge{}, runtimeconfig.ErrInvalidDomain
+	}
+	return runtimeconfig.CachePurge{Domain: "example.com.", Subdomains: subdomains, Caches: 2, Removed: 3}, f.err
+}
+
+func TestCachePurgeRouteIsAdminOnly(t *testing.T) {
+	f := newFixture(t)
+	admin, csrf := login(t, f.handler, "admin", "password-for-admin")
+	const path = "/api/v1/admin/runtime/cache/purge"
+	if w := req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("purge without purger=%d %s", w.Code, w.Body.String())
+	}
+	purger := &fakeCachePurger{}
+	f.handler.opts.CachePurger = purger
+	alice, aliceCSRF := login(t, f.handler, "alice", "password-for-alice")
+	if w := req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, alice, aliceCSRF); w.Code != http.StatusForbidden {
+		t.Fatalf("user purge=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("purge without csrf=%d %s", w.Code, w.Body.String())
+	}
+	if purger.domain != "" {
+		t.Fatalf("rejected requests reached the purger: %q", purger.domain)
+	}
+	if w := req(f.handler, http.MethodGet, path, "", admin, ""); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("get purge=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPost, path, `{"domain":"bad domain"}`, admin, csrf); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_domain") {
+		t.Fatalf("invalid domain=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPost, path, `{"domain":"`+strings.Repeat("a", 1025)+`"}`, admin, csrf); w.Code != http.StatusBadRequest {
+		t.Fatalf("long domain=%d %s", w.Code, w.Body.String())
+	}
+	if w := req(f.handler, http.MethodPost, path, `{"domain":"example.com","extra":1}`, admin, csrf); w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field=%d %s", w.Code, w.Body.String())
+	}
+	w := req(f.handler, http.MethodPost, path, `{"domain":"Example.com","subdomains":true}`, admin, csrf)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"removed":3`) || !strings.Contains(w.Body.String(), `"caches":2`) {
+		t.Fatalf("purge=%d %s", w.Code, w.Body.String())
+	}
+	if purger.domain != "Example.com" || !purger.subdomains {
+		t.Fatalf("purger got %q subdomains=%v", purger.domain, purger.subdomains)
+	}
+	purger.err = errors.New("redis scan: dial tcp 127.0.0.1:6379: connection refused")
+	w = req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "cache_purge_failed") || strings.Contains(w.Body.String(), "6379") {
+		t.Fatalf("failed purge=%d %s", w.Code, w.Body.String())
+	}
+}
+
 type fakeRuntimeInspector struct {
 	state runtimeconfig.State
 }

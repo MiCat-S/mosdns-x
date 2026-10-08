@@ -42,6 +42,7 @@ type RuntimeGeneration struct {
 	pluginHandler  http.Handler
 	metrics        prometheus.Gatherer
 	closeResources func() error
+	plugins        []Plugin
 
 	requestMu         sync.Mutex
 	acceptingRequests bool

@@ -17,6 +17,10 @@ export const en: Record<string, string> = {
   "当前节点无法提供运行配置摘要，请检查节点版本与运行状态。":
     "This node can't provide a runtime config summary. Check the node's version and status.",
   "请求失败，请稍后重试。": "The request failed. Please try again later.",
+  "请输入有效的域名，例如 example.com。":
+    "Enter a valid domain, e.g. example.com.",
+  "部分缓存未能清除，请查看服务日志后重试。":
+    "Some caches could not be cleared. Check the service log and try again.",
 };
 
 export const ja: Record<string, string> = {
@@ -38,4 +42,8 @@ export const ja: Record<string, string> = {
     "このノードは実行設定の概要を提供できません。ノードのバージョンと稼働状態を確認してください。",
   "请求失败，请稍后重试。":
     "リクエストに失敗しました。しばらくしてからもう一度お試しください。",
+  "请输入有效的域名，例如 example.com。":
+    "有効なドメインを入力してください（例：example.com）。",
+  "部分缓存未能清除，请查看服务日志后重试。":
+    "一部のキャッシュを消去できませんでした。サービスログを確認して再試行してください。",
 };

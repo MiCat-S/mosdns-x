@@ -199,5 +199,6 @@ func (m *Mosdns) buildRuntimeGeneration(ctx context.Context, cfg *Config) (gener
 		}
 	}
 
+	generation.plugins = owner.plugins
 	return generation, nil
 }

@@ -63,6 +63,7 @@ type Options struct {
 	SystemInfo        func(context.Context) (SystemInfo, error)
 	RuntimeInspector  runtimeconfig.Inspector
 	RuntimeConfig     runtimeconfig.Manager
+	CachePurger       runtimeconfig.CachePurger
 	Assets            fs.FS
 	Legacy            http.Handler
 	EnablePprof       bool
@@ -498,6 +499,10 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 		h.serveHealth(w, r)
 		return
 	}
+	if p == "/runtime/cache/purge" {
+		h.purgeCache(w, r, admin.ID)
+		return
+	}
 	if strings.HasPrefix(p, "/runtime/") {
 		h.adminRuntime(w, r, session.ID, strings.TrimPrefix(p, "/runtime"))
 		return
@@ -835,6 +840,46 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": results})
 	}
+}
+
+// cachePurgeTimeout bounds one purge; a Redis cache is scanned key by key.
+const cachePurgeTimeout = 30 * time.Second
+
+func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request, actor string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if h.opts.CachePurger == nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	var request struct {
+		Domain     string `json:"domain"`
+		Subdomains bool   `json:"subdomains"`
+	}
+	if decodeJSON(w, r, &request) != nil {
+		return
+	}
+	if len(request.Domain) > 1024 {
+		writeError(w, http.StatusBadRequest, "invalid_domain")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), cachePurgeTimeout)
+	defer cancel()
+	result, err := h.opts.CachePurger.PurgeDomainCache(ctx, request.Domain, request.Subdomains)
+	if errors.Is(err, runtimeconfig.ErrInvalidDomain) {
+		writeError(w, http.StatusBadRequest, "invalid_domain")
+		return
+	}
+	fields := []zap.Field{zap.String("actor", actor), zap.String("domain", result.Domain), zap.Bool("subdomains", result.Subdomains), zap.Int("caches", result.Caches), zap.Int("removed", result.Removed)}
+	if err != nil {
+		h.opts.Logger.Warn("cache purge failed", append(fields, zap.Error(err))...)
+		writeError(w, http.StatusServiceUnavailable, "cache_purge_failed")
+		return
+	}
+	h.opts.Logger.Info("cache purged", fields...)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadRequest bool) {

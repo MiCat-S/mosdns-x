@@ -1695,6 +1695,11 @@ summary {
   font-size: var(--text-sm);
 }
 
+.cache-purge-inline {
+  display: block;
+  margin-top: var(--sp-2);
+}
+
 .log-detail dl.transport-summary {
   margin-bottom: var(--sp-3);
 }
@@ -2899,4 +2904,29 @@ summary {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Cache purge */
+
+.cache-purge form {
+  max-width: 34rem;
+}
+
+.cache-purge-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+}
+
+.cache-purge-row .field {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+
+.cache-purge .check {
+  margin: var(--sp-3) 0 0;
+}
+
+.cache-purge [role="status"] {
+  margin: var(--sp-3) 0 0;
 }

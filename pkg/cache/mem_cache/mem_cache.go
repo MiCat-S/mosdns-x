@@ -20,6 +20,7 @@
 package mem_cache
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
@@ -136,4 +137,14 @@ func (c *MemCache) cleanFunc() func(_ string, v *elem) bool {
 
 func (c *MemCache) Len() int {
 	return c.lru.Len()
+}
+
+// Purge removes the entries whose key match accepts. glob is not used.
+func (c *MemCache) Purge(_ context.Context, _ string, match func(key string) bool) (int, error) {
+	if c.isClosed() {
+		return 0, nil
+	}
+	return c.lru.Clean(func(key string, _ *elem) bool {
+		return match(key)
+	}), nil
 }
