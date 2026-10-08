@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Subset the Chinese and Japanese title serifs to the panel's own text.
+"""Subset the panel's Chinese and Japanese serif (Noto Serif SC / JP).
 
-Titles and figures are set in Noto Serif SC / JP (SIL OFL 1.1). The full
-fonts are 10+ MB per weight, so the panel ships only the characters its
-interface text uses: every CJK character in web/src (sources and locale
-tables, tests excluded) plus a few date characters Intl emits. Run this
-again whenever i18n.test.ts reports characters missing from the subset.
+The whole panel is set in a serif. The full CJK fonts are 6-12 MB per
+weight, so the panel ships two layers per language:
+
+- an interface subset in three weights (400/500/600) with every CJK
+  character in web/src (sources and locale tables, tests excluded) plus a
+  few characters Intl emits; this is all a page normally downloads;
+- a regular-weight supplement with the common characters people use in
+  names and labels (GB2312 level 1 for Chinese; JIS X 0208 level 1 kanji
+  and kana for Japanese), declared with a wider unicode-range so the
+  browser fetches it only when a page shows a character the interface
+  subset lacks.
+
+It writes the fonts, web/src/fonts/charset.txt (checked by i18n.test.ts)
+and web/src/fonts/fonts.css. Run it again whenever i18n.test.ts reports
+characters missing from the subset.
 
 Usage:
   python3 -m venv /tmp/fonts && /tmp/fonts/bin/pip install fonttools brotli
-  # Noto Serif SC/JP Medium and SemiBold OTFs from
+  # Noto Serif SC/JP Regular, Medium and SemiBold OTFs from
   # https://github.com/notofonts/noto-cjk/tree/main/Serif/SubsetOTF
   /tmp/fonts/bin/python web/scripts/subset-fonts.py <dir-with-otf-files>
 """
@@ -26,48 +36,123 @@ OUT = SRC / "fonts"
 
 # Characters Intl and the page add around the interface strings.
 EXTRA = "年月日时分秒周时間曜午前後〇一二三四五六七八九十"
-CJK = re.compile(r"[　-〿぀-ヿ㐀-䶿一-鿿＀-￯‘-‟…·]")
-
-FONTS = {
-    "serif-sc-500": "NotoSerifSC-Medium.otf",
-    "serif-sc-600": "NotoSerifSC-SemiBold.otf",
-    "serif-jp-500": "NotoSerifJP-Medium.otf",
-    "serif-jp-600": "NotoSerifJP-SemiBold.otf",
+CJK = re.compile(
+    r"[　-〿぀-ヿ㐀-䶿一-鿿＀-￯"
+    r"‘-‟…·]"
+)
+WEIGHTS = {400: "Regular", 500: "Medium", 600: "SemiBold"}
+LANGS = {
+    "sc": ("Noto Serif SC", "NotoSerifSC", "MosDNS Serif SC"),
+    "jp": ("Noto Serif JP", "NotoSerifJP", "MosDNS Serif JP"),
 }
+# The supplement's range: CJK punctuation, kana, ideographs, full-width forms.
+WIDE_RANGE = "U+3000-30FF, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF"
 
 
-def charset() -> str:
+def interface_charset() -> str:
     chars = set(EXTRA)
-    for path in list(SRC.glob("*.ts")) + list(SRC.glob("*.tsx")) + list(
-        (SRC / "locales").glob("*.ts")
-    ):
-        if ".test." in path.name:
-            continue
-        chars.update(CJK.findall(path.read_text(encoding="utf-8")))
+    files = list(SRC.glob("*.ts")) + list(SRC.glob("*.tsx"))
+    files += list((SRC / "locales").glob("*.ts"))
+    for path in files:
+        if ".test." not in path.name:
+            chars.update(CJK.findall(path.read_text(encoding="utf-8")))
     return "".join(sorted(chars))
+
+
+def double_byte(codec: str, rows: range) -> set[str]:
+    chars = set()
+    for row in rows:
+        for cell in range(0xA1, 0xFF):
+            try:
+                chars.add(bytes([row, cell]).decode(codec))
+            except UnicodeDecodeError:
+                pass
+    return chars
+
+
+def common_charset(lang: str) -> set[str]:
+    if lang == "sc":
+        # GB2312 level 1: the 3,755 most common hanzi (rows 16-55).
+        return double_byte("gb2312", range(0xB0, 0xD8))
+    # JIS X 0208 level 1 kanji (rows 16-47), plus hiragana and katakana.
+    kana = {chr(c) for c in range(0x3041, 0x3097)}
+    kana |= {chr(c) for c in range(0x30A1, 0x30FB)} | {"ー"}
+    return double_byte("euc_jp", range(0xB0, 0xD0)) | kana
+
+
+def ranges(text: str) -> str:
+    points = sorted({ord(c) for c in text})
+    spans, start, prev = [], points[0], points[0]
+    for point in points[1:] + [None]:
+        if point is not None and point == prev + 1:
+            prev = point
+            continue
+        spans.append(f"U+{start:X}" if start == prev else f"U+{start:X}-{prev:X}")
+        if point is not None:
+            start = prev = point
+    return ", ".join(spans)
+
+
+def build(source: Path, target: Path, text: str) -> None:
+    options = subset.Options()
+    options.flavor = "woff2"
+    options.layout_features = ["*"]
+    options.name_IDs = ["*"]
+    options.notdef_outline = True
+    font = subset.load_font(str(source), options)
+    subsetter = subset.Subsetter(options)
+    subsetter.populate(text=text)
+    subsetter.subset(font)
+    subset.save_font(font, str(target), options)
+    print(f"{target.relative_to(WEB)}: {target.stat().st_size // 1024} KB")
+
+
+def face(family: str, weight: str, file: str, unicode_range: str) -> str:
+    return (
+        "@font-face {\n"
+        f'  font-family: "{family}";\n'
+        "  font-style: normal;\n"
+        f"  font-weight: {weight};\n"
+        "  font-display: swap;\n"
+        f'  src: url("./{file}") format("woff2");\n'
+        f"  unicode-range: {unicode_range};\n"
+        "}\n"
+    )
 
 
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     source = Path(sys.argv[1])
-    text = charset()
+    text = interface_charset()
     OUT.mkdir(exist_ok=True)
+    for old in OUT.glob("serif-*.woff2"):
+        old.unlink()
     (OUT / "charset.txt").write_text(text + "\n", encoding="utf-8")
-    for name, file in FONTS.items():
-        options = subset.Options()
-        options.flavor = "woff2"
-        options.layout_features = ["*"]
-        options.name_IDs = ["*"]
-        options.notdef_outline = True
-        font = subset.load_font(str(source / file), options)
-        subsetter = subset.Subsetter(options)
-        subsetter.populate(text=text)
-        subsetter.subset(font)
-        target = OUT / f"{name}.woff2"
-        subset.save_font(font, str(target), options)
-        print(f"{target.relative_to(WEB)}: {target.stat().st_size // 1024} KB")
-    print(f"{len(text)} characters")
+    css = [
+        "/* Generated by web/scripts/subset-fonts.py; do not edit.\n"
+        "   Noto Serif SC / JP, SIL OFL 1.1 (see LICENSE-NotoSerifCJK.txt).\n"
+        "   Within a weight, faces are matched last to first: the interface\n"
+        "   subset wins for its own characters and the supplement loads only\n"
+        "   for others. */\n"
+    ]
+    for lang, (_, stem, family) in LANGS.items():
+        extra = "".join(sorted(common_charset(lang) - set(text)))
+        build(source / f"{stem}-Regular.otf", OUT / f"serif-{lang}-common.woff2", extra)
+        # The regular supplement is declared again at each weight, before
+        # that weight's interface subset: browsers group faces by weight,
+        # so this keeps both in one group (the subset wins for its own
+        # characters) and a rare character in a semibold title still comes
+        # from this font. The file is fetched once.
+        for weight, style in WEIGHTS.items():
+            file = f"serif-{lang}-{weight}.woff2"
+            build(source / f"{stem}-{style}.otf", OUT / file, text)
+            css.append(
+                face(family, str(weight), f"serif-{lang}-common.woff2", WIDE_RANGE)
+            )
+            css.append(face(family, str(weight), file, ranges(text)))
+    (OUT / "fonts.css").write_text("\n".join(css), encoding="utf-8")
+    print(f"{len(text)} interface characters")
 
 
 if __name__ == "__main__":

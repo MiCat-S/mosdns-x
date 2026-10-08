@@ -5,6 +5,7 @@ import { App } from "./App";
 import { SessionProvider } from "./session";
 import { LanguageProvider } from "./i18n";
 import "@fontsource-variable/source-serif-4/opsz.css";
+import "./fonts/fonts.css";
 import "./styles.css";
 const router = createBrowserRouter([
   {
