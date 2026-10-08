@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 
+import { msg, t } from "./i18n";
 import type { QueryRecord, RouteStep, UpstreamTry } from "./types";
 
 const branchNames: Record<string, string> = {
-  primary: "主要",
-  secondary: "备援",
-  lazy_refresh: "后台刷新",
-  reference: "参考查询",
+  primary: msg("主要"),
+  secondary: msg("备援"),
+  lazy_refresh: msg("后台刷新"),
+  reference: msg("参考查询"),
 };
 
 export function branchName(branch?: string) {
@@ -15,30 +16,33 @@ export function branchName(branch?: string) {
     .split("/")
     .map((part) => {
       const parallel = /^parallel#(\d+)$/.exec(part);
-      if (parallel) return `并行 ${parallel[1]}`;
-      return branchNames[part] ?? part;
+      if (parallel) return t("并行 {n}", { n: parallel[1] });
+      return branchNames[part] ? t(branchNames[part]) : part;
     })
     .join(" › ");
 }
 
 const attemptErrors: Record<string, string> = {
-  timeout: "超时",
-  canceled: "已取消",
-  tls: "TLS 错误",
-  connection_refused: "连接被拒绝",
-  connection_reset: "连接中断",
-  connect_failed: "无法连接",
-  resolve_failed: "无法解析上游地址",
-  http_status: "HTTP 错误",
-  bad_response: "响应无效",
-  empty_response: "空响应",
-  error: "其他错误",
+  timeout: msg("超时"),
+  canceled: msg("已取消"),
+  tls: msg("TLS 错误"),
+  connection_refused: msg("连接被拒绝"),
+  connection_reset: msg("连接中断"),
+  connect_failed: msg("无法连接"),
+  resolve_failed: msg("无法解析上游地址"),
+  http_status: msg("HTTP 错误"),
+  bad_response: msg("响应无效"),
+  empty_response: msg("空响应"),
+  error: msg("其他错误"),
 };
 
 export function attemptResult(attempt: UpstreamTry) {
-  if (!attempt.done) return "未完成（已先返回其他结果）";
-  if (attempt.error) return attemptErrors[attempt.error] ?? attempt.error;
-  return attempt.rcode || "无响应码";
+  if (!attempt.done) return t("未完成（已先返回其他结果）");
+  if (attempt.error) {
+    const name = attemptErrors[attempt.error];
+    return name ? t(name) : attempt.error;
+  }
+  return attempt.rcode || t("无响应码");
 }
 
 type Tone = "ok" | "fail" | "warn" | "pending" | "neutral" | "info";
@@ -51,9 +55,9 @@ function attemptTone(attempt: UpstreamTry): Tone {
 }
 
 const fallbackReasons: Record<string, string> = {
-  primary_failed: "主要上游失败，启用备援",
-  fast_fallback: "主要上游未及时回应，同时启用备援",
-  always_standby: "备援始终同时查询",
+  primary_failed: msg("主要上游失败，启用备援"),
+  fast_fallback: msg("主要上游未及时回应，同时启用备援"),
+  always_standby: msg("备援始终同时查询"),
 };
 
 function isCondition(step: RouteStep) {
@@ -76,17 +80,25 @@ function conditionOutcome(step: RouteStep): {
 export function describeStep(step: RouteStep) {
   switch (step.kind) {
     case "cache_hit":
-      return `命中缓存 ${step.detail}`;
+      return t("命中缓存 {plugin}", { plugin: step.detail ?? "" });
     case "lazy_refresh":
-      return `缓存已过期，先返回旧结果，并在后台刷新 ${step.detail}`;
+      return t("缓存已过期，先返回旧结果，并在后台刷新 {plugin}", {
+        plugin: step.detail ?? "",
+      });
     case "secondary_started":
-      return fallbackReasons[step.detail ?? ""] ?? "启用备援";
-    case "branch_selected":
-      return `采用${branchName(step.detail) || "该分支"}的结果`;
+      return t(fallbackReasons[step.detail ?? ""] ?? msg("启用备援"));
+    case "branch_selected": {
+      const branch = branchName(step.detail);
+      return branch
+        ? t("采用{branch}的结果", { branch })
+        : t("采用该分支的结果");
+    }
     case "primary_unhealthy":
-      return "主要上游近期失败较多，主要与备援同时查询";
+      return t("主要上游近期失败较多，主要与备援同时查询");
     case "load_balance":
-      return `负载均衡选择第 ${step.detail?.replace("#", "")} 组`;
+      return t("负载均衡选择第 {group} 组", {
+        group: step.detail?.replace("#", "") ?? "",
+      });
     default:
       return step.detail ? `${step.kind} ${step.detail}` : step.kind;
   }
@@ -97,77 +109,138 @@ export function describeStep(step: RouteStep) {
 export function outboundName(record: QueryRecord) {
   if (record.cache_hit) {
     return record.upstream_label
-      ? `缓存 · 原始 ${record.upstream_label}`
-      : "缓存（来源未记录）";
+      ? t("缓存 · 原始 {upstream}", { upstream: record.upstream_label })
+      : t("缓存（来源未记录）");
   }
   if (record.upstream_label) return record.upstream_label;
   switch (record.response_source) {
     case "hosts":
-      return "本地 Hosts";
+      return t("本地 Hosts");
     case "sequence":
-      return "本地处理";
+      return t("本地处理");
     case "servfail":
-      return record.trace?.attempts.length ? "上游全部失败" : "未发出上游请求";
+      return record.trace?.attempts.length
+        ? t("上游全部失败")
+        : t("未发出上游请求");
   }
-  return record.upstream_id || "未记录";
+  return record.upstream_id || t("未记录");
 }
 
-// routeReason names the rule that chose the path: the matchers that were true
-// in the last condition whose branch ran.
-export function routeReason(record: QueryRecord) {
-  const steps = record.trace?.steps ?? [];
+// matchedRule names the rule that chose the path: the matchers that were true
+// in the last condition whose branch ran, or undefined when none ran.
+function matchedRule(steps: RouteStep[]) {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (!isCondition(step) || conditionOutcome(step).then !== "exec") continue;
-    return `命中 ${step.hits?.length ? step.hits.join("、") : step.detail}`;
+    return step.hits?.length ? step.hits.join(t("、")) : (step.detail ?? "");
   }
-  return record.trace ? "未命中分流规则" : "";
+  return undefined;
+}
+
+export function routeReason(record: QueryRecord) {
+  if (!record.trace) return "";
+  const rule = matchedRule(record.trace.steps);
+  return rule === undefined ? t("未命中分流规则") : t("命中 {rule}", { rule });
 }
 
 function ms(value: number) {
   return `${value.toFixed(value < 10 ? 1 : 0)} ms`;
 }
 
+// One whole sentence per outcome, with and without a matched rule, so each
+// language can order the rule, upstream and timing as it needs.
+const summaries = {
+  failed: {
+    rule: msg("命中 {rule}，{count} 次上游请求均未取得可用结果"),
+    noRule: msg("未命中分流规则，{count} 次上游请求均未取得可用结果"),
+  },
+  unsent: {
+    rule: msg("命中 {rule}，没有发出上游请求"),
+    noRule: msg("未命中分流规则，没有发出上游请求"),
+  },
+  answered: {
+    rule: msg("命中 {rule} → {upstream}，{duration} 取得结果"),
+    noRule: msg("未命中分流规则 → {upstream}，{duration} 取得结果"),
+  },
+  primaryFailed: {
+    rule: msg(
+      "命中 {rule} → {upstream}，{duration} 取得结果（主要上游失败，改用备援）",
+    ),
+    noRule: msg(
+      "未命中分流规则 → {upstream}，{duration} 取得结果（主要上游失败，改用备援）",
+    ),
+  },
+  fastFallback: {
+    rule: msg(
+      "命中 {rule} → {upstream}，{duration} 取得结果（主要上游未及时回应，改用备援）",
+    ),
+    noRule: msg(
+      "未命中分流规则 → {upstream}，{duration} 取得结果（主要上游未及时回应，改用备援）",
+    ),
+  },
+  fellBack: {
+    rule: msg(
+      "命中 {rule} → {upstream}，{duration} 取得结果（采用备援的结果）",
+    ),
+    noRule: msg(
+      "未命中分流规则 → {upstream}，{duration} 取得结果（采用备援的结果）",
+    ),
+  },
+};
+
 export function routeSummary(record: QueryRecord) {
   const trace = record.trace;
   if (!trace) return "";
   if (record.cache_hit) {
     return record.upstream_label
-      ? `直接命中缓存，原始来源 ${record.upstream_label}，${ms(record.duration_ms)} 返回`
-      : `直接命中缓存，${ms(record.duration_ms)} 返回`;
+      ? t("直接命中缓存，原始来源 {upstream}，{duration} 返回", {
+          upstream: record.upstream_label,
+          duration: ms(record.duration_ms),
+        })
+      : t("直接命中缓存，{duration} 返回", {
+          duration: ms(record.duration_ms),
+        });
   }
-  const reason = routeReason(record);
+  const rule = matchedRule(trace.steps);
   const selected = trace.attempts.find((attempt) => attempt.selected);
+  let outcome: keyof typeof summaries;
   if (!selected) {
-    return trace.attempts.length
-      ? `${reason}，${trace.attempts.length} 次上游请求均未取得可用结果`
-      : `${reason}，没有发出上游请求`;
+    outcome = trace.attempts.length ? "failed" : "unsent";
+  } else {
+    const fellBack = trace.steps.some(
+      (step) =>
+        step.kind === "branch_selected" &&
+        step.detail?.split("/").pop() === "secondary",
+    );
+    const why = trace.steps.find(
+      (step) => step.kind === "secondary_started",
+    )?.detail;
+    outcome = !fellBack
+      ? "answered"
+      : why === "primary_failed"
+        ? "primaryFailed"
+        : why === "fast_fallback"
+          ? "fastFallback"
+          : "fellBack";
   }
-  const fellBack = trace.steps.some(
-    (step) =>
-      step.kind === "branch_selected" &&
-      step.detail?.split("/").pop() === "secondary",
-  );
-  const why = trace.steps.find(
-    (step) => step.kind === "secondary_started",
-  )?.detail;
-  const note = !fellBack
-    ? ""
-    : why === "primary_failed"
-      ? "（主要上游失败，改用备援）"
-      : why === "fast_fallback"
-        ? "（主要上游未及时回应，改用备援）"
-        : "（采用备援的结果）";
-  return `${reason} → ${selected.upstream}，${ms(selected.duration_ms)} 取得结果${note}`;
+  const summary = summaries[outcome];
+  return t(rule === undefined ? summary.noRule : summary.rule, {
+    rule: rule ?? "",
+    count: trace.attempts.length,
+    upstream: selected?.upstream ?? "",
+    duration: selected ? ms(selected.duration_ms) : "",
+  });
 }
 
 type Token =
   { kind: "matcher"; name: string } | { kind: "operator"; text: string };
 
+// The operator text stays Chinese in the tokens and is translated where it
+// is shown.
 const operatorNames: Record<string, string> = {
-  "||": "或",
-  "&&": "且",
-  "!": "非",
+  "||": msg("或"),
+  "&&": msg("且"),
+  "!": msg("非"),
 };
 
 // expressionTokens splits a condition such as
@@ -189,9 +262,9 @@ export function expressionTokens(expression: string): Token[] {
 }
 
 const matcherStateNames = {
-  hit: "命中",
-  miss: "未命中",
-  skipped: "未检查（前面的条件已决定结果）",
+  hit: msg("命中"),
+  miss: msg("未命中"),
+  skipped: msg("未检查（前面的条件已决定结果）"),
   unknown: "",
 };
 
@@ -205,7 +278,7 @@ function ConditionExpression({ step }: { step: RouteStep }) {
         if (token.kind === "operator") {
           return (
             <span key={index} className="route-operator">
-              {token.text}
+              {t(token.text)}
             </span>
           );
         }
@@ -216,13 +289,17 @@ function ConditionExpression({ step }: { step: RouteStep }) {
             : detailed
               ? "skipped"
               : "unknown";
-        const name = matcherStateNames[state];
+        const name = matcherStateNames[state] && t(matcherStateNames[state]);
         return (
           <span
             key={index}
             className={`route-matcher ${state}`}
             title={name || undefined}
-            aria-label={name ? `${token.name}：${name}` : token.name}
+            aria-label={
+              name
+                ? t("{matcher}：{state}", { matcher: token.name, state: name })
+                : token.name
+            }
           >
             {state === "hit" ? (
               <span className="route-check" aria-hidden="true">
@@ -238,9 +315,9 @@ function ConditionExpression({ step }: { step: RouteStep }) {
 }
 
 const thenNames: Record<string, string> = {
-  exec: "进入此分支",
-  else: "进入 else 分支",
-  continue: "继续往下",
+  exec: msg("进入此分支"),
+  else: msg("进入 else 分支"),
+  continue: msg("继续往下"),
 };
 
 type FlowItem =
@@ -342,7 +419,7 @@ function ConditionNode({ step }: { step: RouteStep }) {
       shape="decision"
       tone={outcome.matched ? "ok" : "neutral"}
       branch={step.branch}
-      aside={`${outcome.matched ? "是" : "否"} · ${thenNames[outcome.then]}`}
+      aside={`${outcome.matched ? t("是") : t("否")} · ${t(thenNames[outcome.then])}`}
       asideTone={outcome.matched ? "ok" : "neutral"}
     >
       <ConditionExpression step={step} />
@@ -359,7 +436,7 @@ function MissesNode({ steps }: { steps: RouteStep[] }) {
           {steps[0].branch ? (
             <span className="route-branch">{branchName(steps[0].branch)}</span>
           ) : null}
-          未命中 {steps.length} 条规则
+          {t("未命中 {count} 条规则", { count: steps.length })}
         </summary>
         <ul>
           {steps.map((step, index) => (
@@ -369,7 +446,9 @@ function MissesNode({ steps }: { steps: RouteStep[] }) {
           ))}
         </ul>
       </details>
-      <span className="route-aside neutral">否 · 继续往下</span>
+      <span className="route-aside neutral">
+        {t("否")} · {t(thenNames.continue)}
+      </span>
     </li>
   );
 }
@@ -384,11 +463,11 @@ function StepNode({ record, step }: { record: QueryRecord; step: RouteStep }) {
         branch={step.branch}
         aside={`+${ms(step.at_ms)}`}
       >
-        <span className="route-label">命中缓存</span>
+        <span className="route-label">{t("命中缓存")}</span>
         <span>
           {record.cache_hit && record.upstream_label
-            ? `原始来源 ${record.upstream_label}`
-            : "原始来源未记录"}
+            ? t("原始来源 {upstream}", { upstream: record.upstream_label })
+            : t("原始来源未记录")}
         </span>
         <span className="route-muted">{step.detail}</span>
       </FlowNode>
@@ -419,11 +498,11 @@ function AttemptNode({ attempt }: { attempt: UpstreamTry }) {
       aside={
         <>
           {ms(attempt.duration_ms)} · {attemptResult(attempt)}
-          {attempt.selected ? " · 采用" : ""}
+          {attempt.selected ? ` · ${t("采用")}` : ""}
         </>
       }
     >
-      <span className="route-label">出站 DNS</span>
+      <span className="route-label">{t("出站 DNS")}</span>
       <span>{attempt.upstream}</span>
       {attempt.plugin ? (
         <span className="route-muted">{attempt.plugin}</span>
@@ -442,12 +521,12 @@ function RouteFlow({
   const answers = record.answer_ips?.length ?? 0;
   const ok = record.rcode === "NOERROR";
   return (
-    <ol className="route-flow" aria-label="查询路径">
+    <ol className="route-flow" aria-label={t("查询路径")}>
       <FlowNode shape="point" tone="info">
-        <span className="route-label">收到查询</span>
+        <span className="route-label">{t("收到查询")}</span>
         <span>{record.name}</span>
         <span className="route-muted">
-          {record.qtype} · {record.protocol?.toUpperCase() || "未知协议"}
+          {record.qtype} · {record.protocol?.toUpperCase() || t("未知协议")}
           {deviceName ? ` · ${deviceName}` : ""}
         </span>
       </FlowNode>
@@ -471,15 +550,15 @@ function RouteFlow({
       <FlowNode
         shape="point"
         tone={ok ? "ok" : "fail"}
-        aside={`共 ${ms(record.duration_ms)}`}
+        aside={t("共 {duration}", { duration: ms(record.duration_ms) })}
         asideTone={ok ? "ok" : "fail"}
       >
-        <span className="route-label">返回</span>
+        <span className="route-label">{t("返回")}</span>
         <span className={ok ? "route-ok" : "route-fail"}>
           {record.rcode || "UNKNOWN"}
         </span>
         <span className="route-muted">
-          {answers ? `${answers} 个地址` : "无地址记录"}
+          {answers ? t("{count} 个地址", { count: answers }) : t("无地址记录")}
         </span>
       </FlowNode>
     </ol>
@@ -509,9 +588,10 @@ function AttemptWaterfall({ record }: { record: QueryRecord }) {
     (step) => step.kind === "secondary_started",
   );
   return (
-    <figure className="waterfall" aria-label="上游请求时间轴">
+    <figure className="waterfall" aria-label={t("上游请求时间轴")}>
       <figcaption>
-        上游请求时间轴 <span className="route-muted">从第一次请求起计时</span>
+        {t("上游请求时间轴")}{" "}
+        <span className="route-muted">{t("从第一次请求起计时")}</span>
       </figcaption>
       <div className="waterfall-grid">
         <span />
@@ -550,7 +630,7 @@ function AttemptWaterfall({ record }: { record: QueryRecord }) {
             </div>,
             <div className={`waterfall-result ${tone}`} key={`r${attempt.seq}`}>
               {ms(attempt.duration_ms)} · {attemptResult(attempt)}
-              {attempt.selected ? " · 采用" : ""}
+              {attempt.selected ? ` · ${t("采用")}` : ""}
             </div>,
           ];
         })}
@@ -558,8 +638,10 @@ function AttemptWaterfall({ record }: { record: QueryRecord }) {
       {markers.map((marker, index) => (
         <p className="waterfall-note" key={index}>
           <span className="waterfall-marker-key" aria-hidden="true" />
-          第一次请求后 {axisMs(marker.at_ms - origin, scale)}：
-          {describeStep(marker)}
+          {t("第一次请求后 {time}：{event}", {
+            time: axisMs(marker.at_ms - origin, scale),
+            event: describeStep(marker),
+          })}
         </p>
       ))}
     </figure>
@@ -576,32 +658,35 @@ export function OutboundSection({
   const trace = record.trace;
   return (
     <section className="outbound-section">
-      <h3>查询路径</h3>
+      <h3>{t("查询路径")}</h3>
       {!trace ? (
         <>
           <dl>
             <div>
-              <dt>出站 DNS</dt>
+              <dt>{t("出站 DNS")}</dt>
               <dd>{outboundName(record)}</dd>
             </div>
           </dl>
-          <p className="outbound-empty">历史记录未采集查询路径。</p>
+          <p className="outbound-empty">{t("历史记录未采集查询路径。")}</p>
         </>
       ) : (
         <>
           <p className="route-summary">{routeSummary(record)}</p>
           <p className="route-legend" aria-hidden="true">
-            <span>图例</span>
+            <span>{t("图例")}</span>
             <span className="route-matcher hit">
-              <span className="route-check">✓</span>命中
+              <span className="route-check">✓</span>
+              {t("命中")}
             </span>
-            <span className="route-matcher miss">未命中</span>
-            <span className="route-matcher skipped">未检查</span>
+            <span className="route-matcher miss">{t("未命中")}</span>
+            <span className="route-matcher skipped">{t("未检查")}</span>
           </p>
           <RouteFlow record={record} deviceName={deviceName} />
           <AttemptWaterfall record={record} />
           {trace.truncated ? (
-            <p className="outbound-empty">记录过多，只保留了前面的部分。</p>
+            <p className="outbound-empty">
+              {t("记录过多，只保留了前面的部分。")}
+            </p>
           ) : null}
         </>
       )}

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Alert, Shell, Spinner } from "./components";
 import { useSession } from "./session";
+import { t } from "./i18n";
 import {
   Login,
   AdminOverview,
@@ -34,10 +35,10 @@ function Guard({ role }: { role: "admin" | "user" }) {
     return (
       <div className="login">
         <section>
-          <h1>无法连接服务</h1>
+          <h1>{t("无法连接服务")}</h1>
           <Alert error={error} />
           <button className="primary" onClick={retry}>
-            重试
+            {t("重试")}
           </button>
         </section>
       </div>
@@ -101,7 +102,7 @@ function RootRedirect() {
       <div className="login">
         <section>
           <Alert error={error} />
-          <button onClick={retry}>重试</button>
+          <button onClick={retry}>{t("重试")}</button>
         </section>
       </div>
     );

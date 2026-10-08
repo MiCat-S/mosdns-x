@@ -12,6 +12,7 @@ import {
 } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { message } from "./api";
+import { languages, locale, msg, setLang, t, useLang, type Lang } from "./i18n";
 import { useSession } from "./session";
 const UsageChart = lazy(() => import("./usage-chart"));
 
@@ -28,7 +29,7 @@ export function Spinner() {
   return (
     <div className="state" role="status">
       <span className="spinner" />
-      正在加载…
+      {t("正在加载…")}
     </div>
   );
 }
@@ -40,7 +41,7 @@ export function Alert({ error }: { error: string }) {
   ) : null;
 }
 export function Empty({
-  children = "暂无数据",
+  children,
   action,
 }: {
   children?: ReactNode;
@@ -52,7 +53,7 @@ export function Empty({
         <path d="M3 13h5l1.5 3h5L16 13h5" />
         <path d="M5.5 6.5 3 13v5a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5l-2.5-6.5A2 2 0 0 0 16.6 5H7.4a2 2 0 0 0-1.9 1.5Z" />
       </svg>
-      <span>{children}</span>
+      <span>{children ?? t("暂无数据")}</span>
       {action}
     </div>
   );
@@ -76,13 +77,16 @@ export function PageTitle({
     </header>
   );
 }
-// A number with a short unit ("12.3 ms", "0.25 次/秒") keeps the large
-// numeric size; dates and words drop to body size so they don't wrap.
+// Figures ("1,234", "5 / 10", "99.5%") and a number with a short unit
+// ("12.3 ms", "0.25 次/秒") keep the large numeric size; dates and words in
+// any language drop to body size so they don't wrap.
 const numericValue = /^[\d.,]+\s?\S{0,3}$/;
+const figures = /^[\d\s.,:%/+\-−~≈<>]+$/;
+const date = /\d{4}[/.-]\d{1,2}[/.-]\d{1,2}/;
 function metricSize(value: ReactNode): "num" | "text" {
   if (typeof value !== "string") return "num";
-  if (numericValue.test(value)) return "num";
-  return value.length > 12 || /[\u3000-\u9fff]/.test(value) ? "text" : "num";
+  if (date.test(value)) return "text";
+  return numericValue.test(value) || figures.test(value) ? "num" : "text";
 }
 export function Metric({
   label,
@@ -196,52 +200,67 @@ type NavItem = {
 };
 
 const adminNav: NavItem[] = [
-  { to: "/admin", label: "总览", icon: "overview", section: "概览" },
-  { to: "/admin/logs", label: "查询日志", icon: "logs", section: "监控" },
-  { to: "/admin/users", label: "用户", icon: "users", section: "服务" },
+  { to: "/admin", label: msg("总览"), icon: "overview", section: msg("概览") },
+  {
+    to: "/admin/logs",
+    label: msg("查询日志"),
+    icon: "logs",
+    section: msg("监控"),
+  },
+  {
+    to: "/admin/users",
+    label: msg("用户"),
+    icon: "users",
+    section: msg("服务"),
+  },
   {
     to: "/admin/runtime",
-    label: "运行配置",
+    label: msg("运行配置"),
     icon: "runtime",
-    section: "服务",
+    section: msg("服务"),
   },
   {
     to: "/admin/audit",
-    label: "审计",
+    label: msg("审计"),
     icon: "audit",
-    section: "管理",
+    section: msg("管理"),
     only: "desktop",
   },
   {
     to: "/admin/system",
-    label: "系统",
+    label: msg("系统"),
     icon: "system",
-    section: "管理",
+    section: msg("管理"),
     only: "desktop",
   },
   {
     to: "/admin/more",
-    label: "更多",
+    label: msg("更多"),
     icon: "more",
-    section: "管理",
+    section: msg("管理"),
     only: "mobile",
   },
 ];
 // Pages reachable from the mobile "更多" page.
 export const adminMoreLinks = [
-  { to: "/admin/audit", label: "审计" },
-  { to: "/admin/system", label: "系统" },
-  { to: "/admin/password", label: "修改密码" },
+  { to: "/admin/audit", label: msg("审计") },
+  { to: "/admin/system", label: msg("系统") },
+  { to: "/admin/password", label: msg("修改密码") },
 ];
 const userNav: NavItem[] = [
-  { to: "/app", label: "首页", icon: "overview", section: "概览" },
+  { to: "/app", label: msg("首页"), icon: "overview", section: msg("概览") },
   {
     to: "/app/usage",
-    label: "统计与日志",
+    label: msg("统计与日志"),
     icon: "usage",
-    section: "工具",
+    section: msg("工具"),
   },
-  { to: "/app/help", label: "获取支持", icon: "help", section: "支持" },
+  {
+    to: "/app/help",
+    label: msg("获取支持"),
+    icon: "help",
+    section: msg("支持"),
+  },
 ];
 
 function NavIcon({ name }: { name: NavIconName }) {
@@ -345,8 +364,12 @@ export function Shell() {
   const inMore = adminMoreLinks.some(({ to }) => location.pathname === to);
   // Admins change their password here; users open their account centre.
   const accountLink = admin
-    ? { to: "/admin/password", label: "修改密码", icon: "password" as const }
-    : { to: "/app/account", label: "账户中心", icon: "account" as const };
+    ? {
+        to: "/admin/password",
+        label: t("修改密码"),
+        icon: "password" as const,
+      }
+    : { to: "/app/account", label: t("账户中心"), icon: "account" as const };
   const sections = links.reduce<Array<{ label: string; items: NavItem[] }>>(
     (groups, item) => {
       const current = groups[groups.length - 1];
@@ -385,9 +408,9 @@ export function Shell() {
   return (
     <div className={admin ? "shell admin-shell" : "shell user-shell"}>
       <a className="skip-link" href="#main-content">
-        跳到主要内容
+        {t("跳到主要内容")}
       </a>
-      <aside aria-label={admin ? "管理控制台" : "用户中心"}>
+      <aside aria-label={admin ? t("管理控制台") : t("用户中心")}>
         <NavLink
           className="brand"
           to={admin ? "/admin" : "/app"}
@@ -399,10 +422,10 @@ export function Shell() {
             <small>Network Console</small>
           </span>
         </NavLink>
-        <nav ref={navRef} aria-label="主导航">
+        <nav ref={navRef} aria-label={t("主导航")}>
           {sections.map((section) => (
             <div className="nav-group" key={section.label}>
-              <span className="nav-section-label">{section.label}</span>
+              <span className="nav-section-label">{t(section.label)}</span>
               {section.items.map(({ to, label, icon, only }) => (
                 <NavLink
                   key={to}
@@ -422,19 +445,20 @@ export function Shell() {
                   <i>
                     <NavIcon name={icon} />
                   </i>
-                  <span>{label}</span>
+                  <span>{t(label)}</span>
                 </NavLink>
               ))}
             </div>
           ))}
         </nav>
+        <LanguageSelect className="sidebar-language" />
         <div className="account">
           <span className="account-avatar" aria-hidden>
             {session?.user.username.slice(0, 1).toUpperCase()}
           </span>
           <span className="account-copy">
             <strong>{session?.user.username}</strong>
-            <small>{admin ? "管理员" : "用户账户"}</small>
+            <small>{admin ? t("管理员") : t("用户账户")}</small>
           </span>
           <NavLink
             className={({ isActive }) =>
@@ -446,8 +470,8 @@ export function Shell() {
           >
             <NavIcon name={accountLink.icon} />
           </NavLink>
-          <button className="link" onClick={exit} aria-label="退出登录">
-            退出
+          <button className="link" onClick={exit} aria-label={t("退出登录")}>
+            {t("退出")}
           </button>
         </div>
       </aside>
@@ -468,14 +492,18 @@ export function Shell() {
                   isActive ? "icon-link active" : "icon-link"
                 }
                 to={accountLink.to}
-                aria-label="移动端账户中心"
+                aria-label={t("移动端账户中心")}
                 title={accountLink.label}
               >
                 <NavIcon name={accountLink.icon} />
               </NavLink>
             )}
-            <button className="link" onClick={exit} aria-label="移动端退出登录">
-              退出
+            <button
+              className="link"
+              onClick={exit}
+              aria-label={t("移动端退出登录")}
+            >
+              {t("退出")}
             </button>
           </div>
         </header>
@@ -485,6 +513,26 @@ export function Shell() {
         </UnsavedGuardContext.Provider>
       </main>
     </div>
+  );
+}
+// Native names, so a reader can find their language whatever is showing.
+export function LanguageSelect({ className = "" }: { className?: string }) {
+  const value = useLang();
+  return (
+    <label className={`language-select ${className}`.trim()}>
+      <svg aria-hidden viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+      </svg>
+      <span className="sr-only">{t("界面语言")}</span>
+      <select value={value} onChange={(e) => setLang(e.target.value as Lang)}>
+        {languages.map((l) => (
+          <option key={l.code} value={l.code} lang={l.htmlLang}>
+            {l.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 export function Field({
@@ -543,7 +591,7 @@ export function Modal({
             type="button"
             className="icon-button"
             onClick={onClose}
-            aria-label="关闭"
+            aria-label={t("关闭")}
           >
             <svg aria-hidden viewBox="0 0 24 24">
               <path d="m6 6 12 12M18 6 6 18" />
@@ -556,11 +604,11 @@ export function Modal({
   );
 }
 export const fmt = {
-  num: (n: number) => new Intl.NumberFormat("zh-CN").format(n),
+  num: (n: number) => new Intl.NumberFormat(locale()).format(n),
   date: (v: string) =>
     !v || v.startsWith("0001-01-01")
-      ? "未设置"
-      : new Intl.DateTimeFormat("zh-CN", {
+      ? t("未设置")
+      : new Intl.DateTimeFormat(locale(), {
           dateStyle: "medium",
           timeStyle: "short",
         }).format(new Date(v)),

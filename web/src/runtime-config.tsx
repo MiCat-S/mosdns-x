@@ -12,6 +12,7 @@ import {
   useLoad,
   useUnsavedGuard,
 } from "./components";
+import { msg, t } from "./i18n";
 import type {
   RuntimeApplyResult,
   RuntimeCache,
@@ -28,9 +29,9 @@ import type {
 } from "./types";
 
 const readonlyReason: Record<string, string> = {
-  sensitive_parameters: "此插件含敏感连接参数，不能在面板中读取或修改。",
-  unsupported_parameters: "此插件包含当前面板不支持的参数，保持只读。",
-  unsupported_type: "此插件类型暂不支持在运行配置中编辑。",
+  sensitive_parameters: msg("此插件含敏感连接参数，不能在面板中读取或修改。"),
+  unsupported_parameters: msg("此插件包含当前面板不支持的参数，保持只读。"),
+  unsupported_type: msg("此插件类型暂不支持在运行配置中编辑。"),
 };
 
 function copyConfig(config: RuntimeConfig): RuntimeConfig {
@@ -49,7 +50,7 @@ function runtimeDraftError(config: RuntimeConfig) {
         !Number.isInteger(value) || value < min || value > max,
     )
   )
-    return "请先修正标记为无效的数值字段。";
+    return t("请先修正标记为无效的数值字段。");
   if (
     config.plugins.some(
       (plugin) =>
@@ -59,7 +60,7 @@ function runtimeDraftError(config: RuntimeConfig) {
         ),
     )
   )
-    return "上游地址不能为空，请检查标记的字段。";
+    return t("上游地址不能为空，请检查标记的字段。");
   return "";
 }
 
@@ -96,7 +97,7 @@ function RuntimeNumberField({
   return (
     <Field
       label={label}
-      hint={invalid ? `请输入 ${min} 到 ${max} 的整数。` : hint}
+      hint={invalid ? t("请输入 {min} 到 {max} 的整数。", { min, max }) : hint}
     >
       <input
         type="number"
@@ -155,31 +156,34 @@ function RuntimeUpstreamEditor({
     key: K,
     value: RuntimeUpstream[K],
   ) => onChange({ [key]: value });
+  const number = index + 1;
   return (
     <fieldset className="runtime-upstream">
-      <legend>上游 {index + 1}</legend>
+      <legend>{t("上游 {index}", { index: number })}</legend>
       <div className="runtime-upstream-main">
-        <Field label="上游地址">
+        <Field label={t("上游地址")}>
           <input
-            aria-label={`上游 ${index + 1} 地址`}
+            aria-label={t("上游 {index} 地址", { index: number })}
             value={upstream.addr}
             disabled={disabled}
-            placeholder="例如：https://dns.example/dns-query…"
+            placeholder={t("例如：https://dns.example/dns-query…")}
             required
             aria-invalid={!upstream.addr.trim() || undefined}
             onChange={(event) => update("addr", event.target.value)}
           />
         </Field>
         <Field
-          label="日志显示名称"
-          hint="可选。留空时公共 DNS 显示地址，其他上游只显示插件名和序号，不显示地址。"
+          label={t("日志显示名称")}
+          hint={t(
+            "可选。留空时公共 DNS 显示地址，其他上游只显示插件名和序号，不显示地址。",
+          )}
         >
           <input
-            aria-label={`上游 ${index + 1} 日志显示名称`}
+            aria-label={t("上游 {index} 日志显示名称", { index: number })}
             value={upstream.label ?? ""}
             disabled={disabled}
             maxLength={64}
-            placeholder="例如：香港私有 DoH…"
+            placeholder={t("例如：香港私有 DoH…")}
             onChange={(event) => update("label", event.target.value)}
           />
         </Field>
@@ -189,13 +193,13 @@ function RuntimeUpstreamEditor({
           disabled={disabled || !removable}
           onClick={onRemove}
         >
-          删除
+          {t("删除")}
         </button>
       </div>
       <details>
-        <summary>高级连接选项</summary>
+        <summary>{t("高级连接选项")}</summary>
         <div className="form-grid">
-          <Field label="拨号地址" hint="可选，用于覆盖连接目标。">
+          <Field label={t("拨号地址")} hint={t("可选，用于覆盖连接目标。")}>
             <input
               value={upstream.dial_addr ?? ""}
               disabled={disabled}
@@ -209,7 +213,7 @@ function RuntimeUpstreamEditor({
               onChange={(event) => update("bootstrap", event.target.value)}
             />
           </Field>
-          <Field label="绑定网卡">
+          <Field label={t("绑定网卡")}>
             <input
               value={upstream.bind_to_device ?? ""}
               disabled={disabled}
@@ -225,7 +229,7 @@ function RuntimeUpstreamEditor({
             onChange={(value) => update("so_mark", value)}
           />
           <RuntimeNumberField
-            label="空闲超时（秒）"
+            label={t("空闲超时（秒）")}
             value={upstream.idle_timeout ?? 0}
             min={0}
             max={2147483647}
@@ -233,7 +237,7 @@ function RuntimeUpstreamEditor({
             onChange={(value) => update("idle_timeout", value)}
           />
           <RuntimeNumberField
-            label="最大连接数"
+            label={t("最大连接数")}
             value={upstream.max_conns ?? 0}
             min={0}
             max={2147483647}
@@ -243,31 +247,31 @@ function RuntimeUpstreamEditor({
         </div>
         <div className="runtime-switches">
           <RuntimeSwitch
-            label="信任上游应答"
+            label={t("信任上游应答")}
             checked={Boolean(upstream.trusted)}
             disabled={disabled}
             onChange={(value) => update("trusted", value)}
           />
           <RuntimeSwitch
-            label="启用连接复用"
+            label={t("启用连接复用")}
             checked={Boolean(upstream.enable_pipeline)}
             disabled={disabled}
             onChange={(value) => update("enable_pipeline", value)}
           />
           <RuntimeSwitch
-            label="跳过 TLS 证书校验"
+            label={t("跳过 TLS 证书校验")}
             checked={Boolean(upstream.insecure)}
             disabled={disabled}
             onChange={(value) => update("insecure", value)}
           />
           <RuntimeSwitch
-            label="启用内核 TX"
+            label={t("启用内核 TX")}
             checked={Boolean(upstream.kernel_tx)}
             disabled={disabled}
             onChange={(value) => update("kernel_tx", value)}
           />
           <RuntimeSwitch
-            label="启用内核 RX"
+            label={t("启用内核 RX")}
             checked={Boolean(upstream.kernel_rx)}
             disabled={disabled}
             onChange={(value) => update("kernel_rx", value)}
@@ -302,9 +306,12 @@ function RuntimeForwardEditor({
     onChange({ upstreams });
   };
   return (
-    <Card title={`上游 · ${plugin.tag}`} className="runtime-plugin-card">
+    <Card
+      title={t("上游 · {tag}", { tag: plugin.tag })}
+      className="runtime-plugin-card"
+    >
       <p className="caption">
-        仅显示并编辑已通过安全检查的连接字段。探测结果不包含上游地址。
+        {t("仅显示并编辑已通过安全检查的连接字段。探测结果不包含上游地址。")}
       </p>
       {forward.upstreams.map((upstream, index) => (
         <RuntimeUpstreamEditor
@@ -331,10 +338,10 @@ function RuntimeForwardEditor({
             onChange({ upstreams: [...forward.upstreams, { addr: "" }] })
           }
         >
-          添加上游
+          {t("添加上游")}
         </button>
         <button type="button" disabled={disabled || probing} onClick={onProbe}>
-          {probing ? "探测中…" : "探测上游"}
+          {probing ? t("探测中…") : t("探测上游")}
         </button>
       </div>
       {probes?.length ? <RuntimeProbeResults probes={probes} /> : null}
@@ -344,16 +351,16 @@ function RuntimeForwardEditor({
 
 function RuntimeProbeResults({ probes }: { probes: RuntimeProbe[] }) {
   return (
-    <div className="runtime-probes" aria-label="上游探测结果">
+    <div className="runtime-probes" aria-label={t("上游探测结果")}>
       {probes.map((probe) => (
         <div key={probe.upstream_id}>
           <strong>{probe.upstream_id}</strong>
           <span className={probe.success ? "badge ok" : "badge error"}>
-            {probe.success ? "成功" : "失败"}
+            {probe.success ? t("成功") : t("失败")}
           </span>
           <small>
             {probe.duration_ms.toFixed(1)} ms ·{" "}
-            {probe.rcode >= 0 ? `RCODE ${probe.rcode}` : "未收到 DNS 应答"}
+            {probe.rcode >= 0 ? `RCODE ${probe.rcode}` : t("未收到 DNS 应答")}
           </small>
         </div>
       ))}
@@ -377,10 +384,13 @@ function RuntimeCacheEditor({
     value: RuntimeCache[K],
   ) => onChange(updateValue(cache, key, value));
   return (
-    <Card title={`内存缓存 · ${plugin.tag}`} className="runtime-plugin-card">
+    <Card
+      title={t("内存缓存 · {tag}", { tag: plugin.tag })}
+      className="runtime-plugin-card"
+    >
       <div className="form-grid">
         <RuntimeNumberField
-          label="缓存容量"
+          label={t("缓存容量")}
           value={cache.size}
           min={0}
           max={2147483647}
@@ -388,7 +398,7 @@ function RuntimeCacheEditor({
           onChange={(value) => update("size", value)}
         />
         <RuntimeNumberField
-          label="懒缓存 TTL（秒）"
+          label={t("懒缓存 TTL（秒）")}
           value={cache.lazy_cache_ttl}
           min={0}
           max={2147483647}
@@ -396,7 +406,7 @@ function RuntimeCacheEditor({
           onChange={(value) => update("lazy_cache_ttl", value)}
         />
         <RuntimeNumberField
-          label="懒缓存应答 TTL（秒）"
+          label={t("懒缓存应答 TTL（秒）")}
           value={cache.lazy_cache_reply_ttl}
           min={0}
           max={2147483647}
@@ -405,7 +415,7 @@ function RuntimeCacheEditor({
         />
       </div>
       <RuntimeSwitch
-        label="压缩 DNS 应答"
+        label={t("压缩 DNS 应答")}
         checked={cache.compress_resp}
         disabled={disabled}
         onChange={(value) => update("compress_resp", value)}
@@ -417,12 +427,12 @@ function RuntimeCacheEditor({
 function RuntimeReadonlyPlugin({ plugin }: { plugin: RuntimePlugin }) {
   const reason =
     readonlyReason[plugin.read_only_reason ?? ""] ??
-    "此插件当前只能查看标签和类型。";
+    msg("此插件当前只能查看标签和类型。");
   return (
     <li>
       <strong>{plugin.tag}</strong>
       <span>{plugin.type}</span>
-      <small>{reason}</small>
+      <small>{t(reason)}</small>
     </li>
   );
 }
@@ -430,10 +440,10 @@ function RuntimeReadonlyPlugin({ plugin }: { plugin: RuntimePlugin }) {
 function runtimeSourceStatus(status: string) {
   return (
     {
-      available: "可读取",
-      last_loaded: "最近一次加载时已读取",
-      unavailable: "暂不可用",
-      missing: "未配置",
+      available: t("可读取"),
+      last_loaded: t("最近一次加载时已读取"),
+      unavailable: t("暂不可用"),
+      missing: t("未配置"),
     }[status] ?? status
   );
 }
@@ -441,14 +451,14 @@ function runtimeSourceStatus(status: string) {
 function runtimeCapabilityReason(reason?: string) {
   return (
     {
-      managed_config_not_configured: "未配置托管文件，仅支持查看。",
-      configured_in_main_config: "由主配置管理，修改后需要重启。",
-      sensitive_parameters: "包含敏感连接参数，仅展示安全摘要。",
-      unsupported_parameters: "包含当前面板不支持的参数。",
-      unsupported_type: "当前插件类型只支持查看。",
+      managed_config_not_configured: t("未配置托管文件，仅支持查看。"),
+      configured_in_main_config: t("由主配置管理，修改后需要重启。"),
+      sensitive_parameters: t("包含敏感连接参数，仅展示安全摘要。"),
+      unsupported_parameters: t("包含当前面板不支持的参数。"),
+      unsupported_type: t("当前插件类型只支持查看。"),
     }[reason ?? ""] ??
     reason ??
-    "未提供额外说明。"
+    t("未提供额外说明。")
   );
 }
 
@@ -462,16 +472,21 @@ function RuntimeChangePreview({
   const changes = useMemo(() => {
     const items: string[] = [];
     if (baseline.query_log !== draft.query_log)
-      items.push(draft.query_log ? "已启用查询明细记录" : "已停用查询明细记录");
+      items.push(
+        draft.query_log ? t("已启用查询明细记录") : t("已停用查询明细记录"),
+      );
     const telemetry: Array<[keyof RuntimeTelemetry, string]> = [
-      ["aggregate_retention_days", "聚合数据保留期"],
-      ["query_retention_hours", "查询明细保留期"],
-      ["max_query_records", "查询明细条数上限"],
+      ["aggregate_retention_days", msg("聚合数据保留期：{from} → {to}")],
+      ["query_retention_hours", msg("查询明细保留期：{from} → {to}")],
+      ["max_query_records", msg("查询明细条数上限：{from} → {to}")],
     ];
-    for (const [key, name] of telemetry) {
+    for (const [key, text] of telemetry) {
       if (baseline.telemetry[key] !== draft.telemetry[key])
         items.push(
-          `${name}：${baseline.telemetry[key]} → ${draft.telemetry[key]}`,
+          t(text, {
+            from: baseline.telemetry[key],
+            to: draft.telemetry[key],
+          }),
         );
     }
     const basePlugins = new Map(
@@ -485,17 +500,17 @@ function RuntimeChangePreview({
           JSON.stringify(original.fast_forward) !==
           JSON.stringify(plugin.fast_forward)
         )
-          items.push(`上游插件 ${plugin.tag} 的连接参数已修改`);
+          items.push(t("上游插件 {tag} 的连接参数已修改", { tag: plugin.tag }));
       }
       if (plugin.type === "cache" && plugin.cache) {
         if (JSON.stringify(original.cache) !== JSON.stringify(plugin.cache))
-          items.push(`缓存插件 ${plugin.tag} 的参数已修改`);
+          items.push(t("缓存插件 {tag} 的参数已修改", { tag: plugin.tag }));
       }
     }
     return items;
   }, [baseline, draft]);
   return (
-    <Card title="修改预览" className="runtime-preview">
+    <Card title={t("修改预览")} className="runtime-preview">
       {changes.length ? (
         <ul>
           {changes.map((change) => (
@@ -503,7 +518,7 @@ function RuntimeChangePreview({
           ))}
         </ul>
       ) : (
-        <p className="caption">尚未修改可托管的运行参数。</p>
+        <p className="caption">{t("尚未修改可托管的运行参数。")}</p>
       )}
     </Card>
   );
@@ -527,16 +542,18 @@ function RuntimeHistory({
   onRollback: (target: string) => void;
 }) {
   return (
-    <Card title="修订历史" className="runtime-history">
+    <Card title={t("修订历史")} className="runtime-history">
       <p className="caption">
-        最多保存 10 个旧修订。具备托管能力且当前摘要可用时，可以回滚到其他版本。
+        {t(
+          "最多保存 10 个旧修订。具备托管能力且当前摘要可用时，可以回滚到其他版本。",
+        )}
       </p>
       {loading ? <Spinner /> : null}
       {error ? (
         <div className="runtime-section-error" aria-live="polite">
           <Alert error={error} />
           <button type="button" onClick={onRetry}>
-            重试历史
+            {t("重试历史")}
           </button>
         </div>
       ) : null}
@@ -549,21 +566,21 @@ function RuntimeHistory({
                 <small>{fmt.date(item.created_at)}</small>
               </span>
               {item.revision === revision ? (
-                <span className="badge ok">当前</span>
+                <span className="badge ok">{t("当前")}</span>
               ) : (
                 <button
                   type="button"
                   disabled={disabled}
                   onClick={() => onRollback(item.revision)}
                 >
-                  回滚
+                  {t("回滚")}
                 </button>
               )}
             </div>
           ))}
         </div>
       ) : !loading && !error ? (
-        <Empty>尚无可回滚的历史修订</Empty>
+        <Empty>{t("尚无可回滚的历史修订")}</Empty>
       ) : null}
     </Card>
   );
@@ -625,12 +642,12 @@ export function RuntimeConfigPage() {
   const canManage = state?.mode !== "read_only" && (capabilities?.edit ?? true);
   unstable_usePrompt({
     when: Boolean(hasChanges),
-    message: "运行配置还有未保存的修改，确定离开当前页面吗？",
+    message: t("运行配置还有未保存的修改，确定离开当前页面吗？"),
   });
   const confirmLogout = useCallback(
     () =>
       !hasChanges ||
-      window.confirm("运行配置还有未保存的修改，确定退出登录吗？"),
+      window.confirm(t("运行配置还有未保存的修改，确定退出登录吗？")),
     [hasChanges],
   );
   useUnsavedGuard(confirmLogout);
@@ -638,7 +655,7 @@ export function RuntimeConfigPage() {
   function confirmReplaceDraft() {
     return (
       !hasChanges ||
-      window.confirm("运行配置还有未保存的修改，确定放弃当前修改吗？")
+      window.confirm(t("运行配置还有未保存的修改，确定放弃当前修改吗？"))
     );
   }
 
@@ -691,8 +708,8 @@ export function RuntimeConfigPage() {
       setValidation(result);
       setNotice(
         result.will_clear_caches
-          ? "验证通过。应用后会清空 DNS 缓存。"
-          : "验证通过。可以应用本次修改。",
+          ? t("验证通过。应用后会清空 DNS 缓存。")
+          : t("验证通过。可以应用本次修改。"),
       );
     } catch (reason) {
       setValidation(undefined);
@@ -703,10 +720,10 @@ export function RuntimeConfigPage() {
           preserveDraft.current = true;
           setState(latest);
           setNotice(
-            "已载入最新运行基线，并保留你的草稿；请核对差异后重新验证。",
+            t("已载入最新运行基线，并保留你的草稿；请核对差异后重新验证。"),
           );
         } catch (reloadReason) {
-          errorMessage += ` 最新运行基线加载失败：${message(reloadReason)}；本地草稿仍保留。`;
+          errorMessage += ` ${t("最新运行基线加载失败：{error}；本地草稿仍保留。", { error: message(reloadReason) })}`;
         }
       }
       setError(errorMessage);
@@ -728,8 +745,8 @@ export function RuntimeConfigPage() {
       setState(result);
       setNotice(
         result.caches_cleared
-          ? "运行配置已应用，DNS 缓存已清空。"
-          : "运行配置已应用。",
+          ? t("运行配置已应用，DNS 缓存已清空。")
+          : t("运行配置已应用。"),
       );
       setHistoryVersion((current) => current + 1);
     } catch (reason) {
@@ -741,10 +758,10 @@ export function RuntimeConfigPage() {
           preserveDraft.current = true;
           setState(latest);
           setNotice(
-            "已载入最新运行基线，并保留你的草稿；请核对差异后重新验证。",
+            t("已载入最新运行基线，并保留你的草稿；请核对差异后重新验证。"),
           );
         } catch (reloadReason) {
-          errorMessage += ` 最新运行基线加载失败：${message(reloadReason)}；本地草稿仍保留。`;
+          errorMessage += ` ${t("最新运行基线加载失败：{error}；本地草稿仍保留。", { error: message(reloadReason) })}`;
         }
       }
       setError(errorMessage);
@@ -766,13 +783,15 @@ export function RuntimeConfigPage() {
       setState(result);
       if (result.restart_required.length) {
         setNotice(
-          `主配置包含需要重启的项：${result.restart_required.join("、")}。当前运行配置未切换。`,
+          t("主配置包含需要重启的项：{items}。当前运行配置未切换。", {
+            items: result.restart_required.join(t("、")),
+          }),
         );
       } else {
         setNotice(
           result.caches_cleared
-            ? "主配置已重读，DNS 缓存已清空。"
-            : "主配置已重读。",
+            ? t("主配置已重读，DNS 缓存已清空。")
+            : t("主配置已重读。"),
         );
       }
       setHistoryVersion((current) => current + 1);
@@ -800,8 +819,8 @@ export function RuntimeConfigPage() {
       setState(result);
       setNotice(
         result.caches_cleared
-          ? "已回滚运行配置，DNS 缓存已清空。"
-          : "已回滚运行配置。",
+          ? t("已回滚运行配置，DNS 缓存已清空。")
+          : t("已回滚运行配置。"),
       );
       setHistoryVersion((current) => current + 1);
     } catch (reason) {
@@ -831,8 +850,10 @@ export function RuntimeConfigPage() {
   return (
     <>
       <PageTitle
-        title="运行配置"
-        description="分别查看正在运行的安全摘要，并在启用托管后验证、应用和回滚支持的设置。"
+        title={t("运行配置")}
+        description={t(
+          "分别查看正在运行的安全摘要，并在启用托管后验证、应用和回滚支持的设置。",
+        )}
         action={
           <div className="page-actions">
             <button
@@ -844,7 +865,7 @@ export function RuntimeConfigPage() {
                 }
               }}
             >
-              重新读取摘要
+              {t("重新读取摘要")}
             </button>
             {state && (capabilities?.reload ?? canManage) ? (
               <button
@@ -852,7 +873,7 @@ export function RuntimeConfigPage() {
                 disabled={Boolean(busy)}
                 onClick={() => void reload()}
               >
-                {busy === "reload" ? "重读中…" : "重读主配置"}
+                {busy === "reload" ? t("重读中…") : t("重读主配置")}
               </button>
             ) : null}
           </div>
@@ -860,15 +881,20 @@ export function RuntimeConfigPage() {
       />
       {loading ? <Spinner /> : null}
       {loadError ? (
-        <Card title="运行配置摘要加载失败" className="runtime-section-error">
+        <Card
+          title={t("运行配置摘要加载失败")}
+          className="runtime-section-error"
+        >
           <div aria-live="polite">
             <Alert error={loadError} />
           </div>
           <p className="caption">
-            加载失败与未配置托管文件是不同状态。请重试以确认当前节点能力。
+            {t(
+              "加载失败与未配置托管文件是不同状态。请重试以确认当前节点能力。",
+            )}
           </p>
           <button onClick={() => setConfigVersion((current) => current + 1)}>
-            重试摘要
+            {t("重试摘要")}
           </button>
         </Card>
       ) : null}
@@ -880,75 +906,77 @@ export function RuntimeConfigPage() {
         <div className="runtime-config">
           {!canManage ? (
             <div className="notice runtime-readonly-notice">
-              <strong>当前为只读模式。</strong>
+              <strong>{t("当前为只读模式。")}</strong>
               <span>
-                未启用托管配置不会影响 DNS
-                服务；当前页面仍展示服务端已脱敏的运行摘要。验证、应用、重读、历史和回滚需按当前版本说明配置托管文件。
+                {t(
+                  "未启用托管配置不会影响 DNS 服务；当前页面仍展示服务端已脱敏的运行摘要。验证、应用、重读、历史和回滚需按当前版本说明配置托管文件。",
+                )}
               </span>
             </div>
           ) : null}
-          <Card title="运行状态" className="runtime-status">
+          <Card title={t("运行状态")} className="runtime-status">
             <div className="rows">
               <div>
-                <span>当前修订</span>
+                <span>{t("当前修订")}</span>
                 <code>
-                  {state.revision ? state.revision.slice(0, 12) : "尚未保存"}
+                  {state.revision ? state.revision.slice(0, 12) : t("尚未保存")}
                 </code>
               </div>
               <div>
-                <span>管理模式</span>
-                <strong>{canManage ? "托管管理" : "只读检查"}</strong>
+                <span>{t("管理模式")}</span>
+                <strong>{canManage ? t("托管管理") : t("只读检查")}</strong>
               </div>
               <div>
-                <span>可编辑插件</span>
+                <span>{t("可编辑插件")}</span>
                 <strong>
-                  {canManage
-                    ? draft.plugins.filter((plugin) => plugin.editable).length
-                    : 0}{" "}
-                  个
+                  {t("{count} 个", {
+                    count: canManage
+                      ? draft.plugins.filter((plugin) => plugin.editable).length
+                      : 0,
+                  })}
                 </strong>
               </div>
             </div>
             {state.sources ? (
               <div className="runtime-source-grid">
                 <div>
-                  <strong>正在运行</strong>
+                  <strong>{t("正在运行")}</strong>
                   <span>
                     {runtimeSourceStatus(state.sources.running.status)}
                   </span>
-                  <small>页面编辑基于此运行摘要。</small>
+                  <small>{t("页面编辑基于此运行摘要。")}</small>
                 </div>
                 <div>
-                  <strong>已加载的主配置基线</strong>
+                  <strong>{t("已加载的主配置基线")}</strong>
                   <span>{runtimeSourceStatus(state.sources.base.status)}</span>
                   <small>
-                    这是最近一次成功加载的副本；磁盘文件之后可能已变化。
+                    {t("这是最近一次成功加载的副本；磁盘文件之后可能已变化。")}
                   </small>
                 </div>
                 <div>
-                  <strong>候选配置</strong>
+                  <strong>{t("候选配置")}</strong>
                   <span>
                     {runtimeSourceStatus(state.sources.candidate.status)}
                   </span>
-                  <small>未应用候选不会标记为正在运行。</small>
+                  <small>{t("未应用候选不会标记为正在运行。")}</small>
                 </div>
               </div>
             ) : null}
           </Card>
-          <Card title="查询与统计">
+          <Card title={t("查询与统计")}>
             <RuntimeSwitch
-              label="记录查询明细"
+              label={t("记录查询明细")}
               checked={draft.query_log}
               disabled={Boolean(busy) || !canManage}
               onChange={(value) => change({ ...draft, query_log: value })}
             />
             <div className="form-grid">
               <RuntimeNumberField
-                label="聚合保留天数"
+                label={t("聚合保留天数")}
                 value={draft.telemetry.aggregate_retention_days}
                 min={1}
                 max={31}
-                hint="1 至 31 天"
+                hint={t("1 至 31 天")}
                 disabled={Boolean(busy) || !canManage}
                 onChange={(value) =>
                   change({
@@ -962,11 +990,11 @@ export function RuntimeConfigPage() {
                 }
               />
               <RuntimeNumberField
-                label="查询明细保留小时"
+                label={t("查询明细保留小时")}
                 value={draft.telemetry.query_retention_hours}
                 min={1}
                 max={720}
-                hint="1 至 720 小时"
+                hint={t("1 至 720 小时")}
                 disabled={Boolean(busy) || !canManage}
                 onChange={(value) =>
                   change({
@@ -980,11 +1008,11 @@ export function RuntimeConfigPage() {
                 }
               />
               <RuntimeNumberField
-                label="查询明细条数上限"
+                label={t("查询明细条数上限")}
                 value={draft.telemetry.max_query_records}
                 min={1000}
                 max={5000000}
-                hint="1000 至 5000000 条"
+                hint={t("1000 至 5000000 条")}
                 disabled={Boolean(busy) || !canManage}
                 onChange={(value) =>
                   change({
@@ -1025,7 +1053,7 @@ export function RuntimeConfigPage() {
                       type="button"
                       onClick={() => void probe(plugin.tag)}
                     >
-                      重试探测
+                      {t("重试探测")}
                     </button>
                   </div>
                 ) : null}
@@ -1048,10 +1076,11 @@ export function RuntimeConfigPage() {
             draft={draft}
           />
           {canManage ? (
-            <Card title="应用配置" className="runtime-apply">
+            <Card title={t("应用配置")} className="runtime-apply">
               <p className="caption">
-                验证会完整构建候选运行代，但不会切换 DNS
-                服务。验证令牌仅在当前管理员会话中有效 5 分钟，且只能应用一次。
+                {t(
+                  "验证会完整构建候选运行代，但不会切换 DNS 服务。验证令牌仅在当前管理员会话中有效 5 分钟，且只能应用一次。",
+                )}
               </p>
               <div className="actions">
                 <button
@@ -1064,7 +1093,7 @@ export function RuntimeConfigPage() {
                     setError("");
                   }}
                 >
-                  放弃修改
+                  {t("放弃修改")}
                 </button>
                 <button
                   type="button"
@@ -1072,47 +1101,51 @@ export function RuntimeConfigPage() {
                   disabled={Boolean(busy) || !hasChanges}
                   onClick={() => void validate()}
                 >
-                  {busy === "validate" ? "验证中…" : "验证修改"}
+                  {busy === "validate" ? t("验证中…") : t("验证修改")}
                 </button>
                 <button
                   type="button"
                   disabled={Boolean(busy) || !validation}
                   onClick={() => void apply()}
                 >
-                  {busy === "apply" ? "应用中…" : "应用已验证的修改"}
+                  {busy === "apply" ? t("应用中…") : t("应用已验证的修改")}
                 </button>
               </div>
               {validation ? (
                 <small className="runtime-validation">
-                  验证令牌有效至 {fmt.date(validation.expires_at)}。
+                  {t("验证令牌有效至 {time}。", {
+                    time: fmt.date(validation.expires_at),
+                  })}
                 </small>
               ) : null}
             </Card>
           ) : null}
           {state.sources?.running.data_providers?.length ? (
-            <Card title="节点数据源" className="runtime-data-providers">
+            <Card title={t("节点数据源")} className="runtime-data-providers">
               <p className="caption">
-                这些数据源来自主配置并参与既有分流。运行时暂不提供的条目数和加载时间不会推测为
-                0。
+                {t(
+                  "这些数据源来自主配置并参与既有分流。运行时暂不提供的条目数和加载时间不会推测为 0。",
+                )}
               </p>
               <div className="rows">
                 {state.sources.running.data_providers.map((provider) => (
                   <div key={provider.tag}>
                     <span>
                       <strong>{provider.tag}</strong>
-                      <small>{provider.file || "来源暂不可用"}</small>
+                      <small>{provider.file || t("来源暂不可用")}</small>
                     </span>
                     <span>
-                      {provider.auto_reload ? "自动重载" : "不自动重载"}
+                      {provider.auto_reload ? t("自动重载") : t("不自动重载")}
                       <small>
-                        条目：
-                        {provider.runtime_state?.entry_count == null
-                          ? "暂不可用"
-                          : fmt.num(provider.runtime_state.entry_count)}{" "}
-                        · 最近加载：
-                        {provider.runtime_state?.loaded_at
-                          ? fmt.date(provider.runtime_state.loaded_at)
-                          : "暂不可用"}
+                        {t("条目：{entries} · 最近加载：{loaded}", {
+                          entries:
+                            provider.runtime_state?.entry_count == null
+                              ? t("暂不可用")
+                              : fmt.num(provider.runtime_state.entry_count),
+                          loaded: provider.runtime_state?.loaded_at
+                            ? fmt.date(provider.runtime_state.loaded_at)
+                            : t("暂不可用"),
+                        })}
                       </small>
                     </span>
                   </div>
@@ -1121,7 +1154,7 @@ export function RuntimeConfigPage() {
             </Card>
           ) : null}
           {state.sources?.running.plugins?.length ? (
-            <Card title="插件能力" className="runtime-capabilities">
+            <Card title={t("插件能力")} className="runtime-capabilities">
               <div className="runtime-capability-list">
                 {state.sources.running.plugins.map((plugin) => (
                   <div key={plugin.tag}>
@@ -1130,23 +1163,23 @@ export function RuntimeConfigPage() {
                       <small>{plugin.type}</small>
                     </span>
                     <span>
-                      {plugin.capability.edit ? "可编辑" : "只读"} ·{" "}
+                      {plugin.capability.edit ? t("可编辑") : t("只读")} ·{" "}
                       {plugin.capability.hot_reload
-                        ? "可热更新"
+                        ? t("可热更新")
                         : plugin.capability.restart_required
-                          ? "修改需重启"
-                          : "不可热更新"}
+                          ? t("修改需重启")
+                          : t("不可热更新")}
                     </span>
                     <small>
                       {plugin.capability.reason
                         ? runtimeCapabilityReason(plugin.capability.reason)
                         : plugin.capability.clears_memory_caches
-                          ? "应用后清空内存缓存"
-                          : "应用不清空内存缓存"}
+                          ? t("应用后清空内存缓存")
+                          : t("应用不清空内存缓存")}
                     </small>
                     {plugin.safe_args ? (
                       <details>
-                        <summary>查看安全摘要</summary>
+                        <summary>{t("查看安全摘要")}</summary>
                         <pre>{JSON.stringify(plugin.safe_args, null, 2)}</pre>
                       </details>
                     ) : null}
@@ -1155,7 +1188,7 @@ export function RuntimeConfigPage() {
               </div>
             </Card>
           ) : null}
-          <Card title="只读插件" className="runtime-readonly">
+          <Card title={t("只读插件")} className="runtime-readonly">
             {draft.plugins.filter((plugin) => !plugin.editable).length ? (
               <ul>
                 {draft.plugins
@@ -1165,7 +1198,7 @@ export function RuntimeConfigPage() {
                   ))}
               </ul>
             ) : (
-              <Empty>当前配置没有只读插件</Empty>
+              <Empty>{t("当前配置没有只读插件")}</Empty>
             )}
           </Card>
         </div>

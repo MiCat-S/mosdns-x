@@ -8,6 +8,7 @@ import {
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { Empty } from "./components";
+import { locale, t } from "./i18n";
 
 echarts.use([
   LineChart,
@@ -44,7 +45,7 @@ export function showPointSymbols(series: Point[]) {
 }
 
 export function formatChartMinute(timestamp: number) {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(locale(), {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -133,7 +134,10 @@ function tooltip(params: TooltipParam[]) {
     formatChartMinute(params[0].value[0]),
     ...params.map(
       (item) =>
-        `${item.marker}${item.seriesName}：${new Intl.NumberFormat("zh-CN").format(item.value[1])} 次`,
+        `${item.marker}${t("{series}：{count} 次", {
+          series: item.seriesName,
+          count: new Intl.NumberFormat(locale()).format(item.value[1]),
+        })}`,
     ),
   ].join("<br/>");
 }
@@ -186,9 +190,9 @@ export default function UsageChart({
     const chart = echarts.init(ref.current);
     const theme = chartTheme();
     const resultSeries = [
-      line("已完成", theme.accent, theme.surface, series, "completed"),
-      line("失败", theme.danger, theme.surface, series, "failed"),
-      line("缓存命中", theme.success, theme.surface, series, "cache_hits"),
+      line(t("已完成"), theme.accent, theme.surface, series, "completed"),
+      line(t("失败"), theme.danger, theme.surface, series, "failed"),
+      line(t("缓存命中"), theme.success, theme.surface, series, "cache_hits"),
     ];
     const bounds = timeAxisBounds(from, to);
     const reduceMotion =
@@ -249,7 +253,15 @@ export default function UsageChart({
       },
       series:
         kind === "usage"
-          ? [line("已受理", theme.accent, theme.surface, series, "completed")]
+          ? [
+              line(
+                t("已受理"),
+                theme.accent,
+                theme.surface,
+                series,
+                "completed",
+              ),
+            ]
           : resultSeries,
     });
     const resize = () => chart.resize();
@@ -265,10 +277,10 @@ export default function UsageChart({
       ref={ref}
       role="img"
       aria-label={
-        kind === "usage" ? "DNS 已受理请求趋势图" : "DNS 处理结果趋势图"
+        kind === "usage" ? t("DNS 已受理请求趋势图") : t("DNS 处理结果趋势图")
       }
     />
   ) : (
-    <Empty>当前窗口暂无统计数据</Empty>
+    <Empty>{t("当前窗口暂无统计数据")}</Empty>
   );
 }

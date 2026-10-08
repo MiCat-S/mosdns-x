@@ -20,6 +20,7 @@ import {
   Chart,
   Empty,
   Field,
+  LanguageSelect,
   Metric,
   Modal,
   PageTitle,
@@ -29,6 +30,7 @@ import {
   useLoad,
 } from "./components";
 import { useSession } from "./session";
+import { locale, msg, t } from "./i18n";
 import { HealthPanel } from "./health-panel";
 import { OutboundSection, outboundName, routeReason } from "./query-trace";
 export { RuntimeConfigPage } from "./runtime-config";
@@ -145,10 +147,10 @@ export function Login() {
     return (
       <div className="login">
         <section>
-          <h1>无法连接服务</h1>
+          <h1>{t("无法连接服务")}</h1>
           <Alert error={sessionError} />
           <button className="primary" onClick={retry}>
-            重试
+            {t("重试")}
           </button>
         </section>
       </div>
@@ -198,32 +200,33 @@ export function Login() {
           <p className="login-kicker" translate="no">
             MOSDNS X
           </p>
-          <h1>登录网络控制台</h1>
-          <p>管理 DNS 服务、访问策略与运行状态。</p>
+          <h1>{t("登录网络控制台")}</h1>
+          <p>{t("管理 DNS 服务、访问策略与运行状态。")}</p>
           <Alert error={error} />
           <form onSubmit={submit}>
-            <Field label="用户名">
+            <Field label={t("用户名")}>
               <input
                 name="username"
                 autoComplete="username"
                 required
-                placeholder="请输入用户名…"
+                placeholder={t("请输入用户名…")}
               />
             </Field>
-            <Field label="密码">
+            <Field label={t("密码")}>
               <input
                 name="password"
                 type="password"
                 autoComplete="current-password"
                 required
-                placeholder="请输入密码…"
+                placeholder={t("请输入密码…")}
               />
             </Field>
             <button className="primary wide login-submit" disabled={busy}>
-              {busy ? "正在登录…" : "登录"}
+              {busy ? t("正在登录…") : t("登录")}
             </button>
           </form>
-          <p className="login-footnote">凭证仅用于当前控制台会话</p>
+          <p className="login-footnote">{t("凭证仅用于当前控制台会话")}</p>
+          <LanguageSelect className="login-language" />
         </section>
       </div>
     </div>
@@ -238,17 +241,17 @@ function StatsBlocks({ stats, usage }: { stats: Stats; usage?: UsagePoint[] }) {
         <>
           <div className="metrics">
             <Metric
-              label="已受理请求"
+              label={t("已受理请求")}
               value={fmt.num(summary.total)}
-              hint="以持久化计量为准"
+              hint={t("以持久化计量为准")}
             />
             <Metric
-              label="最近完整分钟平均"
-              value={`${summary.recentPerSecond.toFixed(2)} 次/秒`}
-              hint="一分钟平均值"
+              label={t("最近完整分钟平均")}
+              value={t("{n} 次/秒", { n: summary.recentPerSecond.toFixed(2) })}
+              hint={t("一分钟平均值")}
             />
           </div>
-          <Card title="已受理用量趋势">
+          <Card title={t("已受理用量趋势")}>
             <Chart
               series={summary.series}
               from={stats.from}
@@ -259,32 +262,35 @@ function StatsBlocks({ stats, usage }: { stats: Stats; usage?: UsagePoint[] }) {
         </>
       ) : null}
       <div className="metrics">
-        <Metric label="处理完成" value={fmt.num(stats.completed)} />
-        <Metric label="成功率" value={fmt.pct(successRate(stats), 1)} />
+        <Metric label={t("处理完成")} value={fmt.num(stats.completed)} />
+        <Metric label={t("成功率")} value={fmt.pct(successRate(stats), 1)} />
         <Metric
-          label="缓存命中"
+          label={t("缓存命中")}
           value={fmt.pct(stats.cache_hits, stats.completed)}
         />
         <Metric
-          label="平均延迟"
+          label={t("平均延迟")}
           value={`${stats.avg_latency_ms.toFixed(1)} ms`}
           hint={`P95 ${stats.p95_latency_ms.toFixed(1)} ms`}
         />
         <Metric
-          label="统计缺失"
+          label={t("统计缺失")}
           value={fmt.num(stats.dropped)}
-          hint="异步采集未记录数量"
+          hint={t("异步采集未记录数量")}
         />
       </div>
-      <Card title="处理结果趋势">
+      <Card title={t("处理结果趋势")}>
         <Chart series={stats.series} from={stats.from} to={stats.to} />
         <p className="caption">
-          统计窗口 {fmt.date(stats.from)} 至 {fmt.date(stats.to)} · 更新于{" "}
-          {fmt.date(stats.updated_at)}
+          {t("统计窗口 {from} 至 {to} · 更新于 {updated}", {
+            from: fmt.date(stats.from),
+            to: fmt.date(stats.to),
+            updated: fmt.date(stats.updated_at),
+          })}
         </p>
       </Card>
       <div className="grid2">
-        <Card title="响应结果">
+        <Card title={t("响应结果")}>
           {Object.keys(stats.rcode_counts).length ? (
             <div className="rows">
               {Object.entries(stats.rcode_counts).map(([k, v]) => (
@@ -298,7 +304,7 @@ function StatsBlocks({ stats, usage }: { stats: Stats; usage?: UsagePoint[] }) {
             <Empty />
           )}
         </Card>
-        <Card title="上游服务">
+        <Card title={t("上游服务")}>
           {stats.upstreams.length ? (
             <div className="rows">
               {stats.upstreams.map((u) => (
@@ -306,8 +312,10 @@ function StatsBlocks({ stats, usage }: { stats: Stats; usage?: UsagePoint[] }) {
                   <span>
                     {u.id}
                     <small>
-                      {fmt.num(u.attempts)} 次尝试 · {fmt.num(u.failures)}{" "}
-                      次失败
+                      {t("{attempts} 次尝试 · {failures} 次失败", {
+                        attempts: fmt.num(u.attempts),
+                        failures: fmt.num(u.failures),
+                      })}
                     </small>
                   </span>
                   <strong>{u.avg_latency_ms.toFixed(1)} ms</strong>
@@ -337,9 +345,11 @@ export function AdminOverview() {
   return (
     <>
       <PageTitle
-        title="服务总览"
-        description="全局 DNS 请求、响应与上游运行状态"
-        action={<button onClick={() => setVersion((x) => x + 1)}>刷新</button>}
+        title={t("服务总览")}
+        description={t("全局 DNS 请求、响应与上游运行状态")}
+        action={
+          <button onClick={() => setVersion((x) => x + 1)}>{t("刷新")}</button>
+        }
       />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? <StatsBlocks stats={data[0]} usage={data[1]} /> : null}
@@ -359,11 +369,11 @@ export function AdminLogs() {
   return (
     <>
       <PageTitle
-        title="查询日志"
-        description="筛选全站 DNS 查询，并查看客户端、响应地址和 EDNS 详情"
+        title={t("查询日志")}
+        description={t("筛选全站 DNS 查询，并查看客户端、响应地址和 EDNS 详情")}
         action={
           <button onClick={() => setVersion((value) => value + 1)}>
-            刷新统计
+            {t("刷新统计")}
           </button>
         }
       />
@@ -371,14 +381,14 @@ export function AdminLogs() {
       {data ? (
         <>
           <div className="metrics log-metrics">
-            <Metric label="处理完成" value={fmt.num(data.completed)} />
-            <Metric label="失败" value={fmt.num(data.failed)} />
+            <Metric label={t("处理完成")} value={fmt.num(data.completed)} />
+            <Metric label={t("失败")} value={fmt.num(data.failed)} />
             <Metric
-              label="缓存命中"
+              label={t("缓存命中")}
               value={fmt.pct(data.cache_hits, data.completed)}
             />
             <Metric
-              label="平均延迟"
+              label={t("平均延迟")}
               value={`${data.avg_latency_ms.toFixed(1)} ms`}
               hint={`P95 ${data.p95_latency_ms.toFixed(1)} ms`}
             />
@@ -479,10 +489,10 @@ function UserForm({
       <div className="form-grid">
         {!edit ? (
           <>
-            <Field label="用户名">
+            <Field label={t("用户名")}>
               <input name="username" required autoComplete="off" />
             </Field>
-            <Field label="初始密码">
+            <Field label={t("初始密码")}>
               <input
                 name="password"
                 type="password"
@@ -492,31 +502,31 @@ function UserForm({
                 autoComplete="new-password"
               />
             </Field>
-            <Field label="角色">
+            <Field label={t("角色")}>
               <select name="role" defaultValue={v.role}>
-                <option value="user">普通用户</option>
-                <option value="admin">管理员</option>
+                <option value="user">{t("普通用户")}</option>
+                <option value="admin">{t("管理员")}</option>
               </select>
             </Field>
           </>
         ) : null}
-        <Field label="周期">
+        <Field label={t("周期")}>
           <select name="period" defaultValue={v.period}>
-            <option value="daily">每日</option>
-            <option value="monthly">每月</option>
+            <option value="daily">{t("每日")}</option>
+            <option value="monthly">{t("每月")}</option>
           </select>
         </Field>
-        <Field label="时区">
+        <Field label={t("时区")}>
           <input name="timezone" defaultValue={v.timezone} required />
         </Field>
-        <Field label="到期时间" hint="留空表示长期有效">
+        <Field label={t("到期时间")} hint={t("留空表示长期有效")}>
           <input
             name="expires_at"
             type="datetime-local"
             defaultValue={toLocalDateTime(v.expires_at)}
           />
         </Field>
-        <Field label="请求额度">
+        <Field label={t("请求额度")}>
           <input
             name="limit"
             type="number"
@@ -538,8 +548,8 @@ function UserForm({
           />
         </Field>
         <Field
-          label="额外突发量"
-          hint="允许在 QPS 之外额外突发，0 表示不额外放行"
+          label={t("额外突发量")}
+          hint={t("允许在 QPS 之外额外突发，0 表示不额外放行")}
         >
           <input
             name="burst"
@@ -550,7 +560,7 @@ function UserForm({
             required
           />
         </Field>
-        <Field label="最多凭证">
+        <Field label={t("最多凭证")}>
           <input
             name="max_credentials"
             type="number"
@@ -562,15 +572,15 @@ function UserForm({
         </Field>
         <label className="check">
           <input name="enabled" type="checkbox" defaultChecked={v.enabled} />
-          启用账户
+          {t("启用账户")}
         </label>
       </div>
       <div className="actions">
         <button type="button" onClick={onCancel}>
-          取消
+          {t("取消")}
         </button>
         <button className="primary" disabled={busy}>
-          {busy ? "正在保存…" : "保存"}
+          {busy ? t("正在保存…") : t("保存")}
         </button>
       </div>
     </form>
@@ -590,11 +600,11 @@ export function Users() {
   return (
     <>
       <PageTitle
-        title="用户管理"
-        description="设置账户状态、服务期限、额度与速率"
+        title={t("用户管理")}
+        description={t("设置账户状态、服务期限、额度与速率")}
         action={
           <button className="primary" onClick={() => setModal(true)}>
-            ＋ 开设账户
+            {t("＋ 开设账户")}
           </button>
         }
       />
@@ -603,19 +613,19 @@ export function Users() {
         <div
           className="table-wrap"
           role="region"
-          aria-label="用户列表"
+          aria-label={t("用户列表")}
           tabIndex={0}
         >
           <table>
             <thead>
               <tr>
-                <th>用户</th>
-                <th>状态</th>
-                <th>周期额度</th>
-                <th>QPS / 突发</th>
-                <th>到期</th>
+                <th>{t("用户")}</th>
+                <th>{t("状态")}</th>
+                <th>{t("周期额度")}</th>
+                <th>{t("QPS / 突发")}</th>
+                <th>{t("到期")}</th>
                 <th>
-                  <span className="sr-only">操作</span>
+                  <span className="sr-only">{t("操作")}</span>
                 </th>
               </tr>
             </thead>
@@ -624,15 +634,19 @@ export function Users() {
                 <tr key={u.id}>
                   <td>
                     <strong>{u.username}</strong>
-                    <small>{u.role === "admin" ? "管理员" : "普通用户"}</small>
+                    <small>
+                      {u.role === "admin" ? t("管理员") : t("普通用户")}
+                    </small>
                   </td>
                   <td>
                     <span className={`badge ${u.enabled ? "ok" : "off"}`}>
-                      {u.enabled ? "启用" : "停用"}
+                      {u.enabled ? t("启用") : t("停用")}
                     </span>
                   </td>
                   <td>
-                    {fmt.num(u.limit)} / {u.period === "daily" ? "日" : "月"}
+                    {u.period === "daily"
+                      ? t("{limit} / 日", { limit: fmt.num(u.limit) })
+                      : t("{limit} / 月", { limit: fmt.num(u.limit) })}
                   </td>
                   <td>
                     {u.qps} / {u.burst}
@@ -641,10 +655,10 @@ export function Users() {
                   <td>
                     <button
                       className="link"
-                      aria-label={`查看 ${u.username}`}
+                      aria-label={t("查看 {name}", { name: u.username })}
                       onClick={() => nav(`/admin/users/${u.id}`)}
                     >
-                      查看
+                      {t("查看")}
                     </button>
                   </td>
                 </tr>
@@ -656,22 +670,22 @@ export function Users() {
         <Empty
           action={
             <button className="primary" onClick={() => setModal(true)}>
-              开设账户
+              {t("开设账户")}
             </button>
           }
         >
-          尚未开设账户
+          {t("尚未开设账户")}
         </Empty>
       ) : null}
       {cursor ? (
         <div className="table-more">
           <button onClick={more} disabled={loading}>
-            {loading ? "正在加载…" : "加载更多"}
+            {loading ? t("正在加载…") : t("加载更多")}
           </button>
         </div>
       ) : null}
       {modal ? (
-        <Modal title="开设账户" onClose={() => setModal(false)}>
+        <Modal title={t("开设账户")} onClose={() => setModal(false)}>
           <UserForm
             onCancel={() => setModal(false)}
             onDone={() => {
@@ -698,49 +712,65 @@ function Secret({
     setCopied(label);
   }
   return (
-    <Modal title="凭证已签发" onClose={onClose}>
-      <div className="notice">请现在保存。关闭后将无法再次查看令牌。</div>
-      <Field label="DNS 地址">
+    <Modal title={t("凭证已签发")} onClose={onClose}>
+      <div className="notice">
+        {t("请现在保存。关闭后将无法再次查看令牌。")}
+      </div>
+      <Field label={t("DNS 地址")}>
         <div className="copy">
           <code>{issued.doh_url}</code>
-          <button type="button" onClick={() => copy("地址", issued.doh_url)}>
-            复制
+          <button
+            type="button"
+            onClick={() => copy(msg("已复制地址"), issued.doh_url)}
+          >
+            {t("复制")}
           </button>
         </div>
       </Field>
-      <Field label="Bearer 令牌">
+      <Field label={t("Bearer 令牌")}>
         <div className="copy">
           <code>{issued.token}</code>
-          <button type="button" onClick={() => copy("令牌", issued.token)}>
-            复制
+          <button
+            type="button"
+            onClick={() => copy(msg("已复制令牌"), issued.token)}
+          >
+            {t("复制")}
           </button>
         </div>
       </Field>
-      {copied ? <p role="status">已复制{copied}</p> : null}
-      <Card title="接入说明">
-        <p>可直接使用上方专属地址，或在固定 DNS 地址的请求中添加：</p>
-        <code>Authorization: Bearer &lt;令牌&gt;</code>
+      {copied ? <p role="status">{t(copied)}</p> : null}
+      <Card title={t("接入说明")}>
+        <p>{t("可直接使用上方专属地址，或在固定 DNS 地址的请求中添加：")}</p>
+        <code>{t("Authorization: Bearer <令牌>")}</code>
       </Card>
       <div className="actions">
         <button className="primary" onClick={onClose}>
-          我已保存，关闭
+          {t("我已保存，关闭")}
         </button>
       </div>
     </Modal>
   );
 }
+// credentialStatus returns the Chinese source text (compared in code and
+// tests); translate it with t() where it is displayed.
+const credentialStates = {
+  active: msg("有效"),
+  revoked: msg("已撤销"),
+  expired: msg("已到期"),
+};
 export function credentialStatus(c: Credential) {
-  if (c.revoked_at && !c.revoked_at.startsWith("0001-")) return "已撤销";
+  if (c.revoked_at && !c.revoked_at.startsWith("0001-"))
+    return credentialStates.revoked;
   if (
     c.expires_at &&
     !c.expires_at.startsWith("0001-") &&
     new Date(c.expires_at).getTime() <= Date.now()
   )
-    return "已到期";
-  return "有效";
+    return credentialStates.expired;
+  return credentialStates.active;
 }
 export function credentialCanRevoke(c: Credential) {
-  return credentialStatus(c) !== "已撤销";
+  return credentialStatus(c) !== credentialStates.revoked;
 }
 function CredentialManager({ base, max }: { base: string; max?: number }) {
   const [version, setVersion] = useState(0),
@@ -809,21 +839,22 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
     }
   }
   const activeCount =
-    data?.filter((c) => credentialStatus(c) === "有效").length ?? 0;
+    data?.filter((c) => credentialStatus(c) === credentialStates.active)
+      .length ?? 0;
   return (
     <>
-      <Card title="创建凭证">
+      <Card title={t("创建凭证")}>
         <form className="inline-form" onSubmit={create}>
-          <Field label="名称">
+          <Field label={t("名称")}>
             <input
               name="name"
               required
               maxLength={80}
               autoComplete="off"
-              placeholder="例如：家中路由器…"
+              placeholder={t("例如：家中路由器…")}
             />
           </Field>
-          <Field label="单独到期" hint="留空则跟随账户">
+          <Field label={t("单独到期")} hint={t("留空则跟随账户")}>
             <input name="expires_at" type="datetime-local" />
           </Field>
           <button
@@ -832,12 +863,15 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
               busy === "create" || (max !== undefined && activeCount >= max)
             }
           >
-            {busy === "create" ? "正在创建…" : "创建凭证"}
+            {busy === "create" ? t("正在创建…") : t("创建凭证")}
           </button>
         </form>
         {max !== undefined ? (
           <p className="caption">
-            已使用 {activeCount} / {max} 个凭证名额
+            {t("已使用 {used} / {max} 个凭证名额", {
+              used: activeCount,
+              max,
+            })}
           </p>
         ) : null}
       </Card>
@@ -848,25 +882,25 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
         <div
           className="table-wrap"
           role="region"
-          aria-label="凭证列表"
+          aria-label={t("凭证列表")}
           tabIndex={0}
         >
           <table>
             <thead>
               <tr>
-                <th>名称</th>
-                <th>创建</th>
-                <th>单独到期</th>
-                <th>状态</th>
+                <th>{t("名称")}</th>
+                <th>{t("创建")}</th>
+                <th>{t("单独到期")}</th>
+                <th>{t("状态")}</th>
                 <th>
-                  <span className="sr-only">操作</span>
+                  <span className="sr-only">{t("操作")}</span>
                 </th>
               </tr>
             </thead>
             <tbody>
               {data.map((c) => {
                 const status = credentialStatus(c);
-                const active = status === "有效";
+                const active = status === credentialStates.active;
                 return (
                   <tr key={c.id}>
                     <td>
@@ -876,25 +910,25 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
                     <td>{fmt.date(c.expires_at)}</td>
                     <td>
                       <span className={`badge ${active ? "ok" : "off"}`}>
-                        {status}
+                        {t(status)}
                       </span>
                     </td>
                     <td className="table-actions">
                       <button
                         className="btn-sm"
-                        aria-label={`轮换 ${c.name}`}
+                        aria-label={t("轮换 {name}", { name: c.name })}
                         disabled={busy === c.id || !active}
                         onClick={() => setPending({ kind: "rotate", c })}
                       >
-                        轮换
+                        {t("轮换")}
                       </button>
                       <button
                         className="danger btn-sm"
-                        aria-label={`撤销 ${c.name}`}
+                        aria-label={t("撤销 {name}", { name: c.name })}
                         disabled={busy === c.id || !credentialCanRevoke(c)}
                         onClick={() => setPending({ kind: "revoke", c })}
                       >
-                        撤销
+                        {t("撤销")}
                       </button>
                     </td>
                   </tr>
@@ -904,21 +938,26 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
           </table>
         </div>
       ) : (
-        <Empty>暂无凭证</Empty>
+        <Empty>{t("暂无凭证")}</Empty>
       )}
       {pending ? (
         <Modal
-          title={pending.kind === "rotate" ? "轮换凭证" : "撤销凭证"}
+          title={pending.kind === "rotate" ? t("轮换凭证") : t("撤销凭证")}
           onClose={() => setPending(null)}
         >
           <p className="confirm-text">
             {pending.kind === "rotate"
-              ? `轮换“${pending.c.name}”后，旧令牌会立即失效，使用它的设备将停止解析，需要换用新令牌。`
-              : `撤销“${pending.c.name}”会立即中断使用它的设备，此操作无法撤销。`}
+              ? t(
+                  "轮换“{name}”后，旧令牌会立即失效，使用它的设备将停止解析，需要换用新令牌。",
+                  { name: pending.c.name },
+                )
+              : t("撤销“{name}”会立即中断使用它的设备，此操作无法撤销。", {
+                  name: pending.c.name,
+                })}
           </p>
           <div className="actions">
             <button type="button" onClick={() => setPending(null)}>
-              取消
+              {t("取消")}
             </button>
             <button
               type="button"
@@ -929,7 +968,7 @@ function CredentialManager({ base, max }: { base: string; max?: number }) {
                   : revoke(pending.c)
               }
             >
-              {pending.kind === "rotate" ? "轮换" : "撤销"}
+              {pending.kind === "rotate" ? t("轮换") : t("撤销")}
             </button>
           </div>
         </Modal>
@@ -974,16 +1013,18 @@ function UserDetailContent({ id }: { id: string }) {
   return (
     <>
       <PageTitle
-        title={account?.user.username ?? "用户详情"}
-        description="账户状态、当前额度与代管设备凭证"
+        title={account?.user.username ?? t("用户详情")}
+        description={t("账户状态、当前额度与代管设备凭证")}
         action={
           account ? (
             <>
-              <button onClick={() => setResetPassword(true)}>重置密码</button>
-              <button onClick={() => setEdit(true)}>编辑账户</button>
+              <button onClick={() => setResetPassword(true)}>
+                {t("重置密码")}
+              </button>
+              <button onClick={() => setEdit(true)}>{t("编辑账户")}</button>
               {session?.user.id !== id ? (
                 <button className="danger" onClick={() => setRemoving(true)}>
-                  删除用户
+                  {t("删除用户")}
                 </button>
               ) : null}
             </>
@@ -995,20 +1036,23 @@ function UserDetailContent({ id }: { id: string }) {
         <>
           <div className="metrics">
             <Metric
-              label="剩余额度"
+              label={t("剩余额度")}
               value={fmt.num(account.quota.remaining)}
-              hint={`已用 ${fmt.num(account.quota.used)} / ${fmt.num(account.quota.limit)}`}
+              hint={t("已用 {used} / {limit}", {
+                used: fmt.num(account.quota.used),
+                limit: fmt.num(account.quota.limit),
+              })}
             />
             <Metric
-              label="重置时间"
+              label={t("重置时间")}
               value={fmt.date(account.quota.period_end)}
             />
             <Metric
-              label="账户到期"
+              label={t("账户到期")}
               value={fmt.date(account.user.expires_at)}
             />
             <Metric
-              label="QPS / 突发"
+              label={t("QPS / 突发")}
               value={`${account.user.qps} / ${account.user.burst}`}
             />
           </div>
@@ -1024,7 +1068,7 @@ function UserDetailContent({ id }: { id: string }) {
             credentialsPath={`${base}/credentials`}
           />
           {edit ? (
-            <Modal title="编辑账户" onClose={() => setEdit(false)}>
+            <Modal title={t("编辑账户")} onClose={() => setEdit(false)}>
               <UserForm
                 initial={account.user}
                 onCancel={() => setEdit(false)}
@@ -1036,7 +1080,10 @@ function UserDetailContent({ id }: { id: string }) {
             </Modal>
           ) : null}
           {resetPassword ? (
-            <Modal title="重置用户密码" onClose={() => setResetPassword(false)}>
+            <Modal
+              title={t("重置用户密码")}
+              onClose={() => setResetPassword(false)}
+            >
               <AdminPasswordReset
                 base={base}
                 username={account.user.username}
@@ -1045,7 +1092,7 @@ function UserDetailContent({ id }: { id: string }) {
             </Modal>
           ) : null}
           {removing ? (
-            <Modal title="删除用户" onClose={() => setRemoving(false)}>
+            <Modal title={t("删除用户")} onClose={() => setRemoving(false)}>
               <DeleteUser
                 base={base}
                 username={account.user.username}
@@ -1062,10 +1109,10 @@ function UserDetailContent({ id }: { id: string }) {
 
 export function deleteUserError(e: unknown) {
   if (e instanceof APIError && e.status === 409)
-    return "不能删除自己，也不能删除最后一个启用的管理员。";
-  if (e instanceof APIError && e.status === 404) return "该用户已不存在。";
+    return t("不能删除自己，也不能删除最后一个启用的管理员。");
+  if (e instanceof APIError && e.status === 404) return t("该用户已不存在。");
   if (e instanceof APIError && e.status === 503)
-    return "账户可能已删除，但查询日志未能清除。请稍后再次删除以完成清理。";
+    return t("账户可能已删除，但查询日志未能清除。请稍后再次删除以完成清理。");
   return message(e);
 }
 
@@ -1093,20 +1140,26 @@ function DeleteUser({
       setBusy(false);
     }
   }
+  // The sentence is one message; the name keeps its emphasis by splitting the
+  // translation at the {username} placeholder.
+  const [before, after = ""] = t(
+    "永久删除 {username}及其全部数据：设备凭证、登录会话、用量记录、查询日志，以及与该用户相关的审计记录。",
+  ).split("{username}");
   return (
     <div>
       <p>
-        永久删除 <strong>{username}</strong>
-        及其全部数据：设备凭证、登录会话、用量记录、查询日志，以及与该用户相关的审计记录。
+        {before}
+        <strong>{username}</strong>
+        {after}
       </p>
-      <p>使用该用户凭证的设备会立即停止解析。此操作无法撤销。</p>
+      <p>{t("使用该用户凭证的设备会立即停止解析。此操作无法撤销。")}</p>
       <Alert error={error} />
       <div className="actions">
         <button onClick={onCancel} disabled={busy}>
-          取消
+          {t("取消")}
         </button>
         <button className="danger" onClick={remove} disabled={busy}>
-          {busy ? "正在删除…" : "永久删除"}
+          {busy ? t("正在删除…") : t("永久删除")}
         </button>
       </div>
     </div>
@@ -1128,7 +1181,7 @@ function AdminPasswordReset({
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     if (f.get("new_password") !== f.get("confirm")) {
-      setError("两次输入的新密码不一致。");
+      setError(t("两次输入的新密码不一致。"));
       return;
     }
     setBusy(true);
@@ -1146,9 +1199,11 @@ function AdminPasswordReset({
   }
   return (
     <form onSubmit={submit}>
-      <p>重置 {username} 的密码会撤销该用户的全部面板会话。</p>
+      <p>
+        {t("重置 {username} 的密码会撤销该用户的全部面板会话。", { username })}
+      </p>
       <Alert error={error} />
-      <Field label="新密码">
+      <Field label={t("新密码")}>
         <input
           name="new_password"
           type="password"
@@ -1158,7 +1213,7 @@ function AdminPasswordReset({
           required
         />
       </Field>
-      <Field label="确认新密码">
+      <Field label={t("确认新密码")}>
         <input
           name="confirm"
           type="password"
@@ -1170,7 +1225,7 @@ function AdminPasswordReset({
       </Field>
       <div className="actions">
         <button className="primary" disabled={busy}>
-          {busy ? "正在重置…" : "重置密码"}
+          {busy ? t("正在重置…") : t("重置密码")}
         </button>
       </div>
     </form>
@@ -1202,13 +1257,13 @@ function DeviceUsage({
     for (const x of data?.[0] ?? []) {
       const k = x.credential_id
         ? (names.get(x.credential_id) ?? x.credential_id)
-        : "未标识凭证";
+        : t("未标识凭证");
       m.set(k, (m.get(k) ?? 0) + x.count);
     }
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [data]);
   return (
-    <Card title="设备使用（过去 24 小时）">
+    <Card title={t("设备使用（过去 24 小时）")}>
       <Alert error={error} />
       {loading ? (
         <Spinner />
@@ -1217,12 +1272,12 @@ function DeviceUsage({
           {grouped.map(([n, c]) => (
             <div key={n}>
               <span>{n}</span>
-              <strong>{fmt.num(c)} 次</strong>
+              <strong>{t("{count} 次", { count: fmt.num(c) })}</strong>
             </div>
           ))}
         </div>
       ) : (
-        <Empty>当前窗口暂无设备用量</Empty>
+        <Empty>{t("当前窗口暂无设备用量")}</Empty>
       )}
     </Card>
   );
@@ -1252,43 +1307,43 @@ const ednsOptionNames: Record<number, string> = {
 };
 
 const ednsAnomalyNames: Record<string, string> = {
-  multiple_opt: "检测到多个 OPT 记录",
-  multiple_ecs: "检测到多个 ECS 选项",
-  invalid_ecs_family: "ECS 地址族无效",
-  invalid_ecs_prefix: "ECS 前缀长度无效",
-  invalid_ecs_address: "ECS 地址无效",
+  multiple_opt: msg("检测到多个 OPT 记录"),
+  multiple_ecs: msg("检测到多个 ECS 选项"),
+  invalid_ecs_family: msg("ECS 地址族无效"),
+  invalid_ecs_prefix: msg("ECS 前缀长度无效"),
+  invalid_ecs_address: msg("ECS 地址无效"),
 };
 
 const responseSourceNames: Record<string, string> = {
-  cache: "缓存",
-  upstream: "上游",
+  cache: msg("缓存"),
+  upstream: msg("上游"),
   hosts: "Hosts",
-  sequence: "执行链",
+  sequence: msg("执行链"),
   servfail: "SERVFAIL",
 };
 
 function responseSourceName(source?: string) {
-  return source ? (responseSourceNames[source] ?? source) : "未记录";
+  return source ? t(responseSourceNames[source] ?? source) : t("未记录");
 }
 
 // principalName shows a record's account by name, or by ID once the account
 // has been deleted.
 function principalName(record: QueryRecord) {
-  return record.username || record.user_id || "未识别";
+  return record.username || record.user_id || t("未识别");
 }
 
 function logDay(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(
+  return new Intl.DateTimeFormat(locale(), { dateStyle: "medium" }).format(
     new Date(value),
   );
 }
 function logClock(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", { timeStyle: "medium" }).format(
+  return new Intl.DateTimeFormat(locale(), { timeStyle: "medium" }).format(
     new Date(value),
   );
 }
 function logDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(locale(), {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(new Date(value));
@@ -1303,45 +1358,45 @@ type EDNSStage =
 function missingEDNSMessage(record: QueryRecord, stage: EDNSStage) {
   if (stage === "client_request") {
     return record.edns_trace_version
-      ? "该阶段快照暂不可用"
-      : "历史记录未采集客户端请求快照";
+      ? t("该阶段快照暂不可用")
+      : t("历史记录未采集客户端请求快照");
   }
   if (stage === "client_response") {
     return record.edns_trace_version
-      ? "该阶段快照暂不可用"
-      : "历史记录未采集客户端响应快照";
+      ? t("该阶段快照暂不可用")
+      : t("历史记录未采集客户端响应快照");
   }
   if (!record.edns_trace_version) {
-    return "历史记录未采集该上游阶段";
+    return t("历史记录未采集该上游阶段");
   }
   switch (record.upstream_stage_status) {
     case "selected":
-      return "已记录最终上游，但该阶段快照暂不可用";
+      return t("已记录最终上游，但该阶段快照暂不可用");
     case "attempted_no_selection":
-      return "发生过上游尝试，但没有最终采用的上游结果";
+      return t("发生过上游尝试，但没有最终采用的上游结果");
     case "discarded":
-      return "上游结果已被后续本地响应完整替换，无对应最终上游快照";
+      return t("上游结果已被后续本地响应完整替换，无对应最终上游快照");
     case "not_linked":
       if (record.response_source === "cache") {
-        return "本次响应来自缓存，无对应上游快照";
+        return t("本次响应来自缓存，无对应上游快照");
       }
       if (record.response_source === "hosts") {
-        return "本次由本地 Hosts 生成响应，无对应上游快照";
+        return t("本次由本地 Hosts 生成响应，无对应上游快照");
       }
-      return "本次最终响应没有可关联的上游快照";
+      return t("本次最终响应没有可关联的上游快照");
     default:
-      return "该阶段快照暂不可用";
+      return t("该阶段快照暂不可用");
   }
 }
 
 function ecsDescription(edns: EDNSInfo) {
-  if (!edns.ecs) return "无";
+  if (!edns.ecs) return t("无");
   const family =
     edns.ecs.family === 1
       ? "IPv4"
       : edns.ecs.family === 2
         ? "IPv6"
-        : `地址族 ${edns.ecs.family}`;
+        : t("地址族 {family}", { family: edns.ecs.family });
   return `${edns.ecs.address}/${edns.ecs.source_prefix} · ${family} · Scope Prefix ${edns.ecs.scope_prefix}`;
 }
 
@@ -1365,28 +1420,30 @@ function EDNSStageCard({
         </div>
         {snapshot ? (
           <span className={`badge ${snapshot.present ? "ok" : "off"}`}>
-            {snapshot.present ? "有 EDNS" : "无 EDNS"}
+            {snapshot.present ? t("有 EDNS") : t("无 EDNS")}
           </span>
         ) : null}
       </header>
       {!snapshot ? (
         <p className="edns-stage-missing">{missing}</p>
       ) : !snapshot.present ? (
-        <p className="edns-stage-empty">已观察报文：没有 EDNS</p>
+        <p className="edns-stage-empty">{t("已观察报文：没有 EDNS")}</p>
       ) : (
         <dl>
           <div>
-            <dt>版本</dt>
+            <dt>{t("版本")}</dt>
             <dd>EDNS v{snapshot.version}</dd>
           </div>
           <div>
-            <dt>通告 UDP Size</dt>
+            <dt>{t("通告 UDP Size")}</dt>
             <dd>{snapshot.udp_size} bytes</dd>
           </div>
           <div>
-            <dt>DO 位</dt>
+            <dt>{t("DO 位")}</dt>
             <dd>
-              {snapshot.dnssec_ok ? "已设置（请求 DNSSEC 数据）" : "未设置"}
+              {snapshot.dnssec_ok
+                ? t("已设置（请求 DNSSEC 数据）")
+                : t("未设置")}
             </dd>
           </div>
           <div>
@@ -1399,9 +1456,11 @@ function EDNSStageCard({
                         `${code}${ednsOptionNames[code] ? ` (${ednsOptionNames[code]})` : ""}`,
                     )
                     .join(", ")
-                : "无已记录选项"}
+                : t("无已记录选项")}
               {snapshot.option_codes_truncated ? (
-                <small>仅显示前 64 项，不能据此判断其他 Option 不存在</small>
+                <small>
+                  {t("仅显示前 64 项，不能据此判断其他 Option 不存在")}
+                </small>
               ) : null}
             </dd>
           </div>
@@ -1411,12 +1470,14 @@ function EDNSStageCard({
           </div>
           {snapshot.anomalies?.length ? (
             <div className="edns-stage-wide">
-              <dt>采集异常</dt>
+              <dt>{t("采集异常")}</dt>
               <dd className="edns-anomalies">
                 {snapshot.anomalies
-                  .map((item) => ednsAnomalyNames[item] ?? item)
-                  .join("；")}
-                <small>异常信息仅用于解释快照，不影响 DNS 请求处理。</small>
+                  .map((item) => t(ednsAnomalyNames[item] ?? item))
+                  .join(t("；"))}
+                <small>
+                  {t("异常信息仅用于解释快照，不影响 DNS 请求处理。")}
+                </small>
               </dd>
             </div>
           ) : null}
@@ -1451,7 +1512,7 @@ function ednsDifferences(record: QueryRecord) {
     record.response_edns,
   ];
   if (!stages.every(snapshotComparable)) {
-    return ["阶段信息未知、异常或不完整，无法确定完整的 EDNS/ECS 变化"];
+    return [t("阶段信息未知、异常或不完整，无法确定完整的 EDNS/ECS 变化")];
   }
   const [client, upstreamRequest, upstreamResponse, response] = stages as [
     EDNSInfo,
@@ -1461,24 +1522,24 @@ function ednsDifferences(record: QueryRecord) {
   ];
   const differences: string[] = [];
   if (!client.present && upstreamRequest.present) {
-    differences.push("客户端请求没有 EDNS，上游请求中出现 EDNS");
+    differences.push(t("客户端请求没有 EDNS，上游请求中出现 EDNS"));
   } else if (client.present && !upstreamRequest.present) {
-    differences.push("客户端请求携带 EDNS，上游请求中已不存在");
+    differences.push(t("客户端请求携带 EDNS，上游请求中已不存在"));
   }
   if (!client.ecs && upstreamRequest.ecs) {
-    differences.push("客户端请求中没有 ECS，上游请求中出现 ECS");
+    differences.push(t("客户端请求中没有 ECS，上游请求中出现 ECS"));
   } else if (client.ecs && !upstreamRequest.ecs) {
-    differences.push("客户端请求携带 ECS，上游请求中已不存在");
+    differences.push(t("客户端请求携带 ECS，上游请求中已不存在"));
   } else if (!sameECS(client.ecs, upstreamRequest.ecs)) {
-    differences.push("上游请求中的 ECS 与客户端请求不同");
+    differences.push(t("上游请求中的 ECS 与客户端请求不同"));
   }
   if (upstreamResponse.present && !response.present) {
-    differences.push("上游响应携带 EDNS，客户端逻辑响应中已不存在");
+    differences.push(t("上游响应携带 EDNS，客户端逻辑响应中已不存在"));
   }
   if (upstreamResponse.ecs && !response.ecs) {
-    differences.push("上游响应携带 ECS，客户端逻辑响应中已不存在");
+    differences.push(t("上游响应携带 ECS，客户端逻辑响应中已不存在"));
   } else if (!sameECS(upstreamResponse.ecs, response.ecs)) {
-    differences.push("客户端逻辑响应中的 ECS 与上游原始响应不同");
+    differences.push(t("客户端逻辑响应中的 ECS 与上游原始响应不同"));
   }
   return differences;
 }
@@ -1501,21 +1562,21 @@ function QueryLogDetail({
         >
           {record.rcode || "UNKNOWN"}
         </span>
-        <span className="badge off">{record.qtype || "未知类型"}</span>
+        <span className="badge off">{record.qtype || t("未知类型")}</span>
         {record.cache_hit ? (
-          <span className="badge cache">缓存命中</span>
+          <span className="badge cache">{t("缓存命中")}</span>
         ) : null}
         <time>{logDate(record.time)}</time>
       </div>
       <section>
-        <h3>请求</h3>
+        <h3>{t("请求")}</h3>
         <dl>
           <div>
-            <dt>查询名称</dt>
+            <dt>{t("查询名称")}</dt>
             <dd>{record.name}</dd>
           </div>
           <div>
-            <dt>设备</dt>
+            <dt>{t("设备")}</dt>
             <dd>
               {deviceName}
               {record.credential_id ? (
@@ -1525,7 +1586,7 @@ function QueryLogDetail({
           </div>
           {showPrincipal ? (
             <div>
-              <dt>用户</dt>
+              <dt>{t("用户")}</dt>
               <dd>
                 {principalName(record)}
                 {record.username && record.user_id ? (
@@ -1535,16 +1596,16 @@ function QueryLogDetail({
             </div>
           ) : null}
           <div>
-            <dt>客户端 IP</dt>
-            <dd>{record.client_ip || "未记录"}</dd>
+            <dt>{t("客户端 IP")}</dt>
+            <dd>{record.client_ip || t("未记录")}</dd>
           </div>
         </dl>
       </section>
       <section>
-        <h3>响应</h3>
+        <h3>{t("响应")}</h3>
         <dl>
           <div>
-            <dt>响应码</dt>
+            <dt>{t("响应码")}</dt>
             <dd>{record.rcode || "UNKNOWN"}</dd>
           </div>
           <div>
@@ -1554,79 +1615,81 @@ function QueryLogDetail({
                 ? record.answer_ips.map((address) => (
                     <code key={address}>{address}</code>
                   ))
-                : "无地址记录"}
+                : t("无地址记录")}
             </dd>
           </div>
           <div>
-            <dt>处理路径</dt>
+            <dt>{t("处理路径")}</dt>
             <dd>{responseSourceName(record.response_source)}</dd>
           </div>
           <div>
-            <dt>处理组件</dt>
-            <dd>{record.response_source_id || "未记录"}</dd>
+            <dt>{t("处理组件")}</dt>
+            <dd>{record.response_source_id || t("未记录")}</dd>
           </div>
           <div>
-            <dt>出站 DNS</dt>
+            <dt>{t("出站 DNS")}</dt>
             <dd>{outboundName(record)}</dd>
           </div>
           <div>
-            <dt>处理耗时</dt>
+            <dt>{t("处理耗时")}</dt>
             <dd>{record.duration_ms.toFixed(2)} ms</dd>
           </div>
         </dl>
       </section>
       <OutboundSection record={record} deviceName={deviceName} />
       <section>
-        <h3>传输与 EDNS</h3>
+        <h3>{t("传输与 EDNS")}</h3>
         <dl className="transport-summary">
           <div>
-            <dt>协议</dt>
-            <dd>{record.protocol?.toUpperCase() || "未记录"}</dd>
+            <dt>{t("协议")}</dt>
+            <dd>{record.protocol?.toUpperCase() || t("未记录")}</dd>
           </div>
           <div>
-            <dt>采集版本</dt>
+            <dt>{t("采集版本")}</dt>
             <dd>
               {record.edns_trace_version
-                ? `四阶段 v${record.edns_trace_version}`
-                : "历史记录"}
+                ? t("四阶段 v{version}", { version: record.edns_trace_version })
+                : t("历史记录")}
             </dd>
           </div>
         </dl>
         <div className="edns-stage-grid">
           <EDNSStageCard
-            title="客户端请求"
-            note="进入控制策略与执行链之前"
+            title={t("客户端请求")}
+            note={t("进入控制策略与执行链之前")}
             snapshot={record.edns}
             missing={missingEDNSMessage(record, "client_request")}
           />
           <EDNSStageCard
-            title="最终上游请求"
-            note="最终采用交换的协议发送边界"
+            title={t("最终上游请求")}
+            note={t("最终采用交换的协议发送边界")}
             snapshot={record.upstream_request_edns}
             missing={missingEDNSMessage(record, "upstream_request")}
           />
           <EDNSStageCard
-            title="上游原始响应"
-            note="同一次交换解码后、响应后处理之前"
+            title={t("上游原始响应")}
+            note={t("同一次交换解码后、响应后处理之前")}
             snapshot={record.upstream_response_edns}
             missing={missingEDNSMessage(record, "upstream_response")}
           />
           <EDNSStageCard
-            title="客户端逻辑响应"
-            note="全部响应处理后、交给协议写出层之前"
+            title={t("客户端逻辑响应")}
+            note={t("全部响应处理后、交给协议写出层之前")}
             snapshot={record.response_edns}
             missing={missingEDNSMessage(record, "client_response")}
           />
         </div>
         {differences.length ? (
           <div className="edns-differences" role="note">
-            <strong>阶段变化</strong>
+            <strong>{t("阶段变化")}</strong>
             <ul>
               {differences.map((difference) => (
                 <li key={difference}>{difference}</li>
               ))}
             </ul>
-            <small>变化仅来自报文快照，不能据此确定由哪个插件造成。</small>
+            <small>
+              {t("变化仅来自报文快照，不能据此确定由哪个插件造成。")}
+            </small>
           </div>
         ) : null}
       </section>
@@ -1639,7 +1702,7 @@ export function QueryDetails({
   enabled,
   credentialsPath,
   showPrincipal = false,
-  title = "查询日志",
+  title = t("查询日志"),
 }: {
   path: string;
   enabled: boolean;
@@ -1703,8 +1766,8 @@ export function QueryDetails({
     record.credential_id
       ? (credentialNames.get(record.credential_id) ??
         record.device_name ??
-        "未知设备")
-      : "未标识设备";
+        t("未知设备"))
+      : t("未标识设备");
   function updateFilter(name: keyof QueryFilters, value: string) {
     setDraft((current) => ({ ...current, [name]: value }));
   }
@@ -1729,36 +1792,38 @@ export function QueryDetails({
   return (
     <Card title={title} className="query-console">
       {!enabled ? (
-        <Empty>查询日志未启用。管理员可在服务配置中开启 query_log。</Empty>
+        <Empty>
+          {t("查询日志未启用。管理员可在服务配置中开启 query_log。")}
+        </Empty>
       ) : (
         <>
           <form className="query-filters" onSubmit={applyFilters}>
-            <Field label="时间范围">
+            <Field label={t("时间范围")}>
               <select
                 value={draft.hours}
                 onChange={(event) => updateFilter("hours", event.target.value)}
               >
-                <option value="1">最近 1 小时</option>
-                <option value="6">最近 6 小时</option>
-                <option value="24">最近 24 小时</option>
-                <option value="168">最近 7 天</option>
-                <option value="720">最近 30 天</option>
+                <option value="1">{t("最近 1 小时")}</option>
+                <option value="6">{t("最近 6 小时")}</option>
+                <option value="24">{t("最近 24 小时")}</option>
+                <option value="168">{t("最近 7 天")}</option>
+                <option value="720">{t("最近 30 天")}</option>
               </select>
             </Field>
-            <Field label="域名">
+            <Field label={t("域名")}>
               <input
                 value={draft.name}
                 onChange={(event) => updateFilter("name", event.target.value)}
-                placeholder="例如：包含 example.com…"
+                placeholder={t("例如：包含 example.com…")}
                 maxLength={255}
               />
             </Field>
-            <Field label="查询类型">
+            <Field label={t("查询类型")}>
               <select
                 value={draft.qtype}
                 onChange={(event) => updateFilter("qtype", event.target.value)}
               >
-                <option value="">全部类型</option>
+                <option value="">{t("全部类型")}</option>
                 {[
                   "A",
                   "AAAA",
@@ -1774,12 +1839,12 @@ export function QueryDetails({
                 ))}
               </select>
             </Field>
-            <Field label="响应码">
+            <Field label={t("响应码")}>
               <select
                 value={draft.rcode}
                 onChange={(event) => updateFilter("rcode", event.target.value)}
               >
-                <option value="">全部响应</option>
+                <option value="">{t("全部响应")}</option>
                 {["NOERROR", "NXDOMAIN", "SERVFAIL", "REFUSED", "FORMERR"].map(
                   (value) => (
                     <option key={value}>{value}</option>
@@ -1787,7 +1852,7 @@ export function QueryDetails({
                 )}
               </select>
             </Field>
-            <Field label="设备">
+            <Field label={t("设备")}>
               {credentialsPath ? (
                 <select
                   value={draft.credentialId}
@@ -1795,7 +1860,7 @@ export function QueryDetails({
                     updateFilter("credentialId", event.target.value)
                   }
                 >
-                  <option value="">全部设备</option>
+                  <option value="">{t("全部设备")}</option>
                   {(credentials ?? []).map((credential) => (
                     <option key={credential.id} value={credential.id}>
                       {credential.name}
@@ -1808,19 +1873,19 @@ export function QueryDetails({
                   onChange={(event) =>
                     updateFilter("credentialId", event.target.value)
                   }
-                  placeholder="凭证 ID…"
+                  placeholder={t("凭证 ID…")}
                   maxLength={64}
                 />
               )}
             </Field>
-            <Field label="协议">
+            <Field label={t("协议")}>
               <select
                 value={draft.protocol}
                 onChange={(event) =>
                   updateFilter("protocol", event.target.value)
                 }
               >
-                <option value="">全部协议</option>
+                <option value="">{t("全部协议")}</option>
                 {["udp", "tcp", "tls", "quic", "http", "https", "h2", "h3"].map(
                   (value) => (
                     <option key={value} value={value}>
@@ -1830,45 +1895,45 @@ export function QueryDetails({
                 )}
               </select>
             </Field>
-            <Field label="客户端或 Answer IP">
+            <Field label={t("客户端或 Answer IP")}>
               <input
                 value={draft.address}
                 onChange={(event) =>
                   updateFilter("address", event.target.value)
                 }
-                placeholder="例如：192.0.2.1…"
+                placeholder={t("例如：192.0.2.1…")}
               />
             </Field>
-            <Field label="缓存">
+            <Field label={t("缓存")}>
               <select
                 value={draft.cache}
                 onChange={(event) => updateFilter("cache", event.target.value)}
               >
-                <option value="all">全部</option>
-                <option value="hit">命中缓存</option>
-                <option value="miss">未命中缓存</option>
+                <option value="all">{t("全部")}</option>
+                <option value="hit">{t("命中缓存")}</option>
+                <option value="miss">{t("未命中缓存")}</option>
               </select>
             </Field>
-            <Field label="处理来源">
+            <Field label={t("处理来源")}>
               <select
                 value={draft.source}
                 onChange={(event) => updateFilter("source", event.target.value)}
               >
-                <option value="all">全部来源</option>
+                <option value="all">{t("全部来源")}</option>
                 {Object.entries(responseSourceNames).map(([value, label]) => (
                   <option key={value} value={value}>
-                    {label}
+                    {t(label)}
                   </option>
                 ))}
               </select>
             </Field>
-            <Field label="出站 DNS">
+            <Field label={t("出站 DNS")}>
               <input
                 value={draft.upstream}
                 onChange={(event) =>
                   updateFilter("upstream", event.target.value)
                 }
-                placeholder="例如：223.5.5.5 (UDP)…"
+                placeholder={t("例如：223.5.5.5 (UDP)…")}
                 list="query-upstream-labels"
                 maxLength={128}
               />
@@ -1880,23 +1945,27 @@ export function QueryDetails({
             </Field>
             <div className="query-filter-actions">
               <button type="button" onClick={resetFilters}>
-                重置
+                {t("重置")}
               </button>
               <button className="primary" type="submit">
-                查询
+                {t("查询")}
               </button>
             </div>
           </form>
           <div className="log-list-heading">
             <div>
-              <strong>最新记录</strong>
-              <span>已加载 {fmt.num(data.length)} 条，按时间从新到旧</span>
+              <strong>{t("最新记录")}</strong>
+              <span>
+                {t("已加载 {count} 条，按时间从新到旧", {
+                  count: fmt.num(data.length),
+                })}
+              </span>
             </div>
             <button
               onClick={() => setRefreshVersion((value) => value + 1)}
               disabled={loading}
             >
-              刷新
+              {t("刷新")}
             </button>
           </div>
           <Alert error={error} />
@@ -1906,63 +1975,74 @@ export function QueryDetails({
             <div
               className="table-wrap query-table"
               role="region"
-              aria-label="查询记录"
+              aria-label={t("查询记录")}
               tabIndex={0}
             >
               <table>
                 <thead>
                   <tr>
-                    <th>查询</th>
-                    <th>结果</th>
-                    <th>出站 DNS</th>
-                    <th>设备 / 客户端</th>
+                    <th>{t("查询")}</th>
+                    <th>{t("结果")}</th>
+                    <th>{t("出站 DNS")}</th>
+                    <th>{t("设备 / 客户端")}</th>
                     <th>Answer IP</th>
-                    <th>协议 / 耗时</th>
-                    <th>时间</th>
+                    <th>{t("协议 / 耗时")}</th>
+                    <th>{t("时间")}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.map((record) => (
                     <tr key={record.id}>
-                      <td className="query-detail" data-label="查询">
+                      <td className="query-detail" data-label={t("查询")}>
                         <button
                           className="query-name"
-                          aria-label={`查看 ${record.name} 详情`}
+                          aria-label={t("查看 {name} 详情", {
+                            name: record.name,
+                          })}
                           onClick={() => setSelected(record)}
                         >
                           {record.name}
                         </button>
                         <small>{record.qtype}</small>
                       </td>
-                      <td data-label="结果">
+                      <td data-label={t("结果")}>
                         <span
                           className={`badge ${record.rcode === "NOERROR" ? "ok" : "error"}`}
                         >
                           {record.rcode || "UNKNOWN"}
                         </span>
                         {record.cache_hit ? (
-                          <small className="cache-text">缓存命中</small>
+                          <small className="cache-text">{t("缓存命中")}</small>
                         ) : null}
                         <small>
                           {responseSourceName(record.response_source)}
                         </small>
                       </td>
-                      <td className="query-detail" data-label="出站 DNS">
+                      <td className="query-detail" data-label={t("出站 DNS")}>
                         {outboundName(record)}
                         {record.trace && !record.cache_hit ? (
                           <small>{routeReason(record)}</small>
                         ) : null}
                         {record.trace && record.trace.attempts.length > 1 ? (
                           <small>
-                            共 {record.trace.attempts.length} 次上游请求
+                            {t("共 {count} 次上游请求", {
+                              count: record.trace.attempts.length,
+                            })}
                           </small>
                         ) : null}
                       </td>
-                      <td className="query-detail" data-label="设备 / 客户端">
+                      <td
+                        className="query-detail"
+                        data-label={t("设备 / 客户端")}
+                      >
                         {deviceName(record)}
-                        <small>{record.client_ip || "未记录客户端 IP"}</small>
+                        <small>
+                          {record.client_ip || t("未记录客户端 IP")}
+                        </small>
                         {showPrincipal ? (
-                          <small>用户 {principalName(record)}</small>
+                          <small>
+                            {t("用户 {name}", { name: principalName(record) })}
+                          </small>
                         ) : null}
                       </td>
                       <td
@@ -1971,13 +2051,13 @@ export function QueryDetails({
                       >
                         {record.answer_ips?.length
                           ? record.answer_ips.join(", ")
-                          : "无地址记录"}
+                          : t("无地址记录")}
                       </td>
-                      <td data-label="协议 / 耗时">
-                        {record.protocol?.toUpperCase() || "未知"}
+                      <td data-label={t("协议 / 耗时")}>
+                        {record.protocol?.toUpperCase() || t("未知")}
                         <small>{record.duration_ms.toFixed(2)} ms</small>
                       </td>
-                      <td data-label="时间">
+                      <td data-label={t("时间")}>
                         {logDay(record.time)}
                         <small>{logClock(record.time)}</small>
                       </td>
@@ -1987,18 +2067,18 @@ export function QueryDetails({
               </table>
             </div>
           ) : (
-            <Empty>当前条件下暂无查询记录</Empty>
+            <Empty>{t("当前条件下暂无查询记录")}</Empty>
           )}
           {cursor ? (
             <div className="query-more">
               <button onClick={more} disabled={loading}>
-                {loading ? "正在加载…" : "加载更多"}
+                {loading ? t("正在加载…") : t("加载更多")}
               </button>
             </div>
           ) : null}
           {selected ? (
             <Modal
-              title={selected.name || "查询详情"}
+              title={selected.name || t("查询详情")}
               onClose={() => setSelected(null)}
               className="query-log-modal"
             >
@@ -2029,28 +2109,31 @@ export function ServicePage() {
   if (loading)
     return (
       <>
-        <PageTitle title="主页" />
+        <PageTitle title={t("主页")} />
         <Spinner />
       </>
     );
   return (
     <>
-      <PageTitle title="主页" description="连接信息、服务额度与设备接入。" />
+      <PageTitle
+        title={t("主页")}
+        description={t("连接信息、服务额度与设备接入。")}
+      />
       <Alert error={error} />
       {data ? (
         <>
-          <Card title="连接信息" className="service-connection">
+          <Card title={t("连接信息")} className="service-connection">
             <div className="connection-row">
               <div>
-                <span>公共 DoH 地址</span>
+                <span>{t("公共 DoH 地址")}</span>
                 <code className="block">{data[0].public_dns_url}</code>
               </div>
               <Link className="primary action-link" to="/app/account">
-                管理设备凭证
+                {t("管理设备凭证")}
               </Link>
             </div>
             <div className="credential-summary">
-              <span>设备凭证</span>
+              <span>{t("设备凭证")}</span>
               {data[2].length ? (
                 <div>
                   {data[2].map((credential) => (
@@ -2058,34 +2141,39 @@ export function ServicePage() {
                   ))}
                 </div>
               ) : (
-                <p>尚未创建设备凭证。每台设备请使用独立凭证接入。</p>
+                <p>{t("尚未创建设备凭证。每台设备请使用独立凭证接入。")}</p>
               )}
             </div>
           </Card>
           <div className="metrics">
             <Metric
-              label="剩余额度"
+              label={t("剩余额度")}
               value={fmt.num(data[0].quota.remaining)}
-              hint={`已用 ${fmt.num(data[0].quota.used)} / ${fmt.num(data[0].quota.limit)}`}
+              hint={t("已用 {used} / {limit}", {
+                used: fmt.num(data[0].quota.used),
+                limit: fmt.num(data[0].quota.limit),
+              })}
             />
             <Metric
-              label="额度重置"
+              label={t("额度重置")}
               value={fmt.date(data[0].quota.period_end)}
-              hint={`${data[0].quota.period === "daily" ? "每日" : "每月"} · ${data[0].quota.timezone}`}
+              hint={`${data[0].quota.period === "daily" ? t("每日") : t("每月")} · ${data[0].quota.timezone}`}
             />
             <Metric
-              label="服务到期"
+              label={t("服务到期")}
               value={fmt.date(data[0].user.expires_at)}
             />
             <Metric
-              label="QPS / 突发"
+              label={t("QPS / 突发")}
               value={`${data[0].user.qps} / ${data[0].user.burst}`}
             />
           </div>
-          <Card title="额度使用">
+          <Card title={t("额度使用")}>
             <div
               className="progress"
-              aria-label={`额度已使用 ${fmt.pct(data[0].quota.used, data[0].quota.limit)}`}
+              aria-label={t("额度已使用 {percent}", {
+                percent: fmt.pct(data[0].quota.used, data[0].quota.limit),
+              })}
             >
               <span
                 style={{
@@ -2094,21 +2182,27 @@ export function ServicePage() {
               />
             </div>
           </Card>
-          <Card title="订阅">
+          <Card title={t("订阅")}>
             <div className="rows">
               <div>
-                <span>服务周期</span>
+                <span>{t("服务周期")}</span>
                 <strong>
-                  {data[0].quota.period === "daily" ? "每日" : "每月"} 额度
+                  {data[0].quota.period === "daily"
+                    ? t("每日 额度")
+                    : t("每月 额度")}
                 </strong>
               </div>
             </div>
           </Card>
-          <Card title="设备接入" className="connection-guide">
+          <Card title={t("设备接入")} className="connection-guide">
             <ol>
-              <li>为每台设备创建独立凭证，专属 DoH 地址和令牌只显示一次。</li>
-              <li>在客户端填写专属地址，或使用对应的 Bearer Token。</li>
-              <li>设备遗失或不再使用时，请在账户中心轮换或撤销其凭证。</li>
+              <li>
+                {t("为每台设备创建独立凭证，专属 DoH 地址和令牌只显示一次。")}
+              </li>
+              <li>{t("在客户端填写专属地址，或使用对应的 Bearer Token。")}</li>
+              <li>
+                {t("设备遗失或不再使用时，请在账户中心轮换或撤销其凭证。")}
+              </li>
             </ol>
           </Card>
           <StatsBlocks stats={data[1]} />
@@ -2132,9 +2226,11 @@ export function UsagePage() {
   return (
     <>
       <PageTitle
-        title="统计与日志"
-        description="过去 24 小时的用量、设备和 DNS 查询记录"
-        action={<button onClick={() => setVersion((x) => x + 1)}>刷新</button>}
+        title={t("统计与日志")}
+        description={t("过去 24 小时的用量、设备和 DNS 查询记录")}
+        action={
+          <button onClick={() => setVersion((x) => x + 1)}>{t("刷新")}</button>
+        }
       />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
@@ -2163,8 +2259,8 @@ export function CredentialsPage() {
   return (
     <>
       <PageTitle
-        title="接入凭证"
-        description="为每台设备签发独立地址或 Bearer 令牌"
+        title={t("接入凭证")}
+        description={t("为每台设备签发独立地址或 Bearer 令牌")}
       />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
@@ -2183,7 +2279,7 @@ function PasswordForm() {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     if (f.get("new_password") !== f.get("confirm")) {
-      setError("两次输入的新密码不一致。");
+      setError(t("两次输入的新密码不一致。"));
       return;
     }
     setBusy(true);
@@ -2199,7 +2295,7 @@ function PasswordForm() {
       clearLocal();
       nav("/login", {
         replace: true,
-        state: { notice: "密码已修改，请重新登录" },
+        state: { notice: t("密码已修改，请重新登录") },
       });
     } catch (e) {
       setError(message(e));
@@ -2209,7 +2305,7 @@ function PasswordForm() {
   return (
     <form onSubmit={submit}>
       <Alert error={error} />
-      <Field label="当前密码">
+      <Field label={t("当前密码")}>
         <input
           type="password"
           name="current_password"
@@ -2217,7 +2313,7 @@ function PasswordForm() {
           required
         />
       </Field>
-      <Field label="新密码" hint="至少 12 个字符">
+      <Field label={t("新密码")} hint={t("至少 12 个字符")}>
         <input
           type="password"
           name="new_password"
@@ -2227,7 +2323,7 @@ function PasswordForm() {
           maxLength={1024}
         />
       </Field>
-      <Field label="确认新密码">
+      <Field label={t("确认新密码")}>
         <input
           type="password"
           name="confirm"
@@ -2238,7 +2334,7 @@ function PasswordForm() {
         />
       </Field>
       <button className="primary" disabled={busy}>
-        {busy ? "正在修改…" : "修改密码"}
+        {busy ? t("正在修改…") : t("修改密码")}
       </button>
     </form>
   );
@@ -2247,7 +2343,10 @@ function PasswordForm() {
 export function PasswordPage() {
   return (
     <>
-      <PageTitle title="修改密码" description="修改后，当前会话会立即退出" />
+      <PageTitle
+        title={t("修改密码")}
+        description={t("修改后，当前会话会立即退出")}
+      />
       <Card className="narrow">
         <PasswordForm />
       </Card>
@@ -2258,15 +2357,21 @@ export function PasswordPage() {
 export function MorePage() {
   return (
     <>
-      <PageTitle title="更多" description="审计、系统状态与账户安全" />
+      <PageTitle
+        title={t("更多")}
+        description={t("审计、系统状态与账户安全")}
+      />
       <Card className="more-card">
         <ul className="more-links">
           {adminMoreLinks.map(({ to, label }) => (
             <li key={to}>
-              <Link to={to}>{label}</Link>
+              <Link to={to}>{t(label)}</Link>
             </li>
           ))}
         </ul>
+      </Card>
+      <Card className="language-card" title={t("界面语言")}>
+        <LanguageSelect />
       </Card>
     </>
   );
@@ -2281,30 +2386,38 @@ export function AccountPage() {
   return (
     <>
       <PageTitle
-        title="账户中心"
-        description="管理账户状态、设备凭证与登录密码。"
+        title={t("账户中心")}
+        description={t("管理账户状态、设备凭证与登录密码。")}
       />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
         <>
           <div className="metrics">
-            <Metric label="账户" value={data.user.username} />
-            <Metric label="服务到期" value={fmt.date(data.user.expires_at)} />
-            <Metric label="凭证名额" value={data.user.max_credentials} />
+            <Metric label={t("账户")} value={data.user.username} />
+            <Metric
+              label={t("服务到期")}
+              value={fmt.date(data.user.expires_at)}
+            />
+            <Metric label={t("凭证名额")} value={data.user.max_credentials} />
           </div>
-          <Card title="公共 DNS 地址">
+          <Card title={t("公共 DNS 地址")}>
             <code className="block">{data.public_dns_url}</code>
             <p className="caption">
-              请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。
+              {t(
+                "请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。",
+              )}
             </p>
           </Card>
           <CredentialManager base="/me" max={data.user.max_credentials} />
-          <Card className="narrow" title="修改密码">
-            <p className="caption">修改成功后，当前会话会立即退出。</p>
+          <Card className="narrow" title={t("修改密码")}>
+            <p className="caption">{t("修改成功后，当前会话会立即退出。")}</p>
             <PasswordForm />
           </Card>
         </>
       ) : null}
+      <Card className="language-card" title={t("界面语言")}>
+        <LanguageSelect />
+      </Card>
     </>
   );
 }
@@ -2312,19 +2425,24 @@ export function AccountPage() {
 export function HelpPage() {
   return (
     <>
-      <PageTitle title="帮助与支持" description="设备接入与用量查看说明。" />
+      <PageTitle
+        title={t("帮助与支持")}
+        description={t("设备接入与用量查看说明。")}
+      />
       <div className="grid2 help-grid">
-        <Card title="设备接入">
+        <Card title={t("设备接入")}>
           <p>
-            先在账户中心创建一个设备凭证。专属 DoH 地址和 Bearer Token
-            仅会显示一次，请在设备端安全保存。
+            {t(
+              "先在账户中心创建一个设备凭证。专属 DoH 地址和 Bearer Token 仅会显示一次，请在设备端安全保存。",
+            )}
           </p>
-          <p>凭证遗失或设备不再使用时，可在账户中心轮换或撤销它。</p>
+          <p>{t("凭证遗失或设备不再使用时，可在账户中心轮换或撤销它。")}</p>
         </Card>
-        <Card title="用量与日志">
+        <Card title={t("用量与日志")}>
           <p>
-            统计与日志展示账户已处理的 DNS
-            请求。查询明细是否可见取决于服务端是否已开启日志记录。
+            {t(
+              "统计与日志展示账户已处理的 DNS 请求。查询明细是否可见取决于服务端是否已开启日志记录。",
+            )}
           </p>
         </Card>
       </div>
@@ -2343,22 +2461,25 @@ export function AuditPage() {
   } = usePaged<Audit>(query("/admin/audit", params));
   return (
     <>
-      <PageTitle title="操作审计" description="过去 24 小时的账户与凭证变更" />
+      <PageTitle
+        title={t("操作审计")}
+        description={t("过去 24 小时的账户与凭证变更")}
+      />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data?.length ? (
         <div
           className="table-wrap"
           role="region"
-          aria-label="审计记录"
+          aria-label={t("审计记录")}
           tabIndex={0}
         >
           <table>
             <thead>
               <tr>
-                <th>时间</th>
-                <th>操作</th>
-                <th>对象</th>
-                <th>操作者</th>
+                <th>{t("时间")}</th>
+                <th>{t("操作")}</th>
+                <th>{t("对象")}</th>
+                <th>{t("操作者")}</th>
               </tr>
             </thead>
             <tbody>
@@ -2370,19 +2491,19 @@ export function AuditPage() {
                     {a.target_type}
                     {a.target_id ? ` · ${a.target_id}` : ""}
                   </td>
-                  <td>{a.actor_id || "系统"}</td>
+                  <td>{a.actor_id || t("系统")}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       ) : !loading && !error ? (
-        <Empty>当前窗口暂无审计记录</Empty>
+        <Empty>{t("当前窗口暂无审计记录")}</Empty>
       ) : null}
       {cursor ? (
         <div className="table-more">
           <button onClick={more} disabled={loading}>
-            {loading ? "正在加载…" : "加载更多"}
+            {loading ? t("正在加载…") : t("加载更多")}
           </button>
         </div>
       ) : null}
@@ -2410,35 +2531,37 @@ export function SystemPage() {
   return (
     <>
       <PageTitle
-        title="系统概览"
-        description="版本、运行时间与可公开的配置摘要"
-        action={data ? <button onClick={download}>下载配置摘要</button> : null}
+        title={t("系统概览")}
+        description={t("版本、运行时间与可公开的配置摘要")}
+        action={
+          data ? <button onClick={download}>{t("下载配置摘要")}</button> : null
+        }
       />
       {loading ? <Spinner /> : <Alert error={error} />} <HealthPanel />
       {data ? (
         <>
           <div className="metrics">
-            <Metric label="版本" value={data.version} size="text" />
-            <Metric label="启动时间" value={fmt.date(data.started_at)} />
+            <Metric label={t("版本")} value={data.version} size="text" />
+            <Metric label={t("启动时间")} value={fmt.date(data.started_at)} />
             <Metric
-              label="查询明细"
-              value={data.query_log_enabled ? "已启用" : "未启用"}
+              label={t("查询明细")}
+              value={data.query_log_enabled ? t("已启用") : t("未启用")}
             />
             <Metric
-              label="控制数据"
+              label={t("控制数据")}
               value={data.config.control_storage}
               size="text"
             />
             <Metric
-              label="统计数据"
+              label={t("统计数据")}
               value={data.config.telemetry_storage}
               size="text"
             />
           </div>
-          <Card title="公共 DNS 地址">
+          <Card title={t("公共 DNS 地址")}>
             <code className="block">{data.public_dns_url}</code>
           </Card>
-          <Card title="配置摘要">
+          <Card title={t("配置摘要")}>
             <pre>{JSON.stringify(data.config, null, 2)}</pre>
           </Card>
         </>

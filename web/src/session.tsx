@@ -99,6 +99,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 }
 export function useSession() {
   const v = useContext(Context);
-  if (!v) throw Error("SessionProvider 缺失");
+  if (!v) throw Error("SessionProvider is missing");
   return v;
 }

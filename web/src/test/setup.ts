@@ -8,3 +8,7 @@ HTMLDialogElement.prototype.showModal ??= function () {
 HTMLDialogElement.prototype.close ??= function () {
   this.open = false;
 };
+// Tests read the Chinese source text; jsdom would otherwise pick English.
+import { setLang } from "../i18n";
+setLang("zh");
+afterEach(() => setLang("zh"));

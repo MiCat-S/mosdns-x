@@ -18,6 +18,7 @@ import {
   usageSummary,
 } from "./pages";
 import { SessionProvider } from "./session";
+import { LanguageProvider } from "./i18n";
 const user = {
   id: "u1",
   username: "alice",
@@ -52,7 +53,11 @@ function mount(path: string) {
     ],
     { initialEntries: [path] },
   );
-  return render(<RouterProvider router={router} />);
+  return render(
+    <LanguageProvider>
+      <RouterProvider router={router} />
+    </LanguageProvider>,
+  );
 }
 beforeEach(() => vi.restoreAllMocks());
 describe("前端访问与秘密处理", () => {
@@ -585,6 +590,38 @@ describe("前端访问与秘密处理", () => {
     ]);
     for (const link of screen.getAllByRole("link", { name: "修改密码" }))
       expect(link).toHaveAttribute("href", "/admin/password");
+  });
+  it("切换界面语言后导航改用所选语言并记住选择", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) =>
+        url.endsWith("/session")
+          ? Promise.resolve(
+              response({
+                user: { ...user, role: "admin" },
+                csrf_token: "c",
+                expires_at: "2027-01-01T00:00:00Z",
+              }),
+            )
+          : Promise.resolve(response({ items: [] })),
+      ),
+    );
+    mount("/admin/users");
+    const picker = await screen.findByRole("combobox", { name: "界面语言" });
+    fireEvent.change(picker, { target: { value: "en" } });
+    expect(
+      await screen.findByRole("link", { name: "Query log" }),
+    ).toHaveAttribute("href", "/admin/logs");
+    expect(localStorage.getItem("mosdns.lang")).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Interface language" }),
+      { target: { value: "ja" } },
+    );
+    expect(
+      await screen.findByRole("link", { name: "クエリログ" }),
+    ).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("ja");
   });
   it("管理员可以从导航进入运行配置", async () => {
     vi.stubGlobal(

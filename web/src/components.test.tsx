@@ -52,6 +52,9 @@ describe("指标字号", () => {
     expect(size("2026年10月8日 12:00")).toBe("text");
     expect(size("已启用")).toBe("text");
     expect(size("未设置")).toBe("text");
+    expect(size("2027/01/01 8:00")).toBe("text");
+    expect(size("Oct 8, 2026, 1:30 PM")).toBe("text");
+    expect(size("Enabled")).toBe("text");
     expect(size("mysql", "text")).toBe("text");
   });
 });

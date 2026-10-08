@@ -5,11 +5,55 @@
    and figures, the system sans for everything you read or operate, warm
    cream surfaces and a clay-orange accent. */
 
+/* Chinese and Japanese title serifs (Noto Serif SC / JP, SIL OFL 1.1),
+   subset to the interface's own characters by web/scripts/subset-fonts.py.
+   Latin is left to Source Serif 4, which comes first in --font-serif. */
+@font-face {
+  font-family: "MosDNS Serif SC";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/serif-sc-500.woff2") format("woff2");
+  unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "MosDNS Serif SC";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/serif-sc-600.woff2") format("woff2");
+  unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "MosDNS Serif JP";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/serif-jp-500.woff2") format("woff2");
+  unicode-range:
+    U+3000-303F, U+3040-30FF, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "MosDNS Serif JP";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/serif-jp-600.woff2") format("woff2");
+  unicode-range:
+    U+3000-303F, U+3040-30FF, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF;
+}
+
 :root {
-  font-family:
+  /* Han characters take their shapes from the page language, so Chinese
+     and Japanese each get their own sans and serif stacks. */
+  --font-sans:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
     system-ui, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei",
     sans-serif;
+  font-family: var(--font-sans);
   color-scheme: light dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -30,13 +74,14 @@
   --w-semibold: 600;
   --font-mono:
     ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-  /* Source Serif 4 (OFL, bundled) stands in for Claude's licensed serifs;
-     Chinese uses the system Song face, or YaHei on Windows where SimSun
-     reads poorly at title sizes. */
+  /* Source Serif 4 and Noto Serif SC (both OFL, bundled) stand in for
+     Claude's licensed serifs; characters outside the subset fall back to
+     the system Song face, or YaHei on Windows where SimSun reads poorly at
+     title sizes. */
   --font-serif:
-    "Source Serif 4 Variable", "Songti SC", STSong, "Noto Serif SC",
-    "Noto Serif CJK SC", "Source Han Serif SC", "Microsoft YaHei", Georgia,
-    serif;
+    "Source Serif 4 Variable", "MosDNS Serif SC", "Noto Serif SC",
+    "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", STSong,
+    "Microsoft YaHei", Georgia, serif;
 
   /* spacing */
   --sp-1: 4px;
@@ -130,6 +175,17 @@
     --nav-hover: rgb(250 249 245 / 5%);
     --backdrop: rgb(0 0 0 / 55%);
   }
+}
+
+:root:lang(ja) {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    system-ui, "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
+  --font-serif:
+    "Source Serif 4 Variable", "MosDNS Serif JP", "Noto Serif JP",
+    "Source Han Serif JP", "Noto Serif CJK JP", "Hiragino Mincho ProN",
+    "Yu Mincho", Georgia, serif;
 }
 
 * {
@@ -464,13 +520,72 @@ nav a.active i {
   display: none;
 }
 
+/* Language picker: a globe and a quiet select, used in the sidebar, on the
+   login page and on the mobile account pages. */
+.language-select {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-3);
+}
+
+.language-select svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 1rem;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+
+.language-select select {
+  width: auto;
+  min-width: 0;
+  min-height: 2rem;
+  flex: 1 1 auto;
+  padding: 0 var(--sp-2);
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.language-select select:hover {
+  border-color: var(--line-strong);
+}
+
+.sidebar-language {
+  margin-top: auto;
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+
+.login-language {
+  justify-content: center;
+  margin-top: var(--sp-4);
+}
+
+.login-language select {
+  flex: 0 1 auto;
+}
+
+/* On wide screens the sidebar carries the picker, so the card that offers
+   it on phones is hidden. */
+@media (min-width: 841px) {
+  .language-card {
+    display: none;
+  }
+}
+
 .account {
   display: grid;
   min-width: 0;
   grid-template-columns: 2rem minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--sp-2);
-  margin-top: auto;
   padding: var(--sp-3) var(--sp-2) 0;
   border-top: 1px solid var(--line);
 }
@@ -1513,6 +1628,12 @@ summary {
   padding: var(--sp-3) var(--sp-4);
 }
 
+/* Headers may wrap, so longer Japanese and English labels don't widen the
+   table past its card. */
+.query-table th {
+  white-space: normal;
+}
+
 .query-detail {
   min-width: 9rem;
   white-space: normal;
@@ -1543,6 +1664,7 @@ summary {
 }
 
 .answer-preview {
+  min-width: 8rem;
   max-width: 17rem;
   color: var(--text-2);
 }
@@ -1855,11 +1977,17 @@ summary {
   font-weight: var(--w-semibold);
 }
 
+/* Fields line up by their labels (a long hint under the display name must
+   not push the address down); the delete button sits on the input row. */
 .runtime-upstream-main {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
-  align-items: end;
+  align-items: start;
   gap: var(--sp-3);
+}
+
+.runtime-upstream-main > button {
+  margin-top: calc(var(--text-sm) * var(--lh-snug) + var(--sp-2));
 }
 
 .runtime-upstream-main .field {
@@ -2470,6 +2598,7 @@ summary {
   aside .brand,
   .nav-section-label,
   aside .account,
+  .sidebar-language,
   .nav-desktop-only {
     display: none;
   }
