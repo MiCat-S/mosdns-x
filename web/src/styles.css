@@ -780,6 +780,22 @@ td small {
   line-height: var(--lh-snug);
 }
 
+.top-domains .rows {
+  margin-top: var(--sp-3);
+}
+
+.top-domains-rank {
+  display: inline-block;
+  min-width: 2ch;
+  margin-right: var(--sp-2);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.top-domains-name {
+  overflow-wrap: anywhere;
+}
+
 .caption {
   color: var(--text-3);
   font-size: var(--text-sm);

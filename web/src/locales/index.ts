@@ -8,6 +8,7 @@ import * as proxy from "./proxy";
 import * as queryTrace from "./query-trace";
 import * as runtimeConfig from "./runtime-config";
 import * as shell from "./shell";
+import * as topDomains from "./top-domains";
 import * as usageChart from "./usage-chart";
 
 // One table per source file keeps parallel edits apart; a key that appears
@@ -24,6 +25,7 @@ export const localeParts = {
   "query-trace": queryTrace,
   "runtime-config": runtimeConfig,
   shell,
+  "top-domains": topDomains,
   "usage-chart": usageChart,
 };
 

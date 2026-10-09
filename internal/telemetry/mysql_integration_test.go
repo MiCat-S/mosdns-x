@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/netip"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -99,6 +100,48 @@ func TestMySQLIntegrationTelemetryLifecycle(t *testing.T) {
 	snapshot, err = reopened.Snapshot(ctx, userID(other), now.Add(-time.Hour), now.Add(time.Minute))
 	if err != nil || snapshot.Completed != 1 {
 		t.Fatalf("reopened snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestMySQLIntegrationTopDomains(t *testing.T) {
+	dsn := os.Getenv("MOSDNS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MOSDNS_TEST_MYSQL_DSN is not set")
+	}
+	ctx := context.Background()
+	cleanupMySQLTelemetryTables(t, dsn)
+	t.Cleanup(func() { cleanupMySQLTelemetryTables(t, dsn) })
+	now := time.Now().UTC()
+	store, err := OpenMySQL(MySQLOptions{DSN: dsn, OperationTimeout: 5 * time.Second, QueryLogEnabled: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	observeNames(store, "u1", "a.example.", "A.Example.", "cached.example.", "cached.example.", "b.example.")
+	observeNames(store, "u2", "cached.example.", "b.example.", "c.example.")
+	if err := store.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	from, to := now.Add(-time.Hour), now.Add(time.Minute)
+	global, err := store.TopDomains(ctx, "", from, to, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []DomainStats{{"cached.example.", 3, 3}, {"a.example.", 2, 0}, {"b.example.", 2, 0}}
+	if !reflect.DeepEqual(global.Domains, want) || global.Queries != 8 || !global.QueryLogEnabled {
+		t.Fatalf("global = %+v", global)
+	}
+	u2, err := store.TopDomains(ctx, "u2", from, to, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []DomainStats{{"b.example.", 1, 0}, {"c.example.", 1, 0}, {"cached.example.", 1, 1}}
+	if !reflect.DeepEqual(u2.Domains, want) || u2.Queries != 3 {
+		t.Fatalf("u2 = %+v", u2)
+	}
+	empty, err := store.TopDomains(ctx, "nobody", from, to, 15)
+	if err != nil || empty.Domains == nil || len(empty.Domains) != 0 || empty.Queries != 0 {
+		t.Fatalf("empty = %+v err=%v", empty, err)
 	}
 }
 

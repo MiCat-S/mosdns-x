@@ -217,6 +217,18 @@ export interface Upstream {
   failures: number;
   avg_latency_ms: number;
 }
+export interface DomainStats {
+  name: string;
+  queries: number;
+  cache_hits: number;
+}
+export interface TopDomains {
+  from: string;
+  to: string;
+  queries: number;
+  domains: DomainStats[];
+  query_log_enabled: boolean;
+}
 export interface Stats {
   from: string;
   to: string;

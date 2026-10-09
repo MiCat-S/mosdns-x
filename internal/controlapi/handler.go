@@ -480,6 +480,13 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request, ss control.Session,
 		}
 		h.stats(w, r, u.ID)
 		return
+	case "/top-domains":
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		h.topDomains(w, r, u.ID)
+		return
 	case "/queries":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w)
@@ -552,6 +559,10 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 	}
 	if p == "/stats" && r.Method == http.MethodGet {
 		h.stats(w, r, r.URL.Query().Get("user_id"))
+		return
+	}
+	if p == "/top-domains" && r.Method == http.MethodGet {
+		h.topDomains(w, r, r.URL.Query().Get("user_id"))
 		return
 	}
 	if p == "/queries" && r.Method == http.MethodGet {
@@ -1086,6 +1097,41 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request, userID string) {
 	}
 	if v.Upstreams == nil {
 		v.Upstreams = []telemetry.UpstreamStats{}
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// defaultTopDomains is how many names top-domains returns without a limit.
+const defaultTopDomains = 15
+
+// topDomains ranks the names in the query log of userID, or of every user
+// when userID is empty.
+func (h *Handler) topDomains(w http.ResponseWriter, r *http.Request, userID string) {
+	ranker, ok := h.opts.Telemetry.(telemetry.DomainRanker)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	from, to, ok := parseRange(w, r, h.opts.Now())
+	if !ok {
+		return
+	}
+	limit := defaultTopDomains
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 1 || v > telemetry.MaxTopDomains {
+			writeError(w, http.StatusBadRequest, "invalid_input")
+			return
+		}
+		limit = v
+	}
+	v, err := ranker.TopDomains(r.Context(), userID, from, to, limit)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	}
+	if v.Domains == nil {
+		v.Domains = []telemetry.DomainStats{}
 	}
 	writeJSON(w, http.StatusOK, v)
 }

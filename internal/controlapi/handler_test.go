@@ -37,6 +37,7 @@ type fakeTelemetry struct {
 	filters   []telemetry.QueryFilter
 	page      telemetry.QueryPage
 	upstreams []telemetry.UpstreamStats
+	limits    []int
 }
 
 type fakeRuntimeConfig struct {
@@ -100,6 +101,62 @@ func (f *fakeTelemetry) Queries(_ context.Context, user string, _, _ time.Time, 
 	f.filters = append(f.filters, filter)
 	f.mu.Unlock()
 	return f.page, nil
+}
+
+func (f *fakeTelemetry) TopDomains(_ context.Context, user string, from, to time.Time, limit int) (telemetry.TopDomains, error) {
+	f.mu.Lock()
+	f.userIDs = append(f.userIDs, user)
+	f.limits = append(f.limits, limit)
+	f.mu.Unlock()
+	return telemetry.TopDomains{From: from, To: to, QueryLogEnabled: true}, nil
+}
+
+func TestTopDomainsAreScopedAndBounded(t *testing.T) {
+	f := newFixture(t)
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+	admin, _ := login(t, f.handler, "admin", "password-for-admin")
+	last := func() (string, int) {
+		f.telemetry.mu.Lock()
+		defer f.telemetry.mu.Unlock()
+		return f.telemetry.userIDs[len(f.telemetry.userIDs)-1], f.telemetry.limits[len(f.telemetry.limits)-1]
+	}
+	w := req(f.handler, http.MethodGet, "/api/v1/me/top-domains", "", alice, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"domains":[]`) {
+		t.Fatalf("me=%d %s", w.Code, w.Body.String())
+	}
+	if user, limit := last(); user != f.user1.ID || limit != 15 {
+		t.Fatalf("me scope user=%q limit=%d", user, limit)
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/top-domains?limit=100", "", alice, ""); w.Code != http.StatusOK {
+		t.Fatalf("limit 100=%d", w.Code)
+	}
+	if _, limit := last(); limit != 100 {
+		t.Fatalf("limit=%d", limit)
+	}
+	for _, limit := range []string{"0", "101", "ten"} {
+		if w := req(f.handler, http.MethodGet, "/api/v1/me/top-domains?limit="+limit, "", alice, ""); w.Code != http.StatusBadRequest {
+			t.Fatalf("limit %s=%d", limit, w.Code)
+		}
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/admin/top-domains", "", alice, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("user reading global ranking=%d", w.Code)
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/admin/top-domains", "", admin, ""); w.Code != http.StatusOK {
+		t.Fatalf("admin=%d", w.Code)
+	}
+	if user, _ := last(); user != "" {
+		t.Fatalf("global scope user=%q", user)
+	}
+	if w := req(f.handler, http.MethodGet, "/api/v1/admin/top-domains?user_id="+url.QueryEscape(f.user1.ID), "", admin, ""); w.Code != http.StatusOK {
+		t.Fatalf("admin for user=%d", w.Code)
+	}
+	if user, _ := last(); user != f.user1.ID {
+		t.Fatalf("admin user scope=%q", user)
+	}
+	f.handler.opts.Telemetry = struct{ Telemetry }{f.telemetry}
+	if w := req(f.handler, http.MethodGet, "/api/v1/me/top-domains", "", alice, ""); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store without ranking=%d", w.Code)
+	}
 }
 
 func TestQueryFiltersAreValidatedAndScoped(t *testing.T) {

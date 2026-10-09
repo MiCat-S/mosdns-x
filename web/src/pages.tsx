@@ -34,6 +34,7 @@ import { locale, msg, t } from "./i18n";
 import { CachePurgeCard, PurgeDomainButton } from "./cache-purge";
 import { HealthPanel } from "./health-panel";
 import { OutboundSection, outboundName, routeReason } from "./query-trace";
+import { TopDomainsCard } from "./top-domains";
 export { RuntimeConfigPage } from "./runtime-config";
 import type {
   Audit,
@@ -234,7 +235,15 @@ export function Login() {
   );
 }
 
-function StatsBlocks({ stats, usage }: { stats: Stats; usage?: UsagePoint[] }) {
+function StatsBlocks({
+  stats,
+  usage,
+  topDomains,
+}: {
+  stats: Stats;
+  usage?: UsagePoint[];
+  topDomains?: string;
+}) {
   const summary = usage ? usageSummary(usage) : undefined;
   return (
     <>
@@ -328,6 +337,9 @@ function StatsBlocks({ stats, usage }: { stats: Stats; usage?: UsagePoint[] }) {
           )}
         </Card>
       </div>
+      {topDomains ? (
+        <TopDomainsCard path={topDomains} from={stats.from} to={stats.to} />
+      ) : null}
     </>
   );
 }
@@ -353,7 +365,13 @@ export function AdminOverview() {
         }
       />
       {loading ? <Spinner /> : <Alert error={error} />}
-      {data ? <StatsBlocks stats={data[0]} usage={data[1]} /> : null}
+      {data ? (
+        <StatsBlocks
+          stats={data[0]}
+          usage={data[1]}
+          topDomains="/admin/top-domains"
+        />
+      ) : null}
     </>
   );
 }
@@ -1059,7 +1077,11 @@ function UserDetailContent({ id }: { id: string }) {
             />
           </div>
           <CredentialManager base={base} max={account.user.max_credentials} />
-          <StatsBlocks stats={data[1]} usage={data[2]} />
+          <StatsBlocks
+            stats={data[1]}
+            usage={data[2]}
+            topDomains={`/admin/top-domains?user_id=${encodeURIComponent(id)}`}
+          />
           <DeviceUsage
             path={`${base}/device-usage`}
             credentialsPath={`${base}/credentials`}
@@ -2249,7 +2271,11 @@ export function UsagePage() {
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
         <>
-          <StatsBlocks stats={data[0]} usage={data[1]} />
+          <StatsBlocks
+            stats={data[0]}
+            usage={data[1]}
+            topDomains="/me/top-domains"
+          />
           <DeviceUsage
             path="/me/device-usage"
             credentialsPath="/me/credentials"
