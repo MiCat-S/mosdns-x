@@ -221,6 +221,8 @@ export interface DomainStats {
   name: string;
   queries: number;
   cache_hits: number;
+  // TTL in seconds the server lengthens this name to right now.
+  extended_ttl?: number;
 }
 export interface TopDomains {
   from: string;

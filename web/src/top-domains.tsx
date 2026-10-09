@@ -59,6 +59,11 @@ function Ranking({ data }: { data: TopDomains }) {
                   share: fmt.pct(d.queries, data.queries),
                   hits: fmt.pct(d.cache_hits, d.queries),
                 })}
+                {d.extended_ttl
+                  ? ` · ${t("TTL 已自动延长至 {minutes} 分钟", {
+                      minutes: Math.max(1, Math.round(d.extended_ttl / 60)),
+                    })}`
+                  : null}
               </small>
             </span>
             <strong>{fmt.num(d.queries)}</strong>

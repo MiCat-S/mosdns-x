@@ -38,6 +38,7 @@ type fakeTelemetry struct {
 	page      telemetry.QueryPage
 	upstreams []telemetry.UpstreamStats
 	limits    []int
+	domains   []telemetry.DomainStats
 }
 
 type fakeRuntimeConfig struct {
@@ -108,7 +109,38 @@ func (f *fakeTelemetry) TopDomains(_ context.Context, user string, from, to time
 	f.userIDs = append(f.userIDs, user)
 	f.limits = append(f.limits, limit)
 	f.mu.Unlock()
-	return telemetry.TopDomains{From: from, To: to, QueryLogEnabled: true}, nil
+	return telemetry.TopDomains{From: from, To: to, Domains: append([]telemetry.DomainStats(nil), f.domains...), QueryLogEnabled: true}, nil
+}
+
+type fakeTTLExtensions struct {
+	ttls map[string]uint32
+	err  error
+}
+
+func (f *fakeTTLExtensions) ActiveTTLExtensions() (map[string]uint32, error) { return f.ttls, f.err }
+
+func TestTopDomainsShowLengthenedTTLs(t *testing.T) {
+	f := newFixture(t)
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+	f.telemetry.domains = []telemetry.DomainStats{{Name: "hot.example.", Queries: 9}, {Name: "cdn.example.", Queries: 4}}
+	ttls := &fakeTTLExtensions{ttls: map[string]uint32{"hot.example.": 1800, "elsewhere.example.": 3600}}
+	f.handler.opts.TTLExtensions = ttls
+	read := func() []telemetry.DomainStats {
+		t.Helper()
+		w := req(f.handler, http.MethodGet, "/api/v1/me/top-domains", "", alice, "")
+		var v telemetry.TopDomains
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &v) != nil {
+			t.Fatalf("status=%d %s", w.Code, w.Body.String())
+		}
+		return v.Domains
+	}
+	if got := read(); len(got) != 2 || got[0].ExtendedTTL != 1800 || got[1].ExtendedTTL != 0 {
+		t.Fatalf("domains = %+v", got)
+	}
+	ttls.err = runtimeconfig.ErrRuntimeUnavailable
+	if got := read(); len(got) != 2 || got[0].ExtendedTTL != 0 {
+		t.Fatalf("without a running generation: %+v", got)
+	}
 }
 
 func TestTopDomainsAreScopedAndBounded(t *testing.T) {

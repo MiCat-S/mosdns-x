@@ -188,6 +188,7 @@ func (c *cachePlugin) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		c.L().Debug("cache hit", qCtx.InfoField())
 		qCtx.SetResponseWithTrace(cachedResp, query_context.ResponseTrace{Source: query_context.ResponseSourceCache, SourceID: c.Tag(), CacheOrigin: origin})
 		qCtx.SetCacheHit(true)
+		qCtx.SetStaleHit(lazyHit)
 		if c.whenHit != nil {
 			return c.whenHit.Exec(ctx, qCtx, nil)
 		}

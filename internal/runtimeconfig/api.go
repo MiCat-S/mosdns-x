@@ -171,3 +171,10 @@ type CachePurger interface {
 type UpstreamLister interface {
 	ActiveUpstreamIDs() ([]string, error)
 }
+
+// TTLExtensionLister reports the names whose TTL the running generation
+// lengthens right now, with the lengthened TTL in seconds. It returns
+// ErrRuntimeUnavailable when no generation is serving.
+type TTLExtensionLister interface {
+	ActiveTTLExtensions() (map[string]uint32, error)
+}

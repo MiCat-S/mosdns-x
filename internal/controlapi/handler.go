@@ -65,6 +65,7 @@ type Options struct {
 	RuntimeConfig     runtimeconfig.Manager
 	CachePurger       runtimeconfig.CachePurger
 	ActiveUpstreams   runtimeconfig.UpstreamLister
+	TTLExtensions     runtimeconfig.TTLExtensionLister
 	Assets            fs.FS
 	Legacy            http.Handler
 	EnablePprof       bool
@@ -1132,6 +1133,14 @@ func (h *Handler) topDomains(w http.ResponseWriter, r *http.Request, userID stri
 	}
 	if v.Domains == nil {
 		v.Domains = []telemetry.DomainStats{}
+	}
+	if h.opts.TTLExtensions != nil {
+		// Without a running generation no TTL is lengthened.
+		if ttls, err := h.opts.TTLExtensions.ActiveTTLExtensions(); err == nil {
+			for i := range v.Domains {
+				v.Domains[i].ExtendedTTL = ttls[v.Domains[i].Name]
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, v)
 }

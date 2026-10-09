@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   OutboundSection,
+  describeStep,
   expressionTokens,
   routeReason,
   routeSummary,
@@ -104,6 +105,12 @@ describe("查询路径", () => {
     expect(routeReason(record({ trace: { steps: [], attempts: [] } }))).toBe(
       "未命中分流规则",
     );
+  });
+
+  it("说明 TTL 被自动延长", () => {
+    expect(
+      describeStep({ at_ms: 3, kind: "ttl_extended", detail: "1800" }),
+    ).toBe("查询多且结果未变，TTL 已延长至 1800 秒");
   });
 
   it("没有可用结果时说明上游全部失败", () => {

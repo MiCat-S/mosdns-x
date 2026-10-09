@@ -47,8 +47,8 @@ func TestCacheHitMarker(t *testing.T) {
 	if err := p.Exec(context.Background(), hit, next); err != nil {
 		t.Fatal(err)
 	}
-	if !hit.CacheHit() {
-		t.Fatal("cache hit marker missing")
+	if !hit.CacheHit() || hit.StaleHit() {
+		t.Fatalf("fresh hit: CacheHit=%v StaleHit=%v", hit.CacheHit(), hit.StaleHit())
 	}
 }
 
@@ -195,6 +195,9 @@ func TestLazyCacheHitRecordsHitBeforeRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-refreshed
+	if !hit.CacheHit() || !hit.StaleHit() {
+		t.Fatalf("lazy hit: CacheHit=%v StaleHit=%v", hit.CacheHit(), hit.StaleHit())
+	}
 	steps := journal.Snapshot(0).Steps
 	if len(steps) < 2 || steps[0].Kind != query_context.RouteStepCacheHit || steps[1].Kind != query_context.RouteStepLazyRefresh {
 		t.Fatalf("steps = %+v", steps)

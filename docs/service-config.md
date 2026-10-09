@@ -192,3 +192,41 @@ servers:
 控制模式下 DoH/DoH3 已经经过 `control.admit` 受理队列，原生 listener 也只能绑定回环地址，这两项属于额外加固，按需开启即可。二者在 listener 启动时生效。运行代热重载不会重建 listener，修改这两项会被视为 listener 拓扑变化而拒绝热重载，需重启服务。
 
 `/metrics` 中对应指标带 `listener="协议://地址"` 标签：`mosdns_server_inflight_queries`（在途查询数）、`mosdns_server_rejected_queries_total{protocol}`（因上限被拒的查询）、`mosdns_server_open_connections`（TCP/DoT/DoQ 打开的连接数）、`mosdns_server_rejected_connections_total{protocol}`（因上限被关闭的连接）。
+
+## 自动延长热门域名的 TTL（`adaptive_ttl`）
+
+客户端按 TTL 重新查询。被频繁查询、答案又长期不变的域名，即使每次都命中缓存，也会让客户端每隔几分钟回来一次。`adaptive_ttl` 自动找出这类域名，延长返回给客户端的 TTL，减少它们的查询量；答案会变的域名保持原 TTL。
+
+```yaml
+plugins:
+  - tag: adaptive_ttl
+    type: adaptive_ttl
+    args:
+      min_queries: 12    # 过去一小时查询次数达到此值才算热门，默认 12
+      stable_for: 3600   # 答案连续不变的秒数达到此值才延长，默认 3600
+      max_ttl: 3600      # 延长后 TTL 的上限（秒），默认 3600
+      size: 65536        # 最多跟踪的查询键数，默认 65536
+      exclude:           # 永不延长的域名，语法同域名匹配规则
+        - "domain:example.net"
+
+  - tag: main_sequence
+    type: sequence
+    args:
+      exec:
+        - adaptive_ttl   # 放在缓存之前、ECS 处理之后
+        - cache
+        - forward_remote
+```
+
+判断按查询键分别进行，键与缓存相同：域名（不区分大小写）、查询类型和 ECS 子网。
+
+- **热门**：过去一小时的查询次数（按上一小时与本小时加权估算）达到 `min_queries`。TTL 延长后客户端回来得变少，查询次数会随之下降，所以一个键成为热门后保持热门，直到连续 1 小时加 `max_ttl` 没有任何查询才重新判断。
+- **答案不变**：比较 Rcode 和 Answer 区的记录，忽略记录顺序和 TTL。答案一变，稳定时长从零重新累计，因此轮换地址的 CDN、负载均衡和故障切换域名不会被延长。
+- **延长多少**：热门且答案已连续 `stable_for` 秒不变时，TTL 设为稳定时长的一半，不超过 `max_ttl`。默认参数下，答案不变满 1 小时后为 1800 秒，满 2 小时后为 3600 秒。原 TTL 已经更长时不做改动。
+- 只延长有答案的 NOERROR 应答。NXDOMAIN、空答案和失败应答保持原样。缓存过期、正先回旧结果并在后台刷新的应答（lazy cache）计入查询次数，但不延长，也不用来判断答案是否变化，客户端会照常按 `lazy_cache_reply_ttl` 回来取刷新后的结果。
+
+插件只修改返回给客户端的 TTL。位于它之后的缓存保存的仍是上游 TTL，并照常按上游 TTL 过期和刷新，所以服务端始终能在原 TTL 内看到新答案。代价是客户端最多会晚 `max_ttl` 秒才拿到变化后的答案；必须及时切换的域名请加入 `exclude`。
+
+插件把学习状态保存在内存中。重启服务，或在面板应用配置（会建立新的运行代），都会清空状态，热门域名需要重新经过 `stable_for` 才会延长。
+
+面板“查询最多的域名”卡片会标出当前被延长的域名及其 TTL；查询明细的处理步骤中记为 `ttl_extended`。`/metrics` 提供 `mosdns_plugin_<tag>_ttl_extended_total`（被延长的应答数）和 `mosdns_plugin_<tag>_tracked_keys`（正在跟踪的查询键数）。

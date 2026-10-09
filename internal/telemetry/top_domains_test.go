@@ -30,7 +30,7 @@ func TestTopDomainsRanksTheQueryLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []DomainStats{{"cached.example.", 3, 3}, {"a.example.", 2, 0}, {"b.example.", 2, 0}}
+	want := []DomainStats{{Name: "cached.example.", Queries: 3, CacheHits: 3}, {Name: "a.example.", Queries: 2, CacheHits: 0}, {Name: "b.example.", Queries: 2, CacheHits: 0}}
 	if !reflect.DeepEqual(global.Domains, want) || global.Queries != 8 || !global.QueryLogEnabled || !global.From.Equal(from) {
 		t.Fatalf("global = %+v", global)
 	}
@@ -38,7 +38,7 @@ func TestTopDomainsRanksTheQueryLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []DomainStats{{"b.example.", 1, 0}, {"c.example.", 1, 0}, {"cached.example.", 1, 1}}
+	want = []DomainStats{{Name: "b.example.", Queries: 1, CacheHits: 0}, {Name: "c.example.", Queries: 1, CacheHits: 0}, {Name: "cached.example.", Queries: 1, CacheHits: 1}}
 	if !reflect.DeepEqual(u2.Domains, want) || u2.Queries != 3 {
 		t.Fatalf("u2 = %+v", u2)
 	}

@@ -6,6 +6,8 @@ export const en: Record<string, string> = {
   "查询量最多的 {n} 个域名，统计 {from} 至 {to} 的 {count} 次查询":
     "The {n} most queried domains among {count} queries from {from} to {to}",
   "占 {share} · 缓存命中 {hits}": "{share} of queries · {hits} cache hits",
+  "TTL 已自动延长至 {minutes} 分钟":
+    "TTL automatically lengthened to {minutes} min",
 };
 
 export const ja: Record<string, string> = {
@@ -15,4 +17,5 @@ export const ja: Record<string, string> = {
   "查询量最多的 {n} 个域名，统计 {from} 至 {to} 的 {count} 次查询":
     "{from} ～ {to} の {count} 件のクエリのうち、クエリ数上位 {n} 件のドメイン",
   "占 {share} · 缓存命中 {hits}": "全体の {share} · キャッシュヒット {hits}",
+  "TTL 已自动延长至 {minutes} 分钟": "TTL を {minutes} 分に自動延長",
 };

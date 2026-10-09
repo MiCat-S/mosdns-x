@@ -24,14 +24,19 @@ function mockRanking(body: TopDomains) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("TopDomainsCard", () => {
-  it("ranks the names with their share and cache hits", async () => {
+  it("ranks the names with their share, cache hits and longer TTL", async () => {
     const urls = mockRanking({
       from,
       to,
       queries: 200,
       query_log_enabled: true,
       domains: [
-        { name: "www.example.com.", queries: 120, cache_hits: 117 },
+        {
+          name: "www.example.com.",
+          queries: 120,
+          cache_hits: 117,
+          extended_ttl: 1800,
+        },
         { name: "api.example.net.", queries: 30, cache_hits: 0 },
       ],
     });
@@ -43,7 +48,9 @@ describe("TopDomainsCard", () => {
       />,
     );
     expect(await screen.findByText("www.example.com")).toBeTruthy();
-    expect(screen.getByText("占 60.0% · 缓存命中 97.5%")).toBeTruthy();
+    expect(
+      screen.getByText("占 60.0% · 缓存命中 97.5% · TTL 已自动延长至 30 分钟"),
+    ).toBeTruthy();
     expect(screen.getByText("占 15.0% · 缓存命中 0.0%")).toBeTruthy();
     expect(screen.getByText("120")).toBeTruthy();
     const url = new URL(urls[0], "http://panel");

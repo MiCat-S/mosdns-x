@@ -27,6 +27,10 @@ type DomainStats struct {
 	Name      string `json:"name"`
 	Queries   uint64 `json:"queries"`
 	CacheHits uint64 `json:"cache_hits"`
+	// ExtendedTTL is the TTL in seconds a plugin such as adaptive_ttl gives
+	// the name right now, or 0 when its TTL is not lengthened. The control
+	// API fills it in; stores leave it 0.
+	ExtendedTTL uint32 `json:"extended_ttl,omitempty"`
 }
 
 // TopDomains ranks the names in the query log. From is where the ranking

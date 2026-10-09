@@ -95,6 +95,10 @@ export function describeStep(step: RouteStep) {
     }
     case "primary_unhealthy":
       return t("主要上游近期失败较多，主要与备援同时查询");
+    case "ttl_extended":
+      return t("查询多且结果未变，TTL 已延长至 {ttl} 秒", {
+        ttl: step.detail ?? "",
+      });
     case "load_balance":
       return t("负载均衡选择第 {group} 组", {
         group: step.detail?.replace("#", "") ?? "",

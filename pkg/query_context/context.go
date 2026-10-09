@@ -233,6 +233,7 @@ type Context struct {
 
 	r                   *dns.Msg
 	cacheHit            bool
+	staleHit            bool
 	trace               ResponseTrace
 	captureQueryDetails bool
 	marks               map[uint]struct{}
@@ -321,6 +322,7 @@ func (ctx *Context) SetResponse(r *dns.Msg) {
 		(ctx.trace.UpstreamStageStatus == UpstreamStageSelected || ctx.trace.UpstreamID != "")
 	ctx.r = r
 	ctx.cacheHit = false
+	ctx.staleHit = false
 	ctx.trace = ResponseTrace{}
 	if discardedUpstream {
 		ctx.trace.UpstreamStageStatus = UpstreamStageDiscarded
@@ -349,6 +351,7 @@ func (ctx *Context) ResponseTrace() ResponseTrace {
 func (ctx *Context) AdoptResponse(src *Context) {
 	ctx.SetResponse(src.R())
 	ctx.cacheHit = src.cacheHit
+	ctx.staleHit = src.staleHit
 	ctx.trace = src.trace.Clone()
 }
 
@@ -416,6 +419,17 @@ func (ctx *Context) CacheHit() bool {
 	return ctx.cacheHit
 }
 
+// SetStaleHit marks the response as an expired cache entry served while the
+// cache refreshes it in the background. SetResponse clears the mark.
+func (ctx *Context) SetStaleHit(stale bool) {
+	ctx.staleHit = stale
+}
+
+// StaleHit reports whether the response is an expired cache entry.
+func (ctx *Context) StaleHit() bool {
+	return ctx.staleHit
+}
+
 // Id returns the Context id.
 // Note: This id is not the dns msg id.
 // It's a unique uint32 growing with the number of query.
@@ -453,6 +467,7 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 		d.r = r.Copy()
 	}
 	d.cacheHit = ctx.cacheHit
+	d.staleHit = ctx.staleHit
 	d.trace = ctx.trace.Clone()
 	d.captureQueryDetails = ctx.captureQueryDetails
 	d.branch = ctx.branch

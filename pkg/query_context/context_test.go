@@ -26,13 +26,18 @@ func TestCacheHitLifecycle(t *testing.T) {
 	ctx := NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), nil)
 	ctx.SetResponse(new(dns.Msg))
 	ctx.SetCacheHit(true)
+	ctx.SetStaleHit(true)
 	copy := ctx.Copy()
-	if !copy.CacheHit() {
+	if !copy.CacheHit() || !copy.StaleHit() {
 		t.Fatal("Copy did not preserve cache hit")
 	}
 	ctx.SetResponse(new(dns.Msg))
-	if ctx.CacheHit() {
+	if ctx.CacheHit() || ctx.StaleHit() {
 		t.Fatal("SetResponse did not clear stale cache hit")
+	}
+	ctx.AdoptResponse(copy)
+	if !ctx.StaleHit() {
+		t.Fatal("AdoptResponse did not take the stale mark")
 	}
 }
 

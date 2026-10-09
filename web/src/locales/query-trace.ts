@@ -32,6 +32,8 @@ export const en: Record<string, string> = {
   "主要上游近期失败较多，主要与备援同时查询":
     "Primary upstream has failed often recently; querying primary and fallback in parallel",
   "负载均衡选择第 {group} 组": "Load balancer chose group {group}",
+  "查询多且结果未变，TTL 已延长至 {ttl} 秒":
+    "Queried often with an unchanged answer, so TTL lengthened to {ttl} s",
   "缓存 · 原始 {upstream}": "Cache · originally {upstream}",
   "缓存（来源未记录）": "Cache (source not recorded)",
   "本地 Hosts": "Local Hosts",
@@ -139,6 +141,8 @@ export const ja: Record<string, string> = {
   "主要上游近期失败较多，主要与备援同时查询":
     "プライマリのアップストリームで最近失敗が多いため、プライマリとフォールバックに同時にクエリ",
   "负载均衡选择第 {group} 组": "負荷分散でグループ {group} を選択",
+  "查询多且结果未变，TTL 已延长至 {ttl} 秒":
+    "クエリが多く結果も同じため、TTL を {ttl} 秒に延長",
   "缓存 · 原始 {upstream}": "キャッシュ · 当初の取得元 {upstream}",
   "缓存（来源未记录）": "キャッシュ（取得元は未記録）",
   "本地 Hosts": "ローカル Hosts",
