@@ -142,9 +142,13 @@ type Manager interface {
 	Probe(context.Context, string) ([]Probe, error)
 }
 
-// ErrInvalidDomain is returned for a cache purge whose domain is not a valid
-// host name.
-var ErrInvalidDomain = errors.New("invalid domain")
+// Cache purge errors. ErrRuntimeUnavailable means no runtime generation is
+// serving; ErrCachePurgeBusy means a purge is already running on a cache.
+var (
+	ErrInvalidDomain      = errors.New("invalid domain")
+	ErrRuntimeUnavailable = errors.New("no runtime is running")
+	ErrCachePurgeBusy     = errors.New("another cache purge is running")
+)
 
 // CachePurge reports a purge across the cache plugins of the running
 // generation. Domain is the normalized FQDN that was purged.

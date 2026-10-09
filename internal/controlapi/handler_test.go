@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -425,6 +426,14 @@ func TestCachePurgeRouteIsAdminOnly(t *testing.T) {
 	w = req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf)
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "cache_purge_failed") || strings.Contains(w.Body.String(), "6379") {
 		t.Fatalf("failed purge=%d %s", w.Code, w.Body.String())
+	}
+	purger.err = fmt.Errorf("plugin cache: %w", runtimeconfig.ErrCachePurgeBusy)
+	if w = req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf); w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "cache_purge_busy") {
+		t.Fatalf("busy purge=%d %s", w.Code, w.Body.String())
+	}
+	purger.err = runtimeconfig.ErrRuntimeUnavailable
+	if w = req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"unavailable"`) {
+		t.Fatalf("no runtime=%d %s", w.Code, w.Body.String())
 	}
 }
 

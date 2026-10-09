@@ -21,6 +21,8 @@ export const en: Record<string, string> = {
     "Enter a valid domain, e.g. example.com.",
   "部分缓存未能清除，请查看服务日志后重试。":
     "Some caches could not be cleared. Check the service log and try again.",
+  "另一次清除正在进行，请稍后再试。":
+    "Another purge is still running. Try again in a moment.",
 };
 
 export const ja: Record<string, string> = {
@@ -46,4 +48,6 @@ export const ja: Record<string, string> = {
     "有効なドメインを入力してください（例：example.com）。",
   "部分缓存未能清除，请查看服务日志后重试。":
     "一部のキャッシュを消去できませんでした。サービスログを確認して再試行してください。",
+  "另一次清除正在进行，请稍后再试。":
+    "別の消去処理が実行中です。しばらくしてからもう一度お試しください。",
 };

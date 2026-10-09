@@ -81,6 +81,7 @@ type cachePlugin struct {
 	whenHit      executable_seq.Executable
 	backend      cache.Backend
 	lazyUpdateSF singleflight.Group
+	purging      uint32 // one purge at a time; it walks the whole backend
 
 	queryTotal   prometheus.Counter
 	hitTotal     prometheus.Counter

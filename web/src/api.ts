@@ -106,6 +106,7 @@ export function message(error: unknown) {
       ),
       invalid_domain: t("请输入有效的域名，例如 example.com。"),
       cache_purge_failed: t("部分缓存未能清除，请查看服务日志后重试。"),
+      cache_purge_busy: t("另一次清除正在进行，请稍后再试。"),
     };
     if (messages[error.code]) return messages[error.code];
   }

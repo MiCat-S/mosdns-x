@@ -203,8 +203,9 @@ func (r *RedisCache) Close() error {
 	return nil
 }
 
-// purgeScanCount is the SCAN batch size hint used by Purge.
-const purgeScanCount = 1000
+// purgeScanCount is the SCAN batch size. MATCH is applied server side to
+// each batch, so a larger count only cuts round trips.
+const purgeScanCount = 5000
 
 // Purge scans the keys that match glob and deletes those match accepts.
 // Each round trip gets the client timeout; ctx bounds the whole scan.

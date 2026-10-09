@@ -3,11 +3,13 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,6 +245,29 @@ func TestPurgeHTTPHandler(t *testing.T) {
 		t.Fatalf("purge = %d %s", w.Code, w.Body.String())
 	}
 	checkPurged(t, p, keys, "example.com.", "www.example.com.")
+}
+
+func TestPurgeDomainRunsOneAtATime(t *testing.T) {
+	p := newTestCache(false)
+	defer p.backend.Close()
+	keys := map[string]string{"example.com.": storeTestAnswer(t, p, "example.com.", dns.TypeA)}
+	atomic.StoreUint32(&p.purging, 1)
+	if _, err := p.PurgeDomain(context.Background(), "example.com", false); !errors.Is(err, cache.ErrPurgeBusy) {
+		t.Fatalf("busy purge: %v", err)
+	}
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/plugins/"+p.Tag()+"/purge?domain=example.com", nil))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("busy http = %d %s", w.Code, w.Body.String())
+	}
+	checkPurged(t, p, keys)
+	atomic.StoreUint32(&p.purging, 0)
+	if n, err := p.PurgeDomain(context.Background(), "example.com", false); err != nil || n != 1 {
+		t.Fatalf("purge after busy = %d, %v", n, err)
+	}
+	if atomic.LoadUint32(&p.purging) != 0 {
+		t.Fatal("purge flag not released")
+	}
 }
 
 type stubBackend struct{ cache.Backend }

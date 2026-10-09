@@ -842,7 +842,8 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 	}
 }
 
-// cachePurgeTimeout bounds one purge; a Redis cache is scanned key by key.
+// cachePurgeTimeout is the budget for one request across every cache of the
+// running generation; a Redis cache is scanned key by key.
 const cachePurgeTimeout = 30 * time.Second
 
 func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request, actor string) {
@@ -868,8 +869,15 @@ func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request, actor strin
 	ctx, cancel := context.WithTimeout(r.Context(), cachePurgeTimeout)
 	defer cancel()
 	result, err := h.opts.CachePurger.PurgeDomainCache(ctx, request.Domain, request.Subdomains)
-	if errors.Is(err, runtimeconfig.ErrInvalidDomain) {
+	switch {
+	case errors.Is(err, runtimeconfig.ErrInvalidDomain):
 		writeError(w, http.StatusBadRequest, "invalid_domain")
+		return
+	case errors.Is(err, runtimeconfig.ErrRuntimeUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "unavailable")
+		return
+	case errors.Is(err, runtimeconfig.ErrCachePurgeBusy):
+		writeError(w, http.StatusTooManyRequests, "cache_purge_busy")
 		return
 	}
 	fields := []zap.Field{zap.String("actor", actor), zap.String("domain", result.Domain), zap.Bool("subdomains", result.Subdomains), zap.Int("caches", result.Caches), zap.Int("removed", result.Removed)}

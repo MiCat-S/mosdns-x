@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -134,6 +135,10 @@ func (c *cachePlugin) PurgeDomain(ctx context.Context, domain string, subdomains
 	if !ok {
 		return 0, errors.New("cache backend cannot remove selected entries")
 	}
+	if !atomic.CompareAndSwapUint32(&c.purging, 0, 1) {
+		return 0, cache.ErrPurgeBusy
+	}
+	defer atomic.StoreUint32(&c.purging, 0)
 	return purger.Purge(ctx, keys.glob(), keys.match)
 }
 
@@ -167,6 +172,10 @@ func (c *cachePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), purgeTimeout)
 	defer cancel()
 	removed, err := c.PurgeDomain(ctx, name, subdomains)
+	if errors.Is(err, cache.ErrPurgeBusy) {
+		http.Error(w, "another purge is already running", http.StatusTooManyRequests)
+		return
+	}
 	if err != nil {
 		c.L().Warn("cache purge", zap.String("domain", name), zap.Bool("subdomains", subdomains), zap.Error(err))
 		http.Error(w, "cache purge failed", http.StatusInternalServerError)

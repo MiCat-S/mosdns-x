@@ -21,9 +21,14 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrPurgeBusy is returned when a purge is already running; a purge may
+// walk a whole backend, so callers run one at a time.
+var ErrPurgeBusy = errors.New("another purge is already running")
 
 // Backend represents a cache backend.
 // The Backend does not raise errors cause a cache error is not a
