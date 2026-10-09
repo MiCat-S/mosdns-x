@@ -176,6 +176,18 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 	return f, nil
 }
 
+// UpstreamIDs returns the identifiers telemetry records this plugin's
+// upstreams under, tag/index in configuration order.
+func (f *fastForward) UpstreamIDs() []string {
+	ids := make([]string, 0, len(f.upstreamWrappers))
+	for _, u := range f.upstreamWrappers {
+		if identified, ok := u.(interface{ ObserverID() string }); ok {
+			ids = append(ids, identified.ObserverID())
+		}
+	}
+	return ids
+}
+
 type upstreamWrapper struct {
 	address    string
 	observerID string

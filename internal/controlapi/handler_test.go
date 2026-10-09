@@ -32,10 +32,11 @@ func (c *apiClock) Now() time.Time  { c.mu.RLock(); defer c.mu.RUnlock(); return
 func (c *apiClock) Set(v time.Time) { c.mu.Lock(); c.t = v; c.mu.Unlock() }
 
 type fakeTelemetry struct {
-	mu      sync.Mutex
-	userIDs []string
-	filters []telemetry.QueryFilter
-	page    telemetry.QueryPage
+	mu        sync.Mutex
+	userIDs   []string
+	filters   []telemetry.QueryFilter
+	page      telemetry.QueryPage
+	upstreams []telemetry.UpstreamStats
 }
 
 type fakeRuntimeConfig struct {
@@ -89,8 +90,9 @@ func (f *fakeRuntimeConfig) Probe(_ context.Context, tag string) ([]runtimeconfi
 func (f *fakeTelemetry) Snapshot(_ context.Context, user string, from, to time.Time) (telemetry.StatsSnapshot, error) {
 	f.mu.Lock()
 	f.userIDs = append(f.userIDs, user)
+	upstreams := append([]telemetry.UpstreamStats{}, f.upstreams...)
 	f.mu.Unlock()
-	return telemetry.StatsSnapshot{From: from, To: to, RcodeCounts: map[string]uint64{}, Series: []telemetry.SeriesPoint{}, Upstreams: []telemetry.UpstreamStats{}}, nil
+	return telemetry.StatsSnapshot{From: from, To: to, RcodeCounts: map[string]uint64{}, Series: []telemetry.SeriesPoint{}, Upstreams: upstreams}, nil
 }
 func (f *fakeTelemetry) Queries(_ context.Context, user string, _, _ time.Time, filter telemetry.QueryFilter, p telemetry.Page) (telemetry.QueryPage, error) {
 	f.mu.Lock()
@@ -816,5 +818,56 @@ func TestQueryLogsNameAccountsAndDevices(t *testing.T) {
 	f.telemetry.page = telemetry.QueryPage{}
 	if w := req(f.handler, http.MethodGet, "/api/v1/me/queries", "", alice, ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"items":[]`) {
 		t.Fatalf("empty queries=%d %s", w.Code, w.Body.String())
+	}
+}
+
+type fakeUpstreamLister struct {
+	ids []string
+	err error
+}
+
+func (f *fakeUpstreamLister) ActiveUpstreamIDs() ([]string, error) { return f.ids, f.err }
+
+func TestStatsHideUpstreamsMissingFromTheRunningConfig(t *testing.T) {
+	f := newFixture(t)
+	alice, _ := login(t, f.handler, "alice", "password-for-alice")
+	f.telemetry.mu.Lock()
+	f.telemetry.upstreams = []telemetry.UpstreamStats{{ID: "forward_a/0", Attempts: 3}, {ID: "forward_a/1", Attempts: 2}, {ID: "forward_gone/0", Attempts: 6, Failures: 6}}
+	f.telemetry.mu.Unlock()
+	ids := func() string {
+		w := req(f.handler, http.MethodGet, "/api/v1/me/stats", "", alice, "")
+		if w.Code != 200 {
+			t.Fatalf("stats=%d %s", w.Code, w.Body.String())
+		}
+		var v telemetry.StatsSnapshot
+		if err := json.Unmarshal(w.Body.Bytes(), &v); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]string, 0, len(v.Upstreams))
+		for _, u := range v.Upstreams {
+			got = append(got, u.ID)
+		}
+		return strings.Join(got, " ")
+	}
+	const recorded = "forward_a/0 forward_a/1 forward_gone/0"
+	if got := ids(); got != recorded {
+		t.Fatalf("without lister: %q", got)
+	}
+	lister := &fakeUpstreamLister{ids: []string{"forward_a/0", "forward_b/0"}}
+	f.handler.opts.ActiveUpstreams = lister
+	// forward_gone was removed and forward_a lost its second upstream.
+	if got := ids(); got != "forward_a/0" {
+		t.Fatalf("filtered: %q", got)
+	}
+	lister.ids = nil
+	if got := ids(); got != "" {
+		t.Fatalf("no active upstreams: %q", got)
+	}
+	if !strings.Contains(req(f.handler, http.MethodGet, "/api/v1/me/stats", "", alice, "").Body.String(), `"upstreams":[]`) {
+		t.Fatal("empty list must stay an array")
+	}
+	lister.err = runtimeconfig.ErrRuntimeUnavailable
+	if got := ids(); got != recorded {
+		t.Fatalf("runtime unavailable: %q", got)
 	}
 }

@@ -64,6 +64,7 @@ type Options struct {
 	RuntimeInspector  runtimeconfig.Inspector
 	RuntimeConfig     runtimeconfig.Manager
 	CachePurger       runtimeconfig.CachePurger
+	ActiveUpstreams   runtimeconfig.UpstreamLister
 	Assets            fs.FS
 	Legacy            http.Handler
 	EnablePprof       bool
@@ -1069,6 +1070,14 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request, userID string) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable")
 		return
 	}
+	if h.opts.ActiveUpstreams != nil {
+		// Only upstreams of the running generation are listed; counters of
+		// removed ones stay in the store. Without a running generation the
+		// list is returned as recorded.
+		if ids, err := h.opts.ActiveUpstreams.ActiveUpstreamIDs(); err == nil {
+			v.Upstreams = activeUpstreams(v.Upstreams, ids)
+		}
+	}
 	if v.RcodeCounts == nil {
 		v.RcodeCounts = map[string]uint64{}
 	}
@@ -1080,6 +1089,22 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request, userID string) {
 	}
 	writeJSON(w, http.StatusOK, v)
 }
+
+// activeUpstreams keeps the statistics whose upstream ID is in ids.
+func activeUpstreams(stats []telemetry.UpstreamStats, ids []string) []telemetry.UpstreamStats {
+	active := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		active[id] = struct{}{}
+	}
+	kept := make([]telemetry.UpstreamStats, 0, len(stats))
+	for _, s := range stats {
+		if _, ok := active[s.ID]; ok {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
 func (h *Handler) queries(w http.ResponseWriter, r *http.Request, userID string) {
 	if h.opts.Telemetry == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable")

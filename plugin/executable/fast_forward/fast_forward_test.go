@@ -119,3 +119,14 @@ func TestFastForwardRejectsProxyOnUDPME(t *testing.T) {
 		}
 	}
 }
+
+func TestFastForwardListsUpstreamIDs(t *testing.T) {
+	f, err := newFastForward(coremain.NewBP("forward_remote", PluginType, nil, nil), &Args{Upstream: []*UpstreamConfig{{Addr: "223.5.5.5"}, {Addr: "udpme://223.6.6.6"}, {Addr: "https://doh.example/dns-query"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Shutdown()
+	if got := strings.Join(f.UpstreamIDs(), " "); got != "forward_remote/0 forward_remote/1 forward_remote/2" {
+		t.Fatalf("ids = %q", got)
+	}
+}

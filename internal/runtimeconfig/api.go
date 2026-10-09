@@ -164,3 +164,10 @@ type CachePurge struct {
 type CachePurger interface {
 	PurgeDomainCache(ctx context.Context, domain string, subdomains bool) (CachePurge, error)
 }
+
+// UpstreamLister reports the identifiers (plugin tag/index) of the upstreams
+// the running generation forwards to, as telemetry records them. It returns
+// ErrRuntimeUnavailable when no generation is serving.
+type UpstreamLister interface {
+	ActiveUpstreamIDs() ([]string, error)
+}

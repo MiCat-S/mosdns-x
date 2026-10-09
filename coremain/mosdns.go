@@ -201,7 +201,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		var apiHandler http.Handler = m.httpAPIMux
 		if cfg.Control != nil {
 			startedAt := time.Now()
-			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Logger: m.logger, Telemetry: m.telemetry, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, CachePurger: m.runtimeManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
+			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Logger: m.logger, Telemetry: m.telemetry, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, CachePurger: m.runtimeManager, ActiveUpstreams: m.runtimeManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
 				queryLogEnabled := cfg.Control.QueryLog
 				if m.managedRuntime != nil {
 					if state, stateErr := m.managedRuntime.Get(ctx); stateErr == nil {
