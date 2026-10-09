@@ -49,6 +49,7 @@ ARCHIVE_FILES = (
     (Path("examples/control-production-mysql.yaml"), "examples/control-production-mysql.yaml"),
     (Path("examples/Caddyfile"), "examples/Caddyfile"),
     (Path("examples/mosdns.service"), "examples/mosdns.service"),
+    (Path("examples/ttl_big_domains.txt"), "examples/ttl_big_domains.txt"),
 )
 
 

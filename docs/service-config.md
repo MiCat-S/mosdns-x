@@ -198,10 +198,17 @@ servers:
 客户端按 TTL 重新查询。被频繁查询、答案又长期不变的域名，即使每次都命中缓存，也会让客户端每隔几分钟回来一次。`adaptive_ttl` 自动找出这类域名，延长返回给客户端的 TTL，减少它们的查询量；答案会变的域名保持原 TTL。
 
 ```yaml
+data_providers:
+  - tag: ttl_big_domains
+    file: ./ttl_big_domains.txt   # 每行一个域名，默认匹配该域名及其子域名
+    auto_reload: true
+
 plugins:
   - tag: adaptive_ttl
     type: adaptive_ttl
     args:
+      domains:           # 只学习和延长这些域名；省略时所有域名都参与
+        - "provider:ttl_big_domains"
       min_queries: 12    # 过去一小时查询次数达到此值才算热门，默认 12
       stable_for: 3600   # 答案连续不变的秒数达到此值才延长，默认 3600
       max_ttl: 3600      # 延长后 TTL 的上限（秒），默认 3600
@@ -218,7 +225,7 @@ plugins:
         - forward_remote
 ```
 
-判断按查询键分别进行，键与缓存相同：域名（不区分大小写）、查询类型和 ECS 子网。
+判断按查询键分别进行，键与缓存相同：域名（不区分大小写）、查询类型和 ECS 子网。配置 `domains` 后，只有匹配的域名才会被跟踪和延长，其余域名完全不受影响；可以借此只延长谷歌、苹果、腾讯、阿里、字节跳动等大型服务商的域名，它们的地址很少变动。`domains` 与 `exclude` 都使用域名匹配规则，可直接列出，也可用 `provider:` 引用 `data_providers` 中的文件，开启 `auto_reload` 后修改文件无需重启。两者都匹配时以 `exclude` 为准。发布包中的 [ttl_big_domains.txt](../examples/ttl_big_domains.txt) 是一份按服务商分组的示例清单，可复制后按需增删。
 
 - **热门**：过去一小时的查询次数（按上一小时与本小时加权估算）达到 `min_queries`。TTL 延长后客户端回来得变少，查询次数会随之下降，所以一个键成为热门后保持热门，直到连续 1 小时加 `max_ttl` 没有任何查询才重新判断。
 - **答案不变**：比较 Rcode 和 Answer 区的记录，忽略记录顺序和 TTL。答案一变，稳定时长从零重新累计，因此轮换地址的 CDN、负载均衡和故障切换域名不会被延长。

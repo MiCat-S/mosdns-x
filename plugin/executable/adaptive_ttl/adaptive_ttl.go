@@ -7,13 +7,16 @@
 // hot key whose answer has not changed for stable_for gets a TTL of half
 // that stable time, up to max_ttl. A changed answer resets the stable time,
 // so names that rotate addresses (CDNs, load balancers, failover) are never
-// lengthened. Only the TTL sent to the client changes: caches before this
-// plugin in the chain keep the upstream TTL and refresh on it.
+// lengthened. When domains is set, only names it matches are learned, so the
+// longer TTLs can be kept to large providers whose addresses rarely move.
+// Only the TTL sent to the client changes: caches after this plugin in the
+// chain keep the upstream TTL and refresh on it.
 package adaptive_ttl
 
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net/netip"
@@ -64,6 +67,9 @@ type Args struct {
 	MaxTTL int64 `yaml:"max_ttl"`
 	// Keys tracked at most. Default 65536.
 	Size int64 `yaml:"size"`
+	// Only names matching these are learned and lengthened, in the domain
+	// matcher syntax (provider: included). Empty means every name.
+	Domains []string `yaml:"domains"`
 	// Names never lengthened, in the domain matcher syntax.
 	Exclude []string `yaml:"exclude"`
 }
@@ -90,6 +96,7 @@ type adaptiveTTL struct {
 	stableFor  time.Duration
 	maxTTL     uint32
 	size       int
+	domains    *domain.MatcherGroup[struct{}]
 	exclude    *domain.MatcherGroup[struct{}]
 	now        func() time.Time
 
@@ -107,9 +114,17 @@ func Init(bp *coremain.BP, args interface{}) (coremain.Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(a.Domains) > 0 {
+		mg, err := domain.BatchLoadDomainProvider(a.Domains, bp.M().GetDataManager())
+		if err != nil {
+			return nil, fmt.Errorf("domains: %w", err)
+		}
+		p.domains = mg
+	}
 	if len(a.Exclude) > 0 {
 		mg, err := domain.BatchLoadDomainProvider(a.Exclude, bp.M().GetDataManager())
 		if err != nil {
+			p.Shutdown()
 			return nil, fmt.Errorf("exclude: %w", err)
 		}
 		p.exclude = mg
@@ -118,9 +133,8 @@ func Init(bp *coremain.BP, args interface{}) (coremain.Plugin, error) {
 	return p, nil
 }
 
-// newAdaptiveTTL validates args and applies defaults. Init loads the
-// exclude list and registers the metrics.
-
+// newAdaptiveTTL validates args and applies defaults. Init loads the domain
+// lists and registers the metrics.
 func newAdaptiveTTL(bp *coremain.BP, args *Args) (*adaptiveTTL, error) {
 	for name, v := range map[string]int64{"min_queries": args.MinQueries, "stable_for": args.StableFor, "max_ttl": args.MaxTTL, "size": args.Size} {
 		if v < 0 {
@@ -189,6 +203,11 @@ func (p *adaptiveTTL) keyOf(q *dns.Msg) (key, bool) {
 		return key{}, false
 	}
 	question := q.Question[0]
+	if p.domains != nil {
+		if _, listed := p.domains.Match(question.Name); !listed {
+			return key{}, false
+		}
+	}
 	if p.exclude != nil {
 		if _, excluded := p.exclude.Match(question.Name); excluded {
 			return key{}, false
@@ -336,8 +355,11 @@ func (p *adaptiveTTL) ExtendedTTLs() map[string]uint32 {
 }
 
 func (p *adaptiveTTL) Shutdown() error {
-	if p.exclude != nil {
-		return p.exclude.Close()
+	var errs []error
+	for _, mg := range []*domain.MatcherGroup[struct{}]{p.domains, p.exclude} {
+		if mg != nil {
+			errs = append(errs, mg.Close())
+		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

@@ -1,0 +1,156 @@
+# Domains of large providers whose addresses rarely move, for the domains
+# list of adaptive_ttl. Each line matches the domain and its subdomains.
+# Names whose answers still change are not lengthened.
+
+# Google
+google.com
+google.cn
+googleapis.com
+googleapis.cn
+gstatic.com
+googleusercontent.com
+ggpht.com
+gvt1.com
+gvt2.com
+googlevideo.com
+youtube.com
+ytimg.com
+android.com
+gmail.com
+
+# Apple
+apple.com
+apple.com.cn
+icloud.com
+icloud.com.cn
+icloud-content.com
+me.com
+itunes.com
+mzstatic.com
+cdn-apple.com
+aaplimg.com
+apple-cloudkit.com
+apple-mapkit.com
+
+# Microsoft
+microsoft.com
+microsoftonline.com
+windows.com
+windowsupdate.com
+msftconnecttest.com
+live.com
+outlook.com
+office.com
+office.net
+bing.com
+xboxlive.com
+
+# Tencent
+qq.com
+tencent.com
+qcloud.com
+myqcloud.com
+wechat.com
+servicewechat.com
+tenpay.com
+gtimg.cn
+gtimg.com
+qpic.cn
+qlogo.cn
+idqqimg.com
+
+# Alibaba
+alibaba.com
+alicdn.com
+aliyun.com
+aliyuncs.com
+alipay.com
+alipayobjects.com
+taobao.com
+tmall.com
+tbcdn.cn
+mmstat.com
+1688.com
+dingtalk.com
+amap.com
+autonavi.com
+youku.com
+ykimg.com
+ele.me
+cainiao.com
+
+# ByteDance (Douyin, Toutiao, Feishu)
+bytedance.com
+douyin.com
+douyinpic.com
+douyincdn.com
+douyinvod.com
+douyinstatic.com
+amemv.com
+snssdk.com
+byteimg.com
+bytecdn.cn
+bytegoofy.com
+ibytedtos.com
+pstatp.com
+toutiao.com
+toutiaoimg.com
+ixigua.com
+zijieapi.com
+feishu.cn
+volces.com
+
+# Baidu
+baidu.com
+bdstatic.com
+bdimg.com
+baidupcs.com
+bcebos.com
+baidubce.com
+
+# Kuaishou
+kuaishou.com
+gifshow.com
+yximgs.com
+kwimgs.com
+ksapisrv.com
+
+# Bilibili
+bilibili.com
+hdslb.com
+biliapi.com
+biliapi.net
+bilivideo.com
+
+# Xiaomi
+xiaomi.com
+xiaomi.net
+mi.com
+miui.com
+mi-img.com
+
+# Huawei
+huawei.com
+hicloud.com
+dbankcdn.com
+
+# NetEase
+163.com
+126.net
+127.net
+netease.com
+
+# Sina Weibo
+weibo.com
+weibo.cn
+sinaimg.cn
+
+# JD, Meituan, Pinduoduo
+jd.com
+360buyimg.com
+meituan.com
+meituan.net
+dianping.com
+pinduoduo.com
+yangkeduo.com
+pddpic.com

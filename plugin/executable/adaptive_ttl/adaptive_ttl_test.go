@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -224,14 +225,74 @@ func TestOnlyAnswersAreLengthened(t *testing.T) {
 	}
 }
 
-func TestExcludedNamesAreLeftAlone(t *testing.T) {
-	h := newHarness(t, Args{})
+// matchers builds a static matcher group like BatchLoadDomainProvider does.
+func matchers(t *testing.T, patterns ...string) *domain.MatcherGroup[struct{}] {
+	t.Helper()
 	m := domain.NewDomainMixMatcher()
-	if err := m.Add("domain:example.net", struct{}{}); err != nil {
+	for _, pattern := range patterns {
+		if err := domain.Load[struct{}](m, pattern, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mg := new(domain.MatcherGroup[struct{}])
+	mg.Append(m)
+	return mg
+}
+
+func TestOnlyListedDomainsAreLengthened(t *testing.T) {
+	h := newHarness(t, Args{})
+	h.p.domains = matchers(t, "apple.com", "full:qq.com")
+	h.p.exclude = matchers(t, "full:time.apple.com")
+	ip := answer("192.0.2.1")
+	var listed, exact, excluded, sub, other uint32
+	for end := h.now.Add(2 * time.Hour); h.now.Before(end); h.now = h.now.Add(4 * time.Minute) {
+		listed, _ = h.ask("bag.itunes.Apple.com.", "", ip)
+		exact, _ = h.ask("qq.com.", "", ip)
+		excluded, _ = h.ask("time.apple.com.", "", ip)
+		sub, _ = h.ask("www.qq.com.", "", ip)
+		other, _ = h.ask("weblog.example.fun.", "", ip)
+	}
+	if listed <= 300 || exact <= 300 {
+		t.Fatalf("listed names: ttl %d and %d", listed, exact)
+	}
+	if excluded != 300 || sub != 300 || other != 300 {
+		t.Fatalf("unlisted or excluded names lengthened: %d %d %d", excluded, sub, other)
+	}
+	if len(h.p.keys) != 2 {
+		t.Fatalf("unlisted names tracked: %d keys", len(h.p.keys))
+	}
+}
+
+func TestExampleDomainList(t *testing.T) {
+	b, err := os.ReadFile("../../../examples/ttl_big_domains.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	h.p.exclude = new(domain.MatcherGroup[struct{}])
-	h.p.exclude.Append(m)
+	m, err := domain.ParseTextDomainFile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{
+		"bag.itunes.apple.com.":  true,
+		"gateway.icloud.com.":    true,
+		"www.google.com.":        true,
+		"weixin.qq.com.":         true,
+		"img.alicdn.com.":        true,
+		"p3-sign.douyinpic.com.": true,
+		"weblog.example.fun.":    false,
+		"x.entry.v51124-4.qpon.": false,
+		"apple.com.example.net.": false,
+		"notapple.com.":          false,
+	} {
+		if _, ok := m.Match(name); ok != want {
+			t.Errorf("%s matched=%v", name, ok)
+		}
+	}
+}
+
+func TestExcludedNamesAreLeftAlone(t *testing.T) {
+	h := newHarness(t, Args{})
+	h.p.exclude = matchers(t, "domain:example.net")
 	if ttl := h.every(4*time.Minute, 3*time.Hour, "node.example.net.", "", same(answer("192.0.2.1"))); ttl != 300 {
 		t.Fatalf("excluded name ttl = %d", ttl)
 	}
