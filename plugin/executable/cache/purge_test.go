@@ -113,7 +113,7 @@ func TestDomainKeysMatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		glob := keys.glob()
+		glob := keys.RedisGlob()
 		for _, name := range names {
 			wanted := false
 			for _, w := range tt.want {
@@ -122,7 +122,7 @@ func TestDomainKeysMatch(t *testing.T) {
 			for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeHTTPS} {
 				for _, ecs := range []bool{false, true} {
 					key := purgeTestKey(t, name, qtype, ecs)
-					if got := keys.match(key); got != wanted {
+					if got := keys.Match(key); got != wanted {
 						t.Errorf("%s subdomains=%v: match(%s type %d ecs %v) = %v", tt.domain, tt.subdomains, name, qtype, ecs, got)
 					}
 					if wanted && !redisGlobMatch(glob, key) {
@@ -144,7 +144,7 @@ func TestDomainKeysRejectMalformedKeys(t *testing.T) {
 	noQuestion[4], noQuestion[5] = 0, 0
 	pointer := []byte(valid[:headerLen] + "\xc0\x0c")
 	for _, key := range []string{"", valid[:headerLen], valid[:len(valid)-6], string(noQuestion), string(pointer), valid[:headerLen] + "\x07example\x03co"} {
-		if keys.match(key) {
+		if keys.Match(key) {
 			t.Errorf("match(%q) = true", key)
 		}
 	}

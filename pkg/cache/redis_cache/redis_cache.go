@@ -32,6 +32,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 
+	"github.com/pmkol/mosdns-x/pkg/cache"
 	"github.com/pmkol/mosdns-x/pkg/pool"
 	"github.com/pmkol/mosdns-x/pkg/utils"
 )
@@ -207,11 +208,22 @@ func (r *RedisCache) Close() error {
 // each batch, so a larger count only cuts round trips.
 const purgeScanCount = 5000
 
-// Purge scans the keys that match glob and deletes those match accepts.
-// Each round trip gets the client timeout; ctx bounds the whole scan.
-func (r *RedisCache) Purge(ctx context.Context, glob string, match func(key string) bool) (int, error) {
+// RedisGlobber is implemented by selectors that can narrow the SCAN with a
+// Redis glob that every key they accept satisfies.
+type RedisGlobber interface {
+	RedisGlob() string
+}
+
+// Purge scans the keys and deletes those selector accepts. A selector that
+// implements RedisGlobber filters the scan server side. Each round trip
+// gets the client timeout; ctx bounds the whole scan.
+func (r *RedisCache) Purge(ctx context.Context, selector cache.KeySelector) (int, error) {
 	if r.disabled() {
 		return 0, errors.New("redis is temporarily unavailable")
+	}
+	glob := "*"
+	if g, ok := selector.(RedisGlobber); ok {
+		glob = g.RedisGlob()
 	}
 	removed := 0
 	var cursor uint64
@@ -224,7 +236,7 @@ func (r *RedisCache) Purge(ctx context.Context, glob string, match func(key stri
 		}
 		selected := keys[:0]
 		for _, key := range keys {
-			if match(key) {
+			if selector.Match(key) {
 				selected = append(selected, key)
 			}
 		}

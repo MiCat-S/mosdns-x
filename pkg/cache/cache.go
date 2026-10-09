@@ -51,11 +51,16 @@ type Backend interface {
 	io.Closer
 }
 
+// KeySelector picks the cache keys a Purge removes. A backend that lists
+// keys remotely may ask the selector for a backend-specific prefilter
+// through an optional interface it defines itself.
+type KeySelector interface {
+	Match(key string) bool
+}
+
 // Purger is implemented by backends that can remove selected entries.
 type Purger interface {
-	// Purge removes every entry whose key match accepts and reports how many
-	// were removed. glob is a Redis-style pattern that every key match
-	// accepts also satisfies; backends that list keys remotely use it to
-	// filter keys before calling match, and the others ignore it.
-	Purge(ctx context.Context, glob string, match func(key string) bool) (int, error)
+	// Purge removes every entry whose key selector accepts and reports how
+	// many were removed.
+	Purge(ctx context.Context, selector KeySelector) (int, error)
 }

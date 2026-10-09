@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pmkol/mosdns-x/pkg/cache"
 	"github.com/pmkol/mosdns-x/pkg/concurrent_lru"
 )
 
@@ -139,12 +140,12 @@ func (c *MemCache) Len() int {
 	return c.lru.Len()
 }
 
-// Purge removes the entries whose key match accepts. glob is not used.
-func (c *MemCache) Purge(_ context.Context, _ string, match func(key string) bool) (int, error) {
+// Purge removes the entries whose key selector accepts.
+func (c *MemCache) Purge(_ context.Context, selector cache.KeySelector) (int, error) {
 	if c.isClosed() {
 		return 0, nil
 	}
 	return c.lru.Clean(func(key string, _ *elem) bool {
-		return match(key)
+		return selector.Match(key)
 	}), nil
 }

@@ -24,7 +24,8 @@ const purgeTimeout = 30 * time.Second
 
 // domainKeys selects cache keys by the name in their question. Keys are
 // packed queries (dnsutils.GetMsgKey), so the name follows the header in
-// uncompressed wire format.
+// uncompressed wire format. It implements cache.KeySelector and
+// redis_cache.RedisGlobber.
 type domainKeys struct {
 	labels     []string // lower case, root excluded
 	subdomains bool
@@ -38,7 +39,7 @@ func newDomainKeys(domain string, subdomains bool) (*domainKeys, error) {
 	return &domainKeys{labels: strings.Split(strings.TrimSuffix(fqdn, "."), "."), subdomains: subdomains}, nil
 }
 
-func (d *domainKeys) match(key string) bool {
+func (d *domainKeys) Match(key string) bool {
 	if len(key) < headerLen || key[4] == 0 && key[5] == 0 { // no question
 		return false
 	}
@@ -91,8 +92,8 @@ func equalFoldASCII(s, label string) bool {
 	return true
 }
 
-// glob returns a Redis pattern that every key match accepts satisfies.
-func (d *domainKeys) glob() string {
+// RedisGlob returns a Redis pattern that every key Match accepts satisfies.
+func (d *domainKeys) RedisGlob() string {
 	var b strings.Builder
 	b.WriteString(strings.Repeat("?", headerLen))
 	if d.subdomains {
@@ -139,7 +140,7 @@ func (c *cachePlugin) PurgeDomain(ctx context.Context, domain string, subdomains
 		return 0, cache.ErrPurgeBusy
 	}
 	defer atomic.StoreUint32(&c.purging, 0)
-	return purger.Purge(ctx, keys.glob(), keys.match)
+	return purger.Purge(ctx, keys)
 }
 
 // ServeHTTP serves POST /plugins/<tag>/purge?domain=<name>[&subdomains=true].
