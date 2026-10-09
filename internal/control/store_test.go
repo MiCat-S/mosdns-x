@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -797,5 +798,54 @@ func TestPeriodPolicyChangeResetsHighWaterIntentionally(t *testing.T) {
 	clock.Set(time.Date(2025, 12, 31, 12, 0, 0, 0, time.UTC))
 	if err := s.Admit(ctx, identity); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("real rollback after policy change: %v", err)
+	}
+}
+
+func TestRecordAudit(t *testing.T) {
+	now := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
+	s, _, _ := newTestStore(t, now)
+	ctx := context.Background()
+	admin, err := s.InitializeAdmin(ctx, adminSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := s.CreateUser(ctx, admin.ID, userSpec("alice", 10, 1, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]any{"domain": "example.com.", "removed": 3}
+	if err := s.RecordAudit(ctx, admin.ID, "cache_purge", "domain", "example.com.", meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAudit(ctx, user.ID, "cache_purge", "domain", "example.com.", nil); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("user actor: %v", err)
+	}
+	if err := s.RecordAudit(ctx, "nobody", "cache_purge", "domain", "", nil); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("unknown actor: %v", err)
+	}
+	for _, bad := range [][3]string{
+		{"", "domain", "x"}, {"cache_purge", "", "x"}, {strings.Repeat("a", 65), "domain", "x"},
+		{"cache_purge", strings.Repeat("t", 33), "x"}, {"cache_purge", "domain", strings.Repeat("d", 65)},
+		{"cache purge", "domain", "x"}, {"cache_purge", "domain", "例子"},
+	} {
+		if err := s.RecordAudit(ctx, admin.ID, bad[0], bad[1], bad[2], nil); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("RecordAudit(%q, %q, %q) = %v, want ErrInvalidInput", bad[0], bad[1], bad[2], err)
+		}
+	}
+	if err := s.RecordAudit(ctx, admin.ID, "cache_purge", "domain", "x", map[string]any{"blob": strings.Repeat("m", 5000)}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("oversized metadata: %v", err)
+	}
+	page, err := s.ListAudit(ctx, now.Add(-time.Hour), now.Add(time.Hour), Page{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var purges []AuditRecord
+	for _, r := range page.Items {
+		if r.Action == "cache_purge" {
+			purges = append(purges, r)
+		}
+	}
+	if len(purges) != 1 || purges[0].ActorID != admin.ID || purges[0].TargetType != "domain" || purges[0].TargetID != "example.com." || purges[0].Metadata["domain"] != "example.com." || !purges[0].CreatedAt.Equal(now) {
+		t.Fatalf("audit = %+v", purges)
 	}
 }

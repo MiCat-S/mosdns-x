@@ -361,6 +361,14 @@ func TestManagedRuntimeRoutesUseAdminSessionAndRevisionChecks(t *testing.T) {
 	if w = req(f.handler, http.MethodPost, "/api/v1/admin/runtime/upstreams/forward/probe", "", admin, adminCSRF); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"upstream_id":"forward/0"`) {
 		t.Fatalf("probe=%d %s", w.Code, w.Body.String())
 	}
+	for _, action := range []string{"runtime_apply", "runtime_rollback", "runtime_reload"} {
+		if records := auditActions(t, f, action); len(records) != 1 || records[0].ActorID != f.admin.ID || records[0].TargetType != "revision" {
+			t.Fatalf("%s audit = %+v", action, records)
+		}
+	}
+	if records := auditActions(t, f, "runtime_rollback"); records[0].TargetID != "previous" || records[0].Metadata["from"] != "current" {
+		t.Fatalf("rollback audit = %+v", records)
+	}
 	conflictBody, err := json.Marshal(map[string]any{"revision": "conflict", "config": manager.state.Config})
 	if err != nil {
 		t.Fatal(err)
@@ -422,6 +430,9 @@ func TestCachePurgeRouteIsAdminOnly(t *testing.T) {
 	if purger.domain != "Example.com" || !purger.subdomains {
 		t.Fatalf("purger got %q subdomains=%v", purger.domain, purger.subdomains)
 	}
+	if records := auditActions(t, f, "cache_purge"); len(records) != 1 || records[0].ActorID != f.admin.ID || records[0].TargetType != "domain" || records[0].TargetID != "example.com." || records[0].Metadata["removed"] != float64(3) {
+		t.Fatalf("cache_purge audit = %+v", records)
+	}
 	purger.err = errors.New("redis scan: dial tcp 127.0.0.1:6379: connection refused")
 	w = req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf)
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "cache_purge_failed") || strings.Contains(w.Body.String(), "6379") {
@@ -435,6 +446,22 @@ func TestCachePurgeRouteIsAdminOnly(t *testing.T) {
 	if w = req(f.handler, http.MethodPost, path, `{"domain":"example.com"}`, admin, csrf); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"unavailable"`) {
 		t.Fatalf("no runtime=%d %s", w.Code, w.Body.String())
 	}
+}
+
+// auditActions returns the fixture's audit records with the given action.
+func auditActions(t *testing.T, f *fixture, action string) []control.AuditRecord {
+	t.Helper()
+	page, err := f.store.ListAudit(context.Background(), f.clock.Now().Add(-time.Hour), f.clock.Now().Add(time.Hour), control.Page{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []control.AuditRecord
+	for _, r := range page.Items {
+		if r.Action == action {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 type fakeRuntimeInspector struct {

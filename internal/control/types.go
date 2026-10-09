@@ -150,6 +150,10 @@ type Service interface {
 	Usage(ctx context.Context, userID string, from, to time.Time, page Page) (PageResult[UsagePoint], error)
 	CredentialUsage(ctx context.Context, userID, credentialID string, from, to time.Time, page Page) (PageResult[UsagePoint], error)
 	ListAudit(ctx context.Context, from, to time.Time, page Page) (PageResult[AuditRecord], error)
+	// RecordAudit stores a record for an admin action performed outside the
+	// store, such as a runtime change or a cache purge. Fields are ASCII;
+	// action, target type and target are limited to 64, 32 and 64 bytes.
+	RecordAudit(ctx context.Context, actorID, action, targetType, targetID string, metadata map[string]any) error
 	Close() error
 }
 

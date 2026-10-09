@@ -57,6 +57,23 @@ func TestMySQLIntegrationControlLifecycle(t *testing.T) {
 	if err != nil || len(usage.Items) != 1 || usage.Items[0].Count != 1 {
 		t.Fatalf("usage=%+v err=%v", usage, err)
 	}
+	if err := store.RecordAudit(ctx, admin.ID, "cache_purge", "domain", "example.com.", map[string]any{"removed": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAudit(ctx, user.ID, "cache_purge", "domain", "example.com.", nil); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("user actor: %v", err)
+	}
+	audit, err := store.ListAudit(ctx, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), Page{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	purged := false
+	for _, r := range audit.Items {
+		purged = purged || r.Action == "cache_purge" && r.ActorID == admin.ID && r.TargetID == "example.com." && r.Metadata["removed"] == float64(2)
+	}
+	if !purged {
+		t.Fatalf("cache_purge audit missing: %+v", audit.Items)
+	}
 	rotated, err := store.RotateCredential(ctx, user.ID, user.ID, issued.Credential.ID)
 	if err != nil {
 		t.Fatal(err)

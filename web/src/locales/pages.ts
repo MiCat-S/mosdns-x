@@ -345,8 +345,6 @@ export const en: Record<string, string> = {
   "统计与日志展示账户已处理的 DNS 请求。查询明细是否可见取决于服务端是否已开启日志记录。":
     "Stats & logs shows the DNS requests your account has handled. Whether query details are visible depends on whether logging is enabled on the server.",
   操作审计: "Audit log",
-  "过去 24 小时的账户与凭证变更":
-    "Account and credential changes from the last 24 hours",
   审计记录: "Audit records",
   对象: "Target",
   操作者: "Actor",
@@ -363,6 +361,19 @@ export const en: Record<string, string> = {
   控制数据: "Control data",
   统计数据: "Telemetry data",
   配置摘要: "Config summary",
+  "过去 24 小时的账户、凭证与运行配置变更":
+    "Account, credential and runtime configuration changes from the last 24 hours",
+  初始化管理员: "Initialize admin",
+  创建用户: "Create user",
+  修改用户: "Update user",
+  撤销会话: "Revoke session",
+  应用运行配置: "Apply runtime config",
+  回滚运行配置: "Roll back runtime config",
+  重载主配置: "Reload main config",
+  清除域名缓存: "Clear domain cache",
+  会话: "Session",
+  凭证: "Credential",
+  修订: "Revision",
 };
 
 export const ja: Record<string, string> = {
@@ -710,7 +721,6 @@ export const ja: Record<string, string> = {
   "统计与日志展示账户已处理的 DNS 请求。查询明细是否可见取决于服务端是否已开启日志记录。":
     "「統計とログ」には、アカウントで処理された DNS リクエストが表示されます。クエリの明細を表示できるかどうかは、サーバーでログ記録が有効かどうかによります。",
   操作审计: "操作監査",
-  "过去 24 小时的账户与凭证变更": "過去 24 時間のアカウントと認証情報の変更",
   审计记录: "監査記録",
   对象: "対象",
   操作者: "操作者",
@@ -727,4 +737,17 @@ export const ja: Record<string, string> = {
   控制数据: "制御データ",
   统计数据: "統計データ",
   配置摘要: "設定の概要",
+  "过去 24 小时的账户、凭证与运行配置变更":
+    "過去 24 時間のアカウント、認証情報、実行設定の変更",
+  初始化管理员: "管理者を初期化",
+  创建用户: "ユーザーを作成",
+  修改用户: "ユーザーを変更",
+  撤销会话: "セッションを失効",
+  应用运行配置: "実行設定を適用",
+  回滚运行配置: "実行設定をロールバック",
+  重载主配置: "メイン設定を再読み込み",
+  清除域名缓存: "ドメインのキャッシュを消去",
+  会话: "セッション",
+  凭证: "認証情報",
+  修订: "リビジョン",
 };

@@ -2464,6 +2464,38 @@ export function HelpPage() {
   );
 }
 
+// Audit actions the server records, as shown in the audit table; an action
+// this build does not know is shown as its raw name.
+const auditActionNames: Record<string, string> = {
+  initialize_admin: msg("初始化管理员"),
+  create_user: msg("创建用户"),
+  update_user: msg("修改用户"),
+  delete_user: msg("删除用户"),
+  set_password: msg("重置密码"),
+  change_password: msg("修改密码"),
+  revoke_session: msg("撤销会话"),
+  create_credential: msg("创建凭证"),
+  rotate_credential: msg("轮换凭证"),
+  revoke_credential: msg("撤销凭证"),
+  runtime_apply: msg("应用运行配置"),
+  runtime_rollback: msg("回滚运行配置"),
+  runtime_reload: msg("重载主配置"),
+  cache_purge: msg("清除域名缓存"),
+};
+const auditTargetNames: Record<string, string> = {
+  user: msg("账户"),
+  session: msg("会话"),
+  credential: msg("凭证"),
+  revision: msg("修订"),
+  domain: msg("域名"),
+};
+export function auditActionName(action: string) {
+  return action in auditActionNames ? t(auditActionNames[action]) : action;
+}
+export function auditTargetName(type: string) {
+  return type in auditTargetNames ? t(auditTargetNames[type]) : type;
+}
+
 export function AuditPage() {
   const params = useMemo(range, []);
   const {
@@ -2477,7 +2509,7 @@ export function AuditPage() {
     <>
       <PageTitle
         title={t("操作审计")}
-        description={t("过去 24 小时的账户与凭证变更")}
+        description={t("过去 24 小时的账户、凭证与运行配置变更")}
       />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data?.length ? (
@@ -2500,9 +2532,9 @@ export function AuditPage() {
               {data.map((a) => (
                 <tr key={a.id}>
                   <td>{fmt.date(a.created_at)}</td>
-                  <td>{a.action}</td>
+                  <td>{auditActionName(a.action)}</td>
                   <td>
-                    {a.target_type}
+                    {auditTargetName(a.target_type)}
                     {a.target_id ? ` · ${a.target_id}` : ""}
                   </td>
                   <td>{a.actor_id || t("系统")}</td>

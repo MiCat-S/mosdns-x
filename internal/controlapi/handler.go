@@ -504,7 +504,7 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 		return
 	}
 	if strings.HasPrefix(p, "/runtime/") {
-		h.adminRuntime(w, r, session.ID, strings.TrimPrefix(p, "/runtime"))
+		h.adminRuntime(w, r, session.ID, admin.ID, strings.TrimPrefix(p, "/runtime"))
 		return
 	}
 	if p == "/users" {
@@ -685,7 +685,7 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request, session control.
 	writeError(w, http.StatusNotFound, "not_found")
 }
 
-func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID, path string) {
+func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID, actor, path string) {
 	switch path {
 	case "/config":
 		if r.Method != http.MethodGet {
@@ -752,6 +752,7 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 			h.runtimeError(w, err, false)
 			return
 		}
+		h.recordAudit(r, actor, "runtime_apply", "revision", result.Revision, map[string]any{"caches_cleared": result.CachesCleared})
 		writeJSON(w, http.StatusOK, result)
 	case "/config/reload":
 		if r.Method != http.MethodPost {
@@ -770,6 +771,7 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 		if result.RestartRequired == nil {
 			result.RestartRequired = []string{}
 		}
+		h.recordAudit(r, actor, "runtime_reload", "revision", result.Revision, map[string]any{"caches_cleared": result.CachesCleared, "restart_required": result.RestartRequired})
 		writeJSON(w, http.StatusOK, result)
 	case "/history":
 		if r.Method != http.MethodGet {
@@ -814,6 +816,7 @@ func (h *Handler) adminRuntime(w http.ResponseWriter, r *http.Request, sessionID
 			h.runtimeError(w, err, false)
 			return
 		}
+		h.recordAudit(r, actor, "runtime_rollback", "revision", result.Revision, map[string]any{"from": request.Revision, "target": request.TargetRevision, "caches_cleared": result.CachesCleared})
 		writeJSON(w, http.StatusOK, result)
 	default:
 		const upstreamPrefix = "/upstreams/"
@@ -887,7 +890,28 @@ func (h *Handler) purgeCache(w http.ResponseWriter, r *http.Request, actor strin
 		return
 	}
 	h.opts.Logger.Info("cache purged", fields...)
+	// The audit target column is 64 bytes; a longer name goes only in the metadata.
+	target := result.Domain
+	if len(target) > 64 {
+		target = ""
+	}
+	h.recordAudit(r, actor, "cache_purge", "domain", target, map[string]any{"domain": result.Domain, "subdomains": result.Subdomains, "caches": result.Caches, "removed": result.Removed})
 	writeJSON(w, http.StatusOK, result)
+}
+
+// auditTimeout bounds the audit write that follows a completed action.
+const auditTimeout = 5 * time.Second
+
+// recordAudit writes an audit record for an action that already happened.
+// It runs on a context detached from the request, so a client that went
+// away after the action still leaves a trace, and a failed write is logged
+// rather than turning a completed action into an error response.
+func (h *Handler) recordAudit(r *http.Request, actor, action, targetType, target string, metadata map[string]any) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditTimeout)
+	defer cancel()
+	if err := h.opts.Control.RecordAudit(ctx, actor, action, targetType, target, metadata); err != nil {
+		h.opts.Logger.Error("audit record not written", zap.String("actor", actor), zap.String("action", action), zap.String("target_type", targetType), zap.String("target", target), zap.Error(err))
+	}
 }
 
 func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadRequest bool) {

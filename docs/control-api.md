@@ -56,7 +56,7 @@
 | GET | `/admin/stats` | 全局 `StatsSnapshot`；可用 `user_id` 选定用户 |
 | GET | `/me/queries` | 当前用户的查询日志 `PageResult<QueryRecord>`；需启用 `query_log` |
 | GET | `/admin/queries` | 管理员查询日志；可用 `user_id` 筛选 |
-| GET | `/admin/audit` | `PageResult<AuditRecord>` |
+| GET | `/admin/audit` | `PageResult<AuditRecord>`；`action` 包括账户与凭证操作（`initialize_admin`、`create_user`、`update_user`、`delete_user`、`set_password`、`change_password`、`revoke_session`、`create_credential`、`rotate_credential`、`revoke_credential`），以及运行操作 `runtime_apply`、`runtime_rollback`、`runtime_reload`（对象类型 `revision`）和 `cache_purge`（对象类型 `domain`） |
 | GET | `/admin/system` | 安全的系统与配置概览，省略原始插件参数及秘密 |
 | POST | `/admin/runtime/cache/purge` | `{domain,subdomains}` → `{domain,subdomains,caches,removed}`，清除指定域名的缓存 |
 
@@ -77,7 +77,7 @@
 - `edns` 包含 `present`、`version`、`udp_size`、`dnssec_ok`、`option_codes`，以及可选的 `ecs`。`ecs` 包含规范化网络地址 `address`、`family`、`source_prefix`、`scope_prefix`。系统只记录 EDNS option code，不保存 Cookie、Padding、NSID 或其他 option 载荷。
 - `completed` 是结果统计采集量，`failed` 是其中的失败量；扣费次数以事务保存的 usage / quota 为准。`dropped` 是当前进程观测到的异步事件丢弃量，包含响应或上游尝试事件，重启后不能据此判断历史数据完整性。统计窗口和更新时刻必须展示。
 - 响应聚合默认保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细默认保留 24 小时且最多 100,000 条，均可通过 `control.telemetry` 在允许范围内调整。查询更久区间不会补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。
-- `cache/purge` 从当前运行代的全部 `cache` 插件（内存与 Redis，包括预置的 `_default_cache`）中删除问题名称等于 `domain` 的缓存条目，不分查询类型；`subdomains` 为 `true` 时同时删除其下所有子域名。不需要 `managed_config`。`domain` 不区分大小写，可带结尾的点，非 ASCII 域名自动转换为 Punycode；只接受字母、数字、`-` 和 `_`，不接受 `*` 或根域，否则返回 400 `invalid_domain`。响应中的 `domain` 是规范化后的 FQDN，`caches` 是配置中的缓存插件数（预置的 `_default_cache` 会被清除但不计入），`removed` 是删除的条目数。每个缓存插件同一时间只执行一次清除，撞上正在进行的清除时返回 429 `cache_purge_busy`；没有运行代在服务时返回 503 `unavailable`。某个缓存清除失败（如 Redis 不可用）时返回 503 `cache_purge_failed`，其他缓存照常清除，原因只写入服务日志。一次请求对全部缓存插件合计最多 30 秒。每次清除都会以 `cache purged` 写一条 info 日志，含管理员 ID、域名与删除数量。
+- `cache/purge` 从当前运行代的全部 `cache` 插件（内存与 Redis，包括预置的 `_default_cache`）中删除问题名称等于 `domain` 的缓存条目，不分查询类型；`subdomains` 为 `true` 时同时删除其下所有子域名。不需要 `managed_config`。`domain` 不区分大小写，可带结尾的点，非 ASCII 域名自动转换为 Punycode；只接受字母、数字、`-` 和 `_`，不接受 `*` 或根域，否则返回 400 `invalid_domain`。响应中的 `domain` 是规范化后的 FQDN，`caches` 是配置中的缓存插件数（预置的 `_default_cache` 会被清除但不计入），`removed` 是删除的条目数。每个缓存插件同一时间只执行一次清除，撞上正在进行的清除时返回 429 `cache_purge_busy`；没有运行代在服务时返回 503 `unavailable`。某个缓存清除失败（如 Redis 不可用）时返回 503 `cache_purge_failed`，其他缓存照常清除，原因只写入服务日志。一次请求对全部缓存插件合计最多 30 秒。每次清除都会写一条 `cache_purge` 审计记录（对象类型 `domain`，`metadata` 含域名、是否含子域名、缓存数与删除数；域名超过 64 字节时只出现在 `metadata` 中），并以 `cache purged` 写一条 info 日志。
 - `system` 至少提供 `version`、`started_at`、`public_dns_url`、`query_log_enabled`、`config`（配置白名单概览）。`config` 包含 `dns_protocols`、`management_enabled`、`pprof_enabled`、`control_storage` 和 `telemetry_storage`，不会返回数据库路径或 MySQL DSN。查询明细默认关闭，关闭时接口返回空数组和页面说明。
 
 ## 托管运行配置
