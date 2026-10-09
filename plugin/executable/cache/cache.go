@@ -362,8 +362,11 @@ func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, n
 }
 
 // tryStoreMsg tries to store r to cache. If r should be cached.
+// tryStoreMsg caches successful responses and NXDOMAIN. An NXDOMAIN has no
+// answer, so like an empty NOERROR it stays fresh for defaultEmptyAnswerTTL.
+// Other failures (SERVFAIL, REFUSED, ...) are transient and never cached.
 func (c *cachePlugin) tryStoreMsg(key string, r *dns.Msg, origin string) error {
-	if r.Rcode != dns.RcodeSuccess || r.Truncated != false {
+	if (r.Rcode != dns.RcodeSuccess && r.Rcode != dns.RcodeNameError) || r.Truncated {
 		return nil
 	}
 

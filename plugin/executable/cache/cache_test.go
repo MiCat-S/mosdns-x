@@ -52,6 +52,46 @@ func TestCacheHitMarker(t *testing.T) {
 	}
 }
 
+func TestCacheKeepsNXDOMAINButNotServerFailures(t *testing.T) {
+	for _, tc := range []struct {
+		rcode     int
+		wantCalls int
+	}{
+		{dns.RcodeNameError, 1},
+		{dns.RcodeServerFailure, 2},
+		{dns.RcodeRefused, 2},
+	} {
+		p := newTestCache(true)
+		q := new(dns.Msg).SetQuestion("missing.example.org.", dns.TypeA)
+		calls := 0
+		next := executable_seq.WrapExecutable(execFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+			calls++
+			r := new(dns.Msg)
+			r.SetRcode(qCtx.Q(), tc.rcode)
+			soa, _ := dns.NewRR("example.org. 600 IN SOA ns.example.org. host.example.org. 1 7200 900 1209600 600")
+			r.Ns = []dns.RR{soa}
+			qCtx.SetResponse(r)
+			return nil
+		}))
+		for i := 0; i < 2; i++ {
+			qCtx := query_context.NewContext(q.Copy(), nil)
+			if err := p.Exec(context.Background(), qCtx, next); err != nil {
+				t.Fatal(err)
+			}
+			if got := qCtx.R().Rcode; got != tc.rcode {
+				t.Fatalf("%s: response rcode %s", dns.RcodeToString[tc.rcode], dns.RcodeToString[got])
+			}
+			if hit := qCtx.CacheHit(); hit != (i == 1 && tc.wantCalls == 1) {
+				t.Fatalf("%s: query %d cache hit = %v", dns.RcodeToString[tc.rcode], i, hit)
+			}
+		}
+		if calls != tc.wantCalls {
+			t.Fatalf("%s: upstream called %d times, want %d", dns.RcodeToString[tc.rcode], calls, tc.wantCalls)
+		}
+		p.backend.Close()
+	}
+}
+
 func newTestCache(compress bool) *cachePlugin {
 	return &cachePlugin{BP: coremain.NewBP("cache_wan", "cache", zap.NewNop(), nil), args: &Args{CompressResp: compress}, backend: mem_cache.NewMemCache(8, 0), queryTotal: prometheus.NewCounter(prometheus.CounterOpts{}), hitTotal: prometheus.NewCounter(prometheus.CounterOpts{}), lazyHitTotal: prometheus.NewCounter(prometheus.CounterOpts{})}
 }
