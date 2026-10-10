@@ -9,6 +9,9 @@
 // so names that rotate addresses (CDNs, load balancers, failover) are never
 // lengthened. When domains is set, only names it matches are learned, so the
 // longer TTLs can be kept to large providers whose addresses rarely move.
+// Such providers often rotate answers within a pool of addresses that all
+// keep working; with trust_answers their hot keys are lengthened by how long
+// they have been hot instead, whatever the answer.
 // Only the TTL sent to the client changes: caches after this plugin in the
 // chain keep the upstream TTL and refresh on it.
 package adaptive_ttl
@@ -72,6 +75,12 @@ type Args struct {
 	Domains []string `yaml:"domains"`
 	// Names never lengthened, in the domain matcher syntax.
 	Exclude []string `yaml:"exclude"`
+	// Lengthen hot keys without requiring the answer to stay the same; the
+	// TTL grows with how long the key has been hot. Requires domains.
+	TrustAnswers bool `yaml:"trust_answers"`
+	// Also lengthen NOERROR responses without answers, including the
+	// negative caching time of their SOA.
+	ExtendEmpty bool `yaml:"extend_empty"`
 }
 
 type key struct {
@@ -84,10 +93,11 @@ type entry struct {
 	windowStart       time.Time
 	current, previous uint32 // queries in this and the previous window
 	hot               bool
+	hotSince          time.Time
 	lastSeen          time.Time
 	answer            uint64 // fingerprint of the last fresh response
 	stableSince       time.Time
-	extendable        bool // the last fresh response was an answer
+	extendable        bool // the last fresh response may be lengthened
 }
 
 type adaptiveTTL struct {
@@ -96,6 +106,8 @@ type adaptiveTTL struct {
 	stableFor  time.Duration
 	maxTTL     uint32
 	size       int
+	trust      bool
+	empty      bool
 	domains    *domain.MatcherGroup[struct{}]
 	exclude    *domain.MatcherGroup[struct{}]
 	now        func() time.Time
@@ -144,12 +156,17 @@ func newAdaptiveTTL(bp *coremain.BP, args *Args) (*adaptiveTTL, error) {
 	if args.MaxTTL > int64(^uint32(0)>>1) {
 		return nil, fmt.Errorf("max_ttl must be at most %d", ^uint32(0)>>1)
 	}
+	if args.TrustAnswers && len(args.Domains) == 0 {
+		return nil, errors.New("trust_answers requires domains")
+	}
 	p := &adaptiveTTL{
 		BP:         bp,
 		minQueries: defaultMinQueries,
 		stableFor:  defaultStableFor,
 		maxTTL:     defaultMaxTTL,
 		size:       defaultSize,
+		trust:      args.TrustAnswers,
+		empty:      args.ExtendEmpty,
 		now:        time.Now,
 		keys:       make(map[key]*entry),
 	}
@@ -191,6 +208,15 @@ func (p *adaptiveTTL) Exec(ctx context.Context, qCtx *query_context.Context, nex
 		return nil
 	}
 	dnsutils.ApplyMinimalTTL(r, ttl)
+	if len(r.Answer) == 0 {
+		// Clients cache a negative answer for the smaller of the SOA's TTL
+		// and its MINIMUM field.
+		for _, rr := range r.Ns {
+			if soa, ok := rr.(*dns.SOA); ok && soa.Minttl < ttl {
+				soa.Minttl = ttl
+			}
+		}
+	}
 	p.extendedTotal.Inc()
 	qCtx.Journal().Step(qCtx.Branch(), RouteStepTTLExtended, strconv.FormatUint(uint64(ttl), 10))
 	return nil
@@ -255,8 +281,9 @@ func (p *adaptiveTTL) observe(k key, r *dns.Msg, stale bool) uint32 {
 		e.windowStart = e.windowStart.Add(n * window)
 	}
 	e.current++
-	if p.rate(e, now) >= p.minQueries {
+	if !e.hot && p.rate(e, now) >= p.minQueries {
 		e.hot = true
+		e.hotSince = now
 	}
 	// An expired entry served while the cache refreshes it repeats an answer
 	// already seen, and its short TTL is what makes the client come back for
@@ -268,7 +295,7 @@ func (p *adaptiveTTL) observe(k key, r *dns.Msg, stale bool) uint32 {
 		e.answer = fp
 		e.stableSince = now
 	}
-	e.extendable = r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
+	e.extendable = r.Rcode == dns.RcodeSuccess && (len(r.Answer) > 0 || p.empty && hasSOA(r))
 	return p.ttl(e, now)
 }
 
@@ -279,16 +306,33 @@ func (p *adaptiveTTL) rate(e *entry, now time.Time) float64 {
 	return float64(e.previous)*max(weight, 0) + float64(e.current)
 }
 
-// ttl is the lengthened TTL for e at now, or 0 when e does not qualify.
+// ttl is the lengthened TTL for e at now, or 0 when e does not qualify:
+// half of how long the answer has stayed the same, or with trust_answers
+// how long the key has been hot, once that reaches stable_for.
 func (p *adaptiveTTL) ttl(e *entry, now time.Time) uint32 {
 	if !e.hot || !e.extendable {
 		return 0
 	}
-	stable := now.Sub(e.stableSince)
-	if stable < p.stableFor {
+	since := e.stableSince
+	if p.trust {
+		since = e.hotSince
+	}
+	d := now.Sub(since)
+	if d < p.stableFor {
 		return 0
 	}
-	return uint32(min(uint64(stable/2/time.Second), uint64(p.maxTTL)))
+	return uint32(min(uint64(d/2/time.Second), uint64(p.maxTTL)))
+}
+
+// hasSOA reports whether r carries an SOA, without which clients cannot
+// cache a negative answer at all.
+func hasSOA(r *dns.Msg) bool {
+	for _, rr := range r.Ns {
+		if rr.Header().Rrtype == dns.TypeSOA {
+			return true
+		}
+	}
+	return false
 }
 
 // sweep drops keys idle for longer than a lengthened TTL can last, at most

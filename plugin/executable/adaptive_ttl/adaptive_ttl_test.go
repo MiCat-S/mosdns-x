@@ -25,9 +25,10 @@ func (f execFunc) Exec(ctx context.Context, q *query_context.Context, next execu
 }
 
 type harness struct {
-	t   *testing.T
-	p   *adaptiveTTL
-	now time.Time
+	t    *testing.T
+	p    *adaptiveTTL
+	now  time.Time
+	last *dns.Msg // the last response returned
 }
 
 func newHarness(t *testing.T, args Args) *harness {
@@ -46,6 +47,7 @@ type reply struct {
 	rcode int
 	ips   []string
 	stale bool
+	soa   bool // add an SOA with MINIMUM 60 to the authority section
 }
 
 func answer(ips ...string) reply { return reply{rcode: dns.RcodeSuccess, ips: ips} }
@@ -73,6 +75,10 @@ func (h *harness) ask(name, subnet string, rep reply) (uint32, string) {
 			rr, _ := dns.NewRR(name + " " + strconv.Itoa(int(ttl)) + " IN A " + ip)
 			r.Answer = append(r.Answer, rr)
 		}
+		if rep.soa {
+			rr, _ := dns.NewRR("example. " + strconv.Itoa(int(ttl)) + " IN SOA ns.example. mbox.example. 1 7200 900 1209600 60")
+			r.Ns = append(r.Ns, rr)
+		}
 		qCtx.SetResponse(r)
 		qCtx.SetCacheHit(rep.stale)
 		qCtx.SetStaleHit(rep.stale)
@@ -87,6 +93,7 @@ func (h *harness) ask(name, subnet string, rep reply) (uint32, string) {
 			detail = step.Detail
 		}
 	}
+	h.last = qCtx.R()
 	return dnsutils.GetMinimalTTL(qCtx.R()), detail
 }
 
@@ -290,6 +297,50 @@ func TestExampleDomainList(t *testing.T) {
 	}
 }
 
+func TestTrustedNamesAreLengthenedWhileTheirAnswersRotate(t *testing.T) {
+	h := newHarness(t, Args{TrustAnswers: true, Domains: []string{"apple.com"}})
+	h.p.domains = matchers(t, "apple.com")
+	pool := []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}
+	rotating := func(i int) reply { return answer(pool[i%3], pool[(i+1)%3]) }
+	// The 12th query, at 44 minutes, makes the key hot.
+	if ttl := h.every(4*time.Minute, 104*time.Minute, "bag.itunes.apple.com.", "", rotating); ttl != 300 {
+		t.Fatalf("ttl before the key was hot for an hour = %d", ttl)
+	}
+	if ttl, step := h.ask("bag.itunes.apple.com.", "", rotating(0)); ttl != 1800 || step != "1800" {
+		t.Fatalf("hot for an hour: ttl=%d step=%q", ttl, step)
+	}
+	if ttl := h.every(4*time.Minute, 2*time.Hour, "bag.itunes.apple.com.", "", rotating); ttl != 3600 {
+		t.Fatalf("hot for over two hours: ttl=%d", ttl)
+	}
+	// Failures and NXDOMAIN are still left alone.
+	if ttl, step := h.ask("bag.itunes.apple.com.", "", reply{rcode: dns.RcodeNameError}); ttl != 0 || step != "" {
+		t.Fatalf("NXDOMAIN lengthened: ttl=%d step=%q", ttl, step)
+	}
+}
+
+func TestEmptyAnswersAreLengthenedWithTheirSOA(t *testing.T) {
+	h := newHarness(t, Args{ExtendEmpty: true})
+	nodata := reply{rcode: dns.RcodeSuccess, soa: true}
+	h.every(4*time.Minute, time.Hour, "v4only.example.", "", same(nodata))
+	ttl, _ := h.ask("v4only.example.", "", nodata)
+	soa := h.last.Ns[0].(*dns.SOA)
+	if ttl != 1800 || soa.Hdr.Ttl != 1800 || soa.Minttl != 1800 {
+		t.Fatalf("ttl=%d soa ttl=%d minimum=%d", ttl, soa.Hdr.Ttl, soa.Minttl)
+	}
+	// Without an SOA there is no negative caching time to lengthen.
+	bare := reply{rcode: dns.RcodeSuccess}
+	h.every(4*time.Minute, 2*time.Hour, "bare.example.", "", same(bare))
+	if _, step := h.ask("bare.example.", "", bare); step != "" {
+		t.Fatalf("empty answer without SOA recorded as lengthened")
+	}
+
+	h = newHarness(t, Args{})
+	h.every(4*time.Minute, 2*time.Hour, "v4only.example.", "", same(nodata))
+	if ttl, _ := h.ask("v4only.example.", "", nodata); ttl != 300 {
+		t.Fatalf("empty answer lengthened without extend_empty: %d", ttl)
+	}
+}
+
 func TestExcludedNamesAreLeftAlone(t *testing.T) {
 	h := newHarness(t, Args{})
 	h.p.exclude = matchers(t, "domain:example.net")
@@ -318,7 +369,7 @@ func TestTrackedKeysAreBounded(t *testing.T) {
 }
 
 func TestArgs(t *testing.T) {
-	for _, args := range []Args{{MinQueries: -1}, {StableFor: -1}, {MaxTTL: -1}, {Size: -1}, {MaxTTL: 1 << 31}} {
+	for _, args := range []Args{{MinQueries: -1}, {StableFor: -1}, {MaxTTL: -1}, {Size: -1}, {MaxTTL: 1 << 31}, {TrustAnswers: true}} {
 		if _, err := newAdaptiveTTL(coremain.NewBP("adaptive", PluginType, nil, nil), &args); err == nil {
 			t.Fatalf("accepted %+v", args)
 		}
