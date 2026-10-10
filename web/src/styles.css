@@ -725,9 +725,32 @@ main:focus-visible {
   line-height: var(--lh-snug);
 }
 
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+
+.card-head h2 {
+  margin: 0;
+}
+
+.card-head .link {
+  flex: none;
+  font-size: var(--text-sm);
+}
+
 .grid2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+
+.grid3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--sp-4);
 }
 
@@ -780,16 +803,24 @@ td small {
   line-height: var(--lh-snug);
 }
 
-.top-domains .rows {
-  margin-top: var(--sp-3);
+.top-domains .rows > div > strong {
+  flex: none;
 }
 
-.top-domains-rank {
+.top-domains .top-domains-rank {
   display: inline-block;
   min-width: 2ch;
   margin-right: var(--sp-2);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+}
+
+.top-domains-modal .rows {
+  margin-top: var(--sp-3);
+}
+
+.top-domains-modal .top-domains-rank {
+  min-width: 3ch;
 }
 
 .top-domains-name {
@@ -2536,8 +2567,13 @@ summary {
 /* Responsive */
 
 @media (max-width: 1180px) {
-  .edns-stage-grid {
+  .edns-stage-grid,
+  .grid3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .grid3 > :nth-child(3) {
+    grid-column: 1 / -1;
   }
 
   .query-filters {
@@ -2720,6 +2756,7 @@ summary {
   }
 
   .grid2,
+  .grid3,
   .form-grid,
   .inline-form,
   .runtime-source-grid,

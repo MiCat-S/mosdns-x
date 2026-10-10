@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TopDomainsCard } from "./top-domains";
 import type { TopDomains } from "./types";
@@ -58,6 +58,29 @@ describe("TopDomainsCard", () => {
     expect(url.searchParams.get("user_id")).toBe("u 1");
     expect(url.searchParams.get("from")).toBe(from);
     expect(url.searchParams.get("to")).toBe(to);
+    expect(url.searchParams.get("limit")).toBe("100");
+    expect(screen.queryByRole("button", { name: "查看更多" })).toBeNull();
+  });
+
+  it("lists the first five names and the rest on request", async () => {
+    mockRanking({
+      from,
+      to,
+      queries: 80,
+      query_log_enabled: true,
+      domains: Array.from({ length: 7 }, (_, i) => ({
+        name: `n${i + 1}.example.com.`,
+        queries: 10 - i,
+        cache_hits: 0,
+      })),
+    });
+    render(<TopDomainsCard path="/me/top-domains" from={from} to={to} />);
+    expect(await screen.findByText("n5.example.com")).toBeTruthy();
+    expect(screen.queryByText("n6.example.com")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "查看更多" }));
+    const all = within(screen.getByRole("dialog"));
+    expect(all.getByText(/^查询量最多的 7 个域名/)).toBeTruthy();
+    expect(all.getByText("n7.example.com")).toBeTruthy();
   });
 
   it("explains a ranking without query logging", async () => {

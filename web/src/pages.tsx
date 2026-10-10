@@ -299,7 +299,7 @@ function StatsBlocks({
           })}
         </p>
       </Card>
-      <div className="grid2">
+      <div className={topDomains ? "grid3" : "grid2"}>
         <Card title={t("响应结果")}>
           {Object.keys(stats.rcode_counts).length ? (
             <div className="rows">
@@ -336,10 +336,10 @@ function StatsBlocks({
             <Empty />
           )}
         </Card>
+        {topDomains ? (
+          <TopDomainsCard path={topDomains} from={stats.from} to={stats.to} />
+        ) : null}
       </div>
-      {topDomains ? (
-        <TopDomainsCard path={topDomains} from={stats.from} to={stats.to} />
-      ) : null}
     </>
   );
 }

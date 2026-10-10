@@ -110,16 +110,27 @@ export function Metric({
 }
 export function Card({
   title,
+  action,
   children,
   className = "",
 }: {
   title?: string;
+  // action sits at the end of the title row, such as a link to more rows.
+  action?: ReactNode;
   children: ReactNode;
   className?: string;
 }) {
+  const heading = title ? <h2>{title}</h2> : null;
   return (
     <section className={`card ${className}`}>
-      {title ? <h2>{title}</h2> : null}
+      {action ? (
+        <div className="card-head">
+          {heading}
+          {action}
+        </div>
+      ) : (
+        heading
+      )}
       {children}
     </section>
   );
