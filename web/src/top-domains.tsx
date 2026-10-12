@@ -9,17 +9,11 @@ import type { TopDomains } from "./types";
 const shownDomains = 5;
 const rankedDomains = 100;
 
-// TopDomainsCard ranks the most queried names of a stats window. path is
-// /me/top-domains or /admin/top-domains, optionally with ?user_id=.
-export function TopDomainsCard({
-  path,
-  from,
-  to,
-}: {
-  path: string;
-  from: string;
-  to: string;
-}) {
+// useTopDomains loads the ranking of a stats window. path is
+// /me/top-domains or /admin/top-domains, optionally with ?user_id=. Pages
+// call it next to their stats request, so both load in parallel and a
+// failed ranking doesn't hold back the stats.
+export function useTopDomains(path: string, from: string, to: string) {
   const load = useCallback(
     (signal: AbortSignal) =>
       request<TopDomains>(
@@ -32,7 +26,30 @@ export function TopDomainsCard({
       ),
     [path, from, to],
   );
-  const { data, error, loading } = useLoad(load, [load]);
+  return useLoad(load, [load], path);
+}
+export type TopDomainsState = Pick<
+  ReturnType<typeof useTopDomains>,
+  "data" | "error" | "loading"
+>;
+
+// TopDomainsCard ranks the most queried names of a stats window and loads
+// the ranking itself.
+export function TopDomainsCard({
+  path,
+  from,
+  to,
+}: {
+  path: string;
+  from: string;
+  to: string;
+}) {
+  const { data, error, loading } = useTopDomains(path, from, to);
+  return <TopDomainsView data={data} error={error} loading={loading} />;
+}
+
+// TopDomainsView shows a ranking loaded by useTopDomains.
+export function TopDomainsView({ data, error, loading }: TopDomainsState) {
   const [all, setAll] = useState(false);
   return (
     <Card

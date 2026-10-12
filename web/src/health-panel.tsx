@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { message, request } from "./api";
 import { Alert, Card, Metric, Spinner, fmt } from "./components";
-import { locale, msg, t } from "./i18n";
+import { msg, numberFormat, t } from "./i18n";
+
+const metricValue: Intl.NumberFormatOptions = { maximumFractionDigits: 2 };
 
 type HealthStatus =
   | "healthy"
@@ -277,9 +279,7 @@ export function HealthPanel() {
                     <td>
                       {metric.value != null && Number.isFinite(metric.value)
                         ? withUnit(
-                            metric.value.toLocaleString(locale(), {
-                              maximumFractionDigits: 2,
-                            }),
+                            numberFormat(metricValue).format(metric.value),
                             metric.unit,
                           )
                         : "—"}

@@ -52,6 +52,7 @@ WIDE_RANGE = "U+3000-30FF, U+3400-4DBF, U+4E00-9FFF, U+FF00-FFEF"
 def interface_charset() -> str:
     chars = set(EXTRA)
     files = list(SRC.glob("*.ts")) + list(SRC.glob("*.tsx"))
+    files += list((SRC / "pages").glob("*.tsx"))
     files += list((SRC / "locales").glob("*.ts"))
     for path in files:
         if ".test." not in path.name:

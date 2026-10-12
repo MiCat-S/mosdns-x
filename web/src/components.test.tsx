@@ -34,6 +34,49 @@ describe("异步页面数据", () => {
   });
 });
 
+function ScopedView({
+  scope,
+  version,
+  loaders,
+}: {
+  scope: string;
+  version: number;
+  loaders: Record<string, Promise<string>>;
+}) {
+  const load = useCallback(
+    () => loaders[`${scope}${version}`],
+    [scope, version, loaders],
+  );
+  const { data, loading } = useLoad(load, [load], scope);
+  return (
+    <div>
+      {loading ? "刷新中" : "已就绪"} {data ?? "无数据"}
+    </div>
+  );
+}
+
+describe("同一范围内刷新", () => {
+  it("刷新时保留旧数据，切换范围时清除", async () => {
+    let finish!: (value: string) => void;
+    let finishOther!: (value: string) => void;
+    const loaders = {
+      a0: Promise.resolve("甲的旧数据"),
+      a1: new Promise<string>((resolve) => (finish = resolve)),
+      b0: new Promise<string>((resolve) => (finishOther = resolve)),
+    };
+    const view = render(<ScopedView scope="a" version={0} loaders={loaders} />);
+    expect(await screen.findByText("已就绪 甲的旧数据")).toBeInTheDocument();
+    view.rerender(<ScopedView scope="a" version={1} loaders={loaders} />);
+    expect(screen.getByText("刷新中 甲的旧数据")).toBeInTheDocument();
+    finish("甲的新数据");
+    expect(await screen.findByText("已就绪 甲的新数据")).toBeInTheDocument();
+    view.rerender(<ScopedView scope="b" version={0} loaders={loaders} />);
+    expect(screen.getByText("刷新中 无数据")).toBeInTheDocument();
+    finishOther("乙的数据");
+    expect(await screen.findByText("已就绪 乙的数据")).toBeInTheDocument();
+  });
+});
+
 describe("指标字号", () => {
   it("数字与短单位用大号数字，日期和文字降为正文字号", () => {
     const size = (value: string, size?: "num" | "text") => {

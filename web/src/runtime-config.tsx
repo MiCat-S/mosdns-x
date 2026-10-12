@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { unstable_usePrompt } from "react-router-dom";
-import { APIError, json, message, request } from "./api";
+import { APIError, decodeRuntimeState, json, message, request } from "./api";
 import {
   Alert,
   Card,
@@ -12,7 +12,7 @@ import {
   useLoad,
   useUnsavedGuard,
 } from "./components";
-import { msg, t } from "./i18n";
+import { msg, t, useLang } from "./i18n";
 import {
   parseProxyLink,
   proxyDraftError,
@@ -750,6 +750,7 @@ function RuntimeChangePreview({
   baseline: RuntimeConfig;
   draft: RuntimeConfig;
 }) {
+  const lang = useLang();
   const changes = useMemo(() => {
     const items: string[] = [];
     if (baseline.query_log !== draft.query_log)
@@ -789,7 +790,7 @@ function RuntimeChangePreview({
       }
     }
     return items;
-  }, [baseline, draft]);
+  }, [baseline, draft, lang]);
   return (
     <Card title={t("修改预览")} className="runtime-preview">
       {changes.length ? (
@@ -872,7 +873,7 @@ export function RuntimeConfigPage() {
   const [historyVersion, setHistoryVersion] = useState(0);
   const loadConfig = useCallback(
     (signal: AbortSignal) =>
-      request<RuntimeState>("/admin/runtime/config", { signal }),
+      request("/admin/runtime/config", { signal }, decodeRuntimeState),
     [configVersion],
   );
   const loadHistoryRequest = useCallback(
@@ -915,10 +916,20 @@ export function RuntimeConfigPage() {
   }, [state]);
 
   const runningConfig = state?.sources?.running.config ?? state?.config;
+  // Serialized once per change rather than on every render; comparing the
+  // text keeps an edit that is reverted by hand from counting as a change.
+  const baselineJSON = useMemo(
+    () => (runningConfig ? JSON.stringify(runningConfig) : undefined),
+    [runningConfig],
+  );
+  const draftJSON = useMemo(
+    () => (draft ? JSON.stringify(draft) : undefined),
+    [draft],
+  );
   const hasChanges =
-    runningConfig && draft
-      ? JSON.stringify(runningConfig) !== JSON.stringify(draft)
-      : false;
+    baselineJSON !== undefined &&
+    draftJSON !== undefined &&
+    baselineJSON !== draftJSON;
   const capabilities = state?.capabilities;
   const canManage = state?.mode !== "read_only" && (capabilities?.edit ?? true);
   unstable_usePrompt({
@@ -997,7 +1008,11 @@ export function RuntimeConfigPage() {
       let errorMessage = message(reason);
       if (reason instanceof APIError && reason.code === "revision_conflict") {
         try {
-          const latest = await request<RuntimeState>("/admin/runtime/config");
+          const latest = await request(
+            "/admin/runtime/config",
+            {},
+            decodeRuntimeState,
+          );
           preserveDraft.current = true;
           setState(latest);
           setNotice(
@@ -1019,9 +1034,10 @@ export function RuntimeConfigPage() {
     setError("");
     setNotice("");
     try {
-      const result = await request<RuntimeApplyResult>(
+      const result = await request(
         "/admin/runtime/config/apply",
         json("POST", { token: validation.token }),
+        decodeRuntimeState<RuntimeApplyResult>,
       );
       setState(result);
       setNotice(
@@ -1035,7 +1051,11 @@ export function RuntimeConfigPage() {
       let errorMessage = message(reason);
       if (reason instanceof APIError && reason.code === "revision_conflict") {
         try {
-          const latest = await request<RuntimeState>("/admin/runtime/config");
+          const latest = await request(
+            "/admin/runtime/config",
+            {},
+            decodeRuntimeState,
+          );
           preserveDraft.current = true;
           setState(latest);
           setNotice(
@@ -1057,9 +1077,10 @@ export function RuntimeConfigPage() {
     setError("");
     setNotice("");
     try {
-      const result = await request<RuntimeReloadResult>(
+      const result = await request(
         "/admin/runtime/config/reload",
         { method: "POST" },
+        decodeRuntimeState<RuntimeReloadResult>,
       );
       setState(result);
       if (result.restart_required.length) {
@@ -1090,12 +1111,13 @@ export function RuntimeConfigPage() {
     setError("");
     setNotice("");
     try {
-      const result = await request<RuntimeApplyResult>(
+      const result = await request(
         "/admin/runtime/rollback",
         json("POST", {
           revision: state.revision,
           target_revision: targetRevision,
         }),
+        decodeRuntimeState<RuntimeApplyResult>,
       );
       setState(result);
       setNotice(

@@ -1,4 +1,4 @@
-import type { Page } from "./types";
+import type { Page, RuntimeConfig, RuntimeState, Session } from "./types";
 import { t } from "./i18n";
 
 const BASE = "/api/v1";
@@ -13,6 +13,9 @@ export class APIError extends Error {
     super(message);
   }
 }
+// ResponseError reports a successful response whose body is not what the
+// panel expects, such as a missing field or an endless page cursor.
+export class ResponseError extends Error {}
 export function setCSRF(token: string) {
   csrfToken = token;
 }
@@ -26,10 +29,28 @@ export function onUnauthorized(handler: () => void) {
   };
 }
 
-export async function request<T>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+// A decoder checks the shape of a parsed JSON body at the API boundary and
+// throws ResponseError when it does not match.
+export type Decoder<T> = (value: unknown) => T;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function invalid(): never {
+  throw new ResponseError(t("服务返回的数据格式无效。"));
+}
+
+// The error body is {"error":{"code":"…","message":"…"}}; anything else
+// falls back to the status line.
+function errorDetail(body: unknown) {
+  const error = isObject(body) && isObject(body.error) ? body.error : {};
+  return {
+    code: typeof error.code === "string" ? error.code : undefined,
+    message: typeof error.message === "string" ? error.message : undefined,
+  };
+}
+
+async function send(path: string, init: RequestInit) {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body) headers.set("Content-Type", "application/json");
@@ -46,37 +67,133 @@ export async function request<T>(
     unauthorizedHandler?.();
   }
   if (!response.ok) {
-    let detail: { error?: { code?: string; message?: string } } = {};
+    let body: unknown;
     try {
-      detail = await response.json();
+      body = await response.json();
     } catch {
       /* malformed error response */
     }
+    const detail = errorDetail(body);
     throw new APIError(
       response.status,
-      detail.error?.code ?? "unavailable",
-      detail.error?.message ??
-        t("请求失败（{status}）", { status: response.status }),
+      detail.code ?? "unavailable",
+      detail.message ?? t("请求失败（{status}）", { status: response.status }),
     );
   }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  return response;
 }
+
+// request returns the JSON body of a successful response, checked by decode
+// when one is given. Endpoints that answer 204 No Content use requestVoid.
+export async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  decode?: Decoder<T>,
+): Promise<T> {
+  const response = await send(path, init);
+  if (response.status === 204) invalid();
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
+    invalid();
+  }
+  return decode ? decode(body) : (body as T);
+}
+export async function requestVoid(
+  path: string,
+  init: RequestInit = {},
+): Promise<void> {
+  await send(path, init);
+}
+
+export function decodeSession(value: unknown): Session {
+  if (
+    !isObject(value) ||
+    typeof value.csrf_token !== "string" ||
+    !isObject(value.user) ||
+    typeof value.user.id !== "string" ||
+    typeof value.user.username !== "string" ||
+    (value.user.role !== "admin" && value.user.role !== "user")
+  )
+    invalid();
+  return value as unknown as Session;
+}
+// decodePage checks the envelope only; the items keep their declared type.
+export function decodePage<T>(value: unknown): Page<T> {
+  if (
+    !isObject(value) ||
+    !Array.isArray(value.items) ||
+    (value.next_cursor !== undefined && typeof value.next_cursor !== "string")
+  )
+    invalid();
+  return value as unknown as Page<T>;
+}
+export function decodeRuntimeConfig(value: unknown): RuntimeConfig {
+  if (
+    !isObject(value) ||
+    typeof value.version !== "number" ||
+    typeof value.query_log !== "boolean" ||
+    !isObject(value.telemetry) ||
+    !Array.isArray(value.plugins) ||
+    !value.plugins.every(
+      (plugin) =>
+        isObject(plugin) &&
+        typeof plugin.tag === "string" &&
+        typeof plugin.type === "string",
+    )
+  )
+    invalid();
+  return value as unknown as RuntimeConfig;
+}
+// decodeRuntimeState checks the revision and every config the page edits or
+// compares: the summary and, when present, the running source.
+export function decodeRuntimeState<T extends RuntimeState = RuntimeState>(
+  value: unknown,
+): T {
+  if (!isObject(value) || typeof value.revision !== "string") invalid();
+  decodeRuntimeConfig(value.config);
+  if (value.sources !== undefined) {
+    if (!isObject(value.sources)) invalid();
+    const running = value.sources.running;
+    if (running !== undefined) {
+      if (!isObject(running)) invalid();
+      if (running.config !== undefined) decodeRuntimeConfig(running.config);
+    }
+  }
+  return value as unknown as T;
+}
+
+// allPages follows next_cursor to the end. A backend that repeats a cursor
+// or never stops would keep the panel fetching forever, so both end the
+// walk with an error.
+export const maxPages = 1000;
 export async function allPages<T>(
   path: string,
   signal?: AbortSignal,
 ): Promise<T[]> {
   const items: T[] = [];
+  const seen = new Set<string>();
   let cursor = "";
+  let pages = 0;
   do {
+    if (++pages > maxPages)
+      throw new ResponseError(
+        t("分页数量超过上限（{max} 页），已停止加载。", { max: maxPages }),
+      );
     const u = new URLSearchParams({ limit: "1000" });
     if (cursor) u.set("cursor", cursor);
-    const p = await request<Page<T>>(
+    const p = await request(
       `${path}${path.includes("?") ? "&" : "?"}${u}`,
       { signal },
+      decodePage<T>,
     );
     items.push(...p.items);
     cursor = p.next_cursor ?? "";
+    if (cursor && seen.has(cursor))
+      throw new ResponseError(t("服务返回了重复的分页游标，已停止加载。"));
+    seen.add(cursor);
   } while (cursor);
   return items;
 }

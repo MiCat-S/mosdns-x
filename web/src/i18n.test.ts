@@ -10,7 +10,14 @@ const raw = (files: Record<string, string>) =>
   }));
 const sources = raw(
   import.meta.glob<string>(
-    ["./*.ts", "./*.tsx", "!./*.test.ts", "!./*.test.tsx", "!./vite-env.d.ts"],
+    [
+      "./*.ts",
+      "./*.tsx",
+      "./pages/*.tsx",
+      "!./*.test.ts",
+      "!./*.test.tsx",
+      "!./vite-env.d.ts",
+    ],
     { query: "?raw", import: "default", eager: true },
   ),
 );

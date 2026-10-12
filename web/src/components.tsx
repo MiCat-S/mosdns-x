@@ -12,7 +12,16 @@ import {
 } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { message } from "./api";
-import { languages, locale, msg, setLang, t, useLang, type Lang } from "./i18n";
+import {
+  dateFormat,
+  languages,
+  msg,
+  numberFormat,
+  setLang,
+  t,
+  useLang,
+  type Lang,
+} from "./i18n";
 import { useSession } from "./session";
 const UsageChart = lazy(() => import("./usage-chart"));
 
@@ -157,34 +166,50 @@ export function Chart({
     </Suspense>
   );
 }
+// useLoad runs loader whenever deps change. Without a scope every load
+// starts empty. With one, a reload in the same scope (a refresh or a new
+// time window) keeps the previous data on screen until the new data
+// arrives, so charts and stats don't unmount; a different scope (another
+// user or path) or a failed load clears it.
 export function useLoad<T>(
   loader: (signal: AbortSignal) => Promise<T>,
   deps: unknown[] = [],
+  scope?: string,
 ) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const generation = useRef(0);
+  const loadedScope = useRef<string | undefined>(undefined);
   useEffect(() => {
     const current = ++generation.current;
     const c = new AbortController();
-    setData(undefined);
+    if (scope === undefined || loadedScope.current !== scope) {
+      loadedScope.current = undefined;
+      setData(undefined);
+    }
     setLoading(true);
     setError("");
     loader(c.signal)
       .then((value) => {
-        if (!c.signal.aborted && generation.current === current) setData(value);
+        if (!c.signal.aborted && generation.current === current) {
+          loadedScope.current = scope;
+          setData(value);
+        }
       })
       .catch((e) => {
-        if (!c.signal.aborted && generation.current === current)
+        if (!c.signal.aborted && generation.current === current) {
+          loadedScope.current = undefined;
+          setData(undefined);
           setError(message(e));
+        }
       })
       .finally(() => {
         if (!c.signal.aborted && generation.current === current)
           setLoading(false);
       });
     return () => c.abort();
-  }, deps);
+  }, [...deps, scope]);
   return { data, error, loading, setData };
 }
 
@@ -614,15 +639,16 @@ export function Modal({
     </dialog>
   );
 }
+const dateTime: Intl.DateTimeFormatOptions = {
+  dateStyle: "medium",
+  timeStyle: "short",
+};
 export const fmt = {
-  num: (n: number) => new Intl.NumberFormat(locale()).format(n),
+  num: (n: number) => numberFormat().format(n),
   date: (v: string) =>
     !v || v.startsWith("0001-01-01")
       ? t("未设置")
-      : new Intl.DateTimeFormat(locale(), {
-          dateStyle: "medium",
-          timeStyle: "short",
-        }).format(new Date(v)),
+      : dateFormat(dateTime).format(new Date(v)),
   pct: (n: number, d: number) =>
     d ? `${Math.min(100, (n / d) * 100).toFixed(1)}%` : "0%",
 };

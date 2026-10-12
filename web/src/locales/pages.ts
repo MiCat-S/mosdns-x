@@ -1,5 +1,5 @@
-// Translations for the Chinese message keys used in the matching source
-// file. Keys must match the t()/msg() literals exactly.
+// Translations for the Chinese message keys used in the page modules
+// (pages/*.tsx). Keys must match the t()/msg() literals exactly.
 export const en: Record<string, string> = {
   无法连接服务: "Can't reach the service",
   重试: "Retry",
