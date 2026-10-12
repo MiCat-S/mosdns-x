@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useSyncExternalStore } from "react";
 import { en, ja } from "./locales";
 
 // The panel is written in Simplified Chinese and the Chinese text is the
@@ -158,12 +158,19 @@ export function useLang() {
   return useSyncExternalStore(subscribe, lang, lang);
 }
 
-// The language switch renders the panel again without remounting it, so
-// local state, drafts and loaded data survive. Components re-render through
-// useLang(): App subscribes and re-renders the whole route tree, and
-// components that memoize translated text list the language in their deps.
-export function LanguageProvider({ children }: { children: ReactNode }) {
-  return children;
+// Text translated under one language and kept in state, such as the error
+// of a failed request, is mapped back to its source so it can be shown in
+// the current language. Text with parameters filled in cannot be mapped
+// and is shown as it was.
+let sources: Map<string, string> | undefined;
+export function retranslate(text: string) {
+  if (!sources) {
+    sources = new Map();
+    for (const table of Object.values(tables))
+      for (const [source, value] of Object.entries(table ?? {}))
+        sources.set(value, source);
+  }
+  return t(sources.get(text) ?? text);
 }
 
 applyDocument();

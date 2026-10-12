@@ -17,7 +17,6 @@ import {
   usageSummary,
 } from "./pages/shared";
 import { SessionProvider } from "./session";
-import { LanguageProvider } from "./i18n";
 import { en } from "./locales";
 const user = {
   id: "u1",
@@ -53,11 +52,7 @@ function mount(path: string) {
     ],
     { initialEntries: [path] },
   );
-  return render(
-    <LanguageProvider>
-      <RouterProvider router={router} />
-    </LanguageProvider>,
-  );
+  return render(<RouterProvider router={router} />);
 }
 beforeEach(() => vi.restoreAllMocks());
 describe("前端访问与秘密处理", () => {

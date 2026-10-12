@@ -19,11 +19,14 @@ import {
 } from "../components";
 import { dateFormat, msg, t } from "../i18n";
 import { OutboundSection, outboundName, routeReason } from "../query-trace";
+import { loadChunk } from "../lazy-chunk";
 import { query, usePaged } from "./shared";
 import type { Credential, EDNSInfo, QueryRecord } from "../types";
 // Only admin views purge caches; users never load the purge module.
 const PurgeDomainButton = lazy(() =>
-  import("../cache-purge").then((m) => ({ default: m.PurgeDomainButton })),
+  loadChunk(() => import("../cache-purge")).then((m) => ({
+    default: m.PurgeDomainButton,
+  })),
 );
 
 const emptyQueryFilters = {

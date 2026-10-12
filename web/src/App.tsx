@@ -8,12 +8,13 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Alert, Shell, Spinner } from "./components";
 import { useSession } from "./session";
 import { t, useLang } from "./i18n";
+import { loadChunk } from "./lazy-chunk";
 
 // Each page module is its own chunk, so the login page doesn't download
 // the admin console and users don't download admin pages.
 function lazyPage<M, K extends keyof M>(load: () => Promise<M>, name: K) {
   return lazy(() =>
-    load().then((m) => ({ default: m[name] as ComponentType })),
+    loadChunk(load).then((m) => ({ default: m[name] as ComponentType })),
   );
 }
 const loadAdmin = () => import("./pages/admin");
@@ -83,7 +84,7 @@ function Guard({ role }: { role: "admin" | "user" }) {
 }
 export function App() {
   // Subscribing here renders every route again when the language changes,
-  // without remounting pages; see LanguageProvider.
+  // without remounting pages, so drafts and loaded data survive.
   useLang();
   return (
     <Routes>

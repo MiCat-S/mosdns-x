@@ -1,6 +1,6 @@
 import {
-  createContext,
   lazy,
+  createContext,
   Suspense,
   useCallback,
   useContext,
@@ -17,13 +17,15 @@ import {
   languages,
   msg,
   numberFormat,
+  retranslate,
   setLang,
   t,
   useLang,
   type Lang,
 } from "./i18n";
+import { loadChunk } from "./lazy-chunk";
 import { useSession } from "./session";
-const UsageChart = lazy(() => import("./usage-chart"));
+const UsageChart = lazy(() => loadChunk(() => import("./usage-chart")));
 
 type UnsavedGuard = () => boolean;
 type RegisterUnsavedGuard = (guard: UnsavedGuard) => () => void;
@@ -42,10 +44,13 @@ export function Spinner() {
     </div>
   );
 }
+// Alert shows an error kept in state; it is translated again when the
+// language changes, since pages are not remounted.
 export function Alert({ error }: { error: string }) {
+  useLang();
   return error ? (
     <div className="alert" role="alert">
-      {error}
+      {retranslate(error)}
     </div>
   ) : null;
 }
