@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,7 +49,8 @@ type RedisCacheOpts struct {
 	ClientCloser io.Closer
 
 	// ClientTimeout specifies the timeout for read and write operations.
-	// Default is 50ms.
+	// Default is 1s. Cache I/O sits on the DNS reply path, so deployments
+	// should set it from the measured Redis RTT.
 	ClientTimeout time.Duration
 
 	// Logger is the *zap.Logger for this RedisCache.
@@ -70,45 +72,76 @@ func (opts *RedisCacheOpts) Init() error {
 type RedisCache struct {
 	opts           RedisCacheOpts
 	clientDisabled uint32
+
+	// lifecycleMu orders closed against recoveryWG.Add so Close never
+	// waits while a new recovery task can still start.
+	lifecycleMu    sync.Mutex
+	closed         atomic.Bool
+	recoveryCtx    context.Context
+	cancelRecovery context.CancelFunc
+	recoveryWG     sync.WaitGroup
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 func NewRedisCache(opts RedisCacheOpts) (*RedisCache, error) {
 	if err := opts.Init(); err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &RedisCache{
-		opts: opts,
+		opts:           opts,
+		recoveryCtx:    ctx,
+		cancelRecovery: cancel,
 	}, nil
 }
 
 func (r *RedisCache) disabled() bool {
-	return atomic.LoadUint32(&r.clientDisabled) != 0
+	return r.closed.Load() || atomic.LoadUint32(&r.clientDisabled) != 0
 }
 
 func (r *RedisCache) disableClient() {
-	if atomic.CompareAndSwapUint32(&r.clientDisabled, 0, 1) {
-		r.opts.Logger.Warn("redis temporarily disabled")
-		go func() {
-			const maxBackoff = time.Second * 30
-			backoff := time.Millisecond * 100
-			for {
-				time.Sleep(backoff)
-				ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*500)
-				err := r.opts.Client.Ping(ctx).Err()
-				cancel()
-				if err != nil {
-					if backoff >= maxBackoff {
-						backoff = maxBackoff
-					} else {
-						backoff += time.Duration(rand.Intn(1000))*time.Millisecond + time.Second
-					}
-					r.opts.Logger.Warn("redis ping failed", zap.Error(err), zap.Duration("next_ping", backoff))
-					continue
-				}
-				atomic.StoreUint32(&r.clientDisabled, 0)
-				return
-			}
-		}()
+	if !atomic.CompareAndSwapUint32(&r.clientDisabled, 0, 1) {
+		return
+	}
+	r.lifecycleMu.Lock()
+	if r.closed.Load() {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	r.recoveryWG.Add(1)
+	r.lifecycleMu.Unlock()
+	r.opts.Logger.Warn("redis temporarily disabled")
+	go r.recoverClient()
+}
+
+// recoverClient pings Redis with a jittered backoff until it answers or
+// the cache is closed.
+func (r *RedisCache) recoverClient() {
+	defer r.recoveryWG.Done()
+	const maxBackoff = time.Second * 30
+	backoff := time.Millisecond * 100
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	for {
+		select {
+		case <-r.recoveryCtx.Done():
+			return
+		case <-timer.C:
+		}
+		ctx, cancel := context.WithTimeout(r.recoveryCtx, time.Millisecond*500)
+		err := r.opts.Client.Ping(ctx).Err()
+		cancel()
+		if err == nil {
+			atomic.StoreUint32(&r.clientDisabled, 0)
+			return
+		}
+		if r.recoveryCtx.Err() != nil {
+			return
+		}
+		backoff = min(backoff+time.Duration(rand.Intn(1000))*time.Millisecond+time.Second, maxBackoff)
+		r.opts.Logger.Warn("redis ping failed", zap.Error(err), zap.Duration("next_ping", backoff))
+		timer.Reset(backoff)
 	}
 }
 
@@ -196,12 +229,20 @@ func (r *RedisCache) BatchStore(b []KV) {
 	}
 }
 
-// Close closes the redis client.
+// Close stops the recovery task and closes the redis client. Later calls
+// return the first result.
 func (r *RedisCache) Close() error {
-	if f := r.opts.ClientCloser; f != nil {
-		return f.Close()
-	}
-	return nil
+	r.closeOnce.Do(func() {
+		r.lifecycleMu.Lock()
+		r.closed.Store(true)
+		r.cancelRecovery()
+		r.lifecycleMu.Unlock()
+		r.recoveryWG.Wait()
+		if f := r.opts.ClientCloser; f != nil {
+			r.closeErr = f.Close()
+		}
+	})
+	return r.closeErr
 }
 
 // purgeScanCount is the SCAN batch size. MATCH is applied server side to
@@ -257,6 +298,9 @@ func (r *RedisCache) Purge(ctx context.Context, selector cache.KeySelector) (int
 }
 
 func (r *RedisCache) Len() int {
+	if r.closed.Load() {
+		return 0
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*50)
 	defer cancel()
 	i, err := r.opts.Client.DBSize(ctx).Result()

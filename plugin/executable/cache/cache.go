@@ -66,7 +66,7 @@ var _ coremain.ExecutablePlugin = (*cachePlugin)(nil)
 type Args struct {
 	Size              int    `yaml:"size"`
 	Redis             string `yaml:"redis"`
-	RedisTimeout      int    `yaml:"redis_timeout"`
+	RedisTimeout      int    `yaml:"redis_timeout"` // ms per Redis call, default 1000; set from the measured RTT
 	LazyCacheTTL      int    `yaml:"lazy_cache_ttl"`
 	LazyCacheReplyTTL int    `yaml:"lazy_cache_reply_ttl"`
 	CacheEverything   bool   `yaml:"cache_everything"`
