@@ -34,10 +34,10 @@ func TestWriteMySQLBatchPersistsAggregatesAndQueryDetail(t *testing.T) {
 		{time: now, attempt: &query_context.UpstreamAttempt{Principal: principal, UpstreamID: "remote", Duration: 6 * time.Millisecond}},
 	}
 	mock.ExpectBegin()
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_minutes`, 2)
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_rcodes`, 2)
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_latency`, 2)
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_upstreams`, 2)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_minutes`, 1)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_rcodes`, 1)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_latency`, 1)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_upstreams`, 1)
 	expectTelemetryExecutions(mock, `INSERT INTO mosdns_query_logs`, 1)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta SET updated_at_ns=? WHERE id=1`)).WithArgs(now.UnixNano()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

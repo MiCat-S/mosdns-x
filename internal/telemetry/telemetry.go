@@ -186,6 +186,10 @@ type Store struct {
 	mysql               *sql.DB
 	mysqlTimeout        time.Duration
 	mysqlPrunedAt       atomic.Int64
+	maintenanceBusy     atomic.Bool
+	maintenanceWG       sync.WaitGroup
+	maintenanceCtx      context.Context
+	cancelMaintenance   context.CancelFunc
 	queue               chan event
 	stop                chan struct{}
 	done                chan struct{}
@@ -485,6 +489,12 @@ func (s *Store) Close() error {
 		close(s.stop)
 		s.enqueueMu.Unlock()
 		<-s.done
+		// run has exited, so no new maintenance task can start; cancel the
+		// one in flight and wait for it before closing the database.
+		if s.cancelMaintenance != nil {
+			s.cancelMaintenance()
+		}
+		s.maintenanceWG.Wait()
 		var backendErr error
 		if s.db != nil {
 			backendErr = s.db.Close()

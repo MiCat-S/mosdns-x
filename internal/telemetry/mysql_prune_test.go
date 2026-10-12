@@ -1,8 +1,10 @@
 package telemetry
 
 import (
+	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +51,7 @@ func TestWriteMySQLBatchPrunesByRetentionThenFairly(t *testing.T) {
 	if err := store.writeMySQLBatch(nil); err != nil {
 		t.Fatal(err)
 	}
+	store.maintenanceWG.Wait()
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +81,7 @@ func TestFailedPruneKeepsTheBatchAndWaitsAMinute(t *testing.T) {
 	if err := store.writeMySQLBatch(nil); err != nil {
 		t.Fatalf("batch failed with the prune: %v", err)
 	}
+	store.maintenanceWG.Wait()
 	if logs.FilterMessageSnippet("prune failed").Len() != 1 {
 		t.Fatalf("logs = %+v", logs.All())
 	}
@@ -87,6 +91,80 @@ func TestFailedPruneKeepsTheBatchAndWaitsAMinute(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta`)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	if err := store.writeMySQLBatch(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The sweep runs beside the consumer: a slow prune neither delays the batch
+// that started it nor starts a second sweep.
+func TestSlowPruneDoesNotBlockTheBatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	store := &Store{mysql: db, mysqlTimeout: time.Second, queryLogEnabled: true, queryRetention: queryRetention, maxQueryRecords: 1000, now: func() time.Time { return now }}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta`)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectBegin().WillDelayFor(300 * time.Millisecond)
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_telemetry_minutes`)).WillReturnError(errors.New("stop here"))
+	mock.ExpectRollback()
+
+	start := time.Now()
+	if err := store.writeMySQLBatch(nil); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 150*time.Millisecond {
+		t.Fatalf("batch waited %v for the prune", d)
+	}
+	if !store.maintenanceBusy.Load() {
+		t.Fatal("prune not in flight")
+	}
+	// A new minute while the sweep is still running does not start another.
+	now = now.Add(time.Minute)
+	store.startMySQLPrune(now, now.Unix(), store.Settings())
+	store.maintenanceWG.Wait()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.mysqlPrunedAt.Load(); got != now.Add(-time.Minute).Unix() {
+		t.Fatalf("skipped minute recorded as pruned: %d", got)
+	}
+}
+
+func TestExecMultiRowChunksByRowsAndBytes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows := make([][]any, 0, 130)
+	for i := range 130 {
+		rows = append(rows, []any{i, "x"})
+	}
+	// Two oversized rows each get a statement of their own.
+	big := string(make([]byte, mysqlMultiRowMaxBytes))
+	rows = append(rows, []any{1, big}, []any{2, big})
+	mock.ExpectBegin()
+	for _, n := range []int{64, 64, 2, 1, 1} {
+		mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO t (a, b) VALUES (?, ?)` + strings.Repeat(`, (?, ?)`, n-1) + ` ON DUP`)).
+			WillReturnResult(sqlmock.NewResult(0, int64(n)))
+	}
+	mock.ExpectCommit()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := execMultiRow(context.Background(), tx, `INSERT INTO t (a, b) VALUES `, `(?, ?)`, ` ON DUP`, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

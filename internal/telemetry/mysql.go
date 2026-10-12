@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -212,6 +214,7 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*Store, error)
 		return nil, fmt.Errorf("mysql telemetry: %w", err)
 	}
 	s.updatedUnixNano.Store(updated)
+	s.maintenanceCtx, s.cancelMaintenance = context.WithCancel(context.Background())
 	go s.run()
 	return s, nil
 }
@@ -463,11 +466,46 @@ func (s *Store) writeMySQLBatch(events []event) error {
 			}
 		}
 	}
+	// Encode outside the transaction so it holds row locks only for SQL.
+	queryRows := make([][]any, 0, len(queries))
+	for _, q := range queries {
+		row, err := mysqlQueryLogRow(q)
+		if err != nil {
+			return fmt.Errorf("mysql telemetry: %w", err)
+		}
+		queryRows = append(queryRows, row)
+	}
+	// Upserts run in a fixed key order so concurrent writers on several
+	// instances take the aggregate row locks in the same order.
+	minuteRows := make([][]any, 0, len(minutes))
+	for _, key := range sortedKeys(minutes, compareMinuteKey) {
+		a := minutes[key]
+		minuteRows = append(minuteRows, []any{key.Scope, key.UserID, key.Minute, a.Completed, a.Failed, a.CacheHits, a.LatencyUS})
+	}
+	rcodeRows := make([][]any, 0, len(rcodes))
+	for _, key := range sortedKeys(rcodes, func(a, b mysqlRcodeKey) int {
+		return cmp.Or(compareMinuteKey(a.mysqlMinuteKey, b.mysqlMinuteKey), strings.Compare(a.Rcode, b.Rcode))
+	}) {
+		rcodeRows = append(rcodeRows, []any{key.Scope, key.UserID, key.Minute, key.Rcode, rcodes[key]})
+	}
+	latencyRows := make([][]any, 0, len(latencies))
+	for _, key := range sortedKeys(latencies, func(a, b mysqlLatencyKey) int {
+		return cmp.Or(compareMinuteKey(a.mysqlMinuteKey, b.mysqlMinuteKey), cmp.Compare(a.Bucket, b.Bucket))
+	}) {
+		latencyRows = append(latencyRows, []any{key.Scope, key.UserID, key.Minute, key.Bucket, latencies[key]})
+	}
+	upstreamRows := make([][]any, 0, len(upstreams))
+	for _, key := range sortedKeys(upstreams, func(a, b mysqlUpstreamKey) int {
+		return cmp.Or(compareMinuteKey(a.mysqlMinuteKey, b.mysqlMinuteKey), strings.Compare(a.Upstream, b.Upstream))
+	}) {
+		a := upstreams[key]
+		upstreamRows = append(upstreamRows, []any{key.Scope, key.UserID, key.Minute, key.Upstream, a.Attempts, a.Failures, a.LatencyUS})
+	}
+
 	ctx, cancel := s.mysqlContext(context.Background())
 	defer cancel()
 	now := s.now().UTC()
 	minute := now.Truncate(time.Minute).Unix()
-	shouldPrune := s.mysqlPrunedAt.Load() < minute
 	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
@@ -476,77 +514,33 @@ func (s *Store) writeMySQLBatch(events []event) error {
 		_ = tx.Rollback()
 		return fmt.Errorf("mysql telemetry: %w", err)
 	}
-	for key, a := range minutes {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_telemetry_minutes
-			(scope_kind, scope_id, minute_epoch, completed, failed, cache_hits, latency_us) VALUES (?, ?, ?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE completed=completed+VALUES(completed), failed=failed+VALUES(failed), cache_hits=cache_hits+VALUES(cache_hits), latency_us=latency_us+VALUES(latency_us)`,
-			key.Scope, key.UserID, key.Minute, a.Completed, a.Failed, a.CacheHits, a.LatencyUS)
-		if err != nil {
-			return rollback(err)
-		}
-	}
-	for key, count := range rcodes {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_telemetry_rcodes
-			(scope_kind, scope_id, minute_epoch, rcode, query_count) VALUES (?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE query_count=query_count+VALUES(query_count)`, key.Scope, key.UserID, key.Minute, key.Rcode, count)
-		if err != nil {
-			return rollback(err)
-		}
-	}
-	for key, count := range latencies {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_telemetry_latency
-			(scope_kind, scope_id, minute_epoch, bucket, query_count) VALUES (?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE query_count=query_count+VALUES(query_count)`, key.Scope, key.UserID, key.Minute, key.Bucket, count)
-		if err != nil {
-			return rollback(err)
-		}
-	}
-	for key, a := range upstreams {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_telemetry_upstreams
-			(scope_kind, scope_id, minute_epoch, upstream_id, attempts, failures, latency_us) VALUES (?, ?, ?, ?, ?, ?, ?)
-			ON DUPLICATE KEY UPDATE attempts=attempts+VALUES(attempts), failures=failures+VALUES(failures), latency_us=latency_us+VALUES(latency_us)`,
-			key.Scope, key.UserID, key.Minute, key.Upstream, a.Attempts, a.Failures, a.LatencyUS)
-		if err != nil {
-			return rollback(err)
-		}
-	}
-	for _, q := range queries {
-		answerJSON, err := json.Marshal(q.AnswerIPs)
-		if err != nil {
-			return rollback(err)
-		}
-		ednsJSON, err := json.Marshal(q.EDNS)
-		if err != nil {
-			return rollback(err)
-		}
-		upstreamRequestEDNSJSON, err := marshalOptionalEDNSSnapshot(q.UpstreamRequestEDNS)
-		if err != nil {
-			return rollback(err)
-		}
-		upstreamResponseEDNSJSON, err := marshalOptionalEDNSSnapshot(q.UpstreamResponseEDNS)
-		if err != nil {
-			return rollback(err)
-		}
-		responseEDNSJSON, err := marshalOptionalEDNSSnapshot(q.ResponseEDNS)
-		if err != nil {
-			return rollback(err)
-		}
-		var traceJSON any
-		if q.Trace != nil {
-			encoded, err := json.Marshal(q.Trace)
-			if err != nil {
-				return rollback(err)
-			}
-			traceJSON = encoded
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_query_logs
+	// One failed chunk rolls back the whole batch, so a retry never counts
+	// a partly committed batch twice.
+	for _, stmt := range []struct {
+		head, tuple, tail string
+		rows              [][]any
+	}{
+		{`INSERT INTO mosdns_telemetry_minutes
+			(scope_kind, scope_id, minute_epoch, completed, failed, cache_hits, latency_us) VALUES `, `(?, ?, ?, ?, ?, ?, ?)`,
+			` ON DUPLICATE KEY UPDATE completed=completed+VALUES(completed), failed=failed+VALUES(failed), cache_hits=cache_hits+VALUES(cache_hits), latency_us=latency_us+VALUES(latency_us)`,
+			minuteRows},
+		{`INSERT INTO mosdns_telemetry_rcodes
+			(scope_kind, scope_id, minute_epoch, rcode, query_count) VALUES `, `(?, ?, ?, ?, ?)`,
+			` ON DUPLICATE KEY UPDATE query_count=query_count+VALUES(query_count)`, rcodeRows},
+		{`INSERT INTO mosdns_telemetry_latency
+			(scope_kind, scope_id, minute_epoch, bucket, query_count) VALUES `, `(?, ?, ?, ?, ?)`,
+			` ON DUPLICATE KEY UPDATE query_count=query_count+VALUES(query_count)`, latencyRows},
+		{`INSERT INTO mosdns_telemetry_upstreams
+			(scope_kind, scope_id, minute_epoch, upstream_id, attempts, failures, latency_us) VALUES `, `(?, ?, ?, ?, ?, ?, ?)`,
+			` ON DUPLICATE KEY UPDATE attempts=attempts+VALUES(attempts), failures=failures+VALUES(failures), latency_us=latency_us+VALUES(latency_us)`,
+			upstreamRows},
+		{`INSERT INTO mosdns_query_logs
 			(id, time_ns, user_id, credential_id, client_ip, name, qtype, rcode, duration_ms, cache_hit, protocol, answer_ips_json, edns_json,
 			 edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
-			 response_source, response_source_id, upstream_id, upstream_label, trace_json)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
-			q.EDNSTraceVersion, normalizedUpstreamStageStatus(q.UpstreamStageStatus), upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON,
-			q.ResponseSource, q.ResponseSourceID, q.UpstreamID, truncateLabel(q.UpstreamLabel), traceJSON)
-		if err != nil {
+			 response_source, response_source_id, upstream_id, upstream_label, trace_json) VALUES `,
+			`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ``, queryRows},
+	} {
+		if err := execMultiRow(ctx, tx, stmt.head, stmt.tuple, stmt.tail, stmt.rows); err != nil {
 			return rollback(err)
 		}
 	}
@@ -557,16 +551,141 @@ func (s *Store) writeMySQLBatch(events []event) error {
 		return fmt.Errorf("mysql telemetry: %w", err)
 	}
 	s.updatedUnixNano.Store(now.UnixNano())
-	if shouldPrune {
+	s.startMySQLPrune(now, minute, settings)
+	return nil
+}
+
+// startMySQLPrune hands the minute sweep to a background task so a slow
+// prune never stalls the consumer and fills the queue. At most one runs;
+// a minute whose sweep is skipped because one is in flight is retried on
+// the next flush. Only the run goroutine calls this, and Close waits for
+// run before it waits for the task.
+func (s *Store) startMySQLPrune(now time.Time, minute int64, settings Settings) {
+	if s.mysqlPrunedAt.Load() >= minute || !s.maintenanceBusy.CompareAndSwap(false, true) {
+		return
+	}
+	s.mysqlPrunedAt.Store(minute)
+	s.maintenanceWG.Add(1)
+	go func() {
+		defer s.maintenanceWG.Done()
+		defer s.maintenanceBusy.Store(false)
 		// Pruning runs after the batch commits, in its own transaction, so a
 		// slow or failed prune never loses the records just written. It is
 		// retried the next minute rather than on every flush.
-		s.mysqlPrunedAt.Store(minute)
 		if err := s.mysqlPrune(now, settings); err != nil {
 			s.log().Warn("mysql telemetry prune failed; retrying next minute", zap.Error(err))
 		}
+	}()
+}
+
+func (s *Store) maintenanceContext() context.Context {
+	if s.maintenanceCtx == nil {
+		return context.Background()
+	}
+	return s.maintenanceCtx
+}
+
+func compareMinuteKey(a, b mysqlMinuteKey) int {
+	return cmp.Or(strings.Compare(a.Scope, b.Scope), strings.Compare(a.UserID, b.UserID), cmp.Compare(a.Minute, b.Minute))
+}
+
+func sortedKeys[K comparable, V any](m map[K]V, compare func(a, b K) int) []K {
+	keys := make([]K, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, compare)
+	return keys
+}
+
+// A multi-row statement holds at most this many rows and roughly this many
+// argument bytes, well under the 4 MiB max_allowed_packet MySQL 5.7 ships
+// with and the 65535 placeholder limit.
+const (
+	mysqlMultiRowMaxRows  = 64
+	mysqlMultiRowMaxBytes = 1 << 20
+)
+
+// execMultiRow inserts rows as head + tuple, tuple, ... + tail in chunks.
+func execMultiRow(ctx context.Context, tx *sql.Tx, head, tuple, tail string, rows [][]any) error {
+	for start := 0; start < len(rows); {
+		end, size := start, 0
+		for end < len(rows) && end-start < mysqlMultiRowMaxRows {
+			n := mysqlArgsSize(rows[end])
+			if end > start && size+n > mysqlMultiRowMaxBytes {
+				break
+			}
+			size += n
+			end++
+		}
+		var b strings.Builder
+		b.Grow(len(head) + (end-start)*(len(tuple)+2) + len(tail))
+		b.WriteString(head)
+		args := make([]any, 0, (end-start)*len(rows[start]))
+		for i := start; i < end; i++ {
+			if i > start {
+				b.WriteString(", ")
+			}
+			b.WriteString(tuple)
+			args = append(args, rows[i]...)
+		}
+		b.WriteString(tail)
+		if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+			return err
+		}
+		start = end
 	}
 	return nil
+}
+
+func mysqlArgsSize(args []any) int {
+	n := 0
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case string:
+			n += len(v)
+		case []byte:
+			n += len(v)
+		default:
+			n += 8
+		}
+	}
+	return n
+}
+
+// mysqlQueryLogRow encodes q as the mosdns_query_logs column values.
+func mysqlQueryLogRow(q QueryRecord) ([]any, error) {
+	answerJSON, err := json.Marshal(q.AnswerIPs)
+	if err != nil {
+		return nil, err
+	}
+	ednsJSON, err := json.Marshal(q.EDNS)
+	if err != nil {
+		return nil, err
+	}
+	upstreamRequestEDNSJSON, err := marshalOptionalEDNSSnapshot(q.UpstreamRequestEDNS)
+	if err != nil {
+		return nil, err
+	}
+	upstreamResponseEDNSJSON, err := marshalOptionalEDNSSnapshot(q.UpstreamResponseEDNS)
+	if err != nil {
+		return nil, err
+	}
+	responseEDNSJSON, err := marshalOptionalEDNSSnapshot(q.ResponseEDNS)
+	if err != nil {
+		return nil, err
+	}
+	var traceJSON any
+	if q.Trace != nil {
+		encoded, err := json.Marshal(q.Trace)
+		if err != nil {
+			return nil, err
+		}
+		traceJSON = encoded
+	}
+	return []any{q.ID, q.Time.UnixNano(), q.UserID, q.CredentialID, q.ClientIP, q.Name, q.QType, q.Rcode, q.DurationMS, q.CacheHit, q.Protocol, answerJSON, ednsJSON,
+		q.EDNSTraceVersion, normalizedUpstreamStageStatus(q.UpstreamStageStatus), upstreamRequestEDNSJSON, upstreamResponseEDNSJSON, responseEDNSJSON,
+		q.ResponseSource, q.ResponseSourceID, q.UpstreamID, truncateLabel(q.UpstreamLabel), traceJSON}, nil
 }
 
 func (s *Store) log() *zap.Logger {
@@ -579,7 +698,7 @@ func (s *Store) log() *zap.Logger {
 // mysqlPrune removes expired aggregates and query records, and query records
 // over the configured cap.
 func (s *Store) mysqlPrune(now time.Time, settings Settings) error {
-	ctx, cancel := context.WithTimeout(context.Background(), max(s.mysqlTimeout, mysqlPruneTimeout))
+	ctx, cancel := context.WithTimeout(s.maintenanceContext(), max(s.mysqlTimeout, mysqlPruneTimeout))
 	defer cancel()
 	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
