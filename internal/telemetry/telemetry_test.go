@@ -18,7 +18,7 @@ import (
 	"github.com/pmkol/mosdns-x/pkg/server/dns_handler"
 )
 
-func openTestStore(t *testing.T, queryLog bool, now time.Time) *Store {
+func openTestStore(t testing.TB, queryLog bool, now time.Time) *Store {
 	t.Helper()
 	s, err := Open(Options{Path: filepath.Join(t.TempDir(), "telemetry.db"), QueueSize: 64, BatchSize: 64, FlushInterval: time.Hour, QueryLogEnabled: queryLog, Now: func() time.Time { return now }})
 	if err != nil {
@@ -28,7 +28,7 @@ func openTestStore(t *testing.T, queryLog bool, now time.Time) *Store {
 	return s
 }
 
-func flush(t *testing.T, s *Store) {
+func flush(t testing.TB, s *Store) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

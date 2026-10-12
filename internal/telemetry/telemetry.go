@@ -214,6 +214,10 @@ type Store struct {
 	runErr              error
 	enqueueMu           sync.RWMutex
 	logger              *zap.Logger
+	// topDomains caches rankings; topDomainsGeneration invalidates those
+	// computed before it.
+	topDomains           topDomainsCache
+	topDomainsGeneration atomic.Uint64
 }
 
 func Open(opts Options) (*Store, error) {
@@ -343,6 +347,7 @@ func (s *Store) UpdateSettings(settings Settings) error {
 	s.queryRetention = query
 	s.maxQueryRecords = records
 	s.settingsMu.Unlock()
+	s.invalidateTopDomains()
 	if s.db != nil && s.boltExpiryRetention != aggregate {
 		// Expiry keys include the retention value that was active when an
 		// aggregate was written. Rebuild them when the setting changes so

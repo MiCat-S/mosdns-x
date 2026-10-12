@@ -1,10 +1,10 @@
 package telemetry
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -56,6 +56,15 @@ func (s *Store) TopDomains(ctx context.Context, userID string, from, to time.Tim
 	if limit < 1 || limit > MaxTopDomains {
 		return result, fmt.Errorf("limit must be between 1 and %d", MaxTopDomains)
 	}
+	if !s.Settings().QueryLogEnabled {
+		return result, nil
+	}
+	return s.cachedTopDomains(ctx, userID, from, to, limit)
+}
+
+// rankDomains computes the ranking TopDomains returns.
+func (s *Store) rankDomains(ctx context.Context, userID string, from, to time.Time, limit int) (TopDomains, error) {
+	result := TopDomains{From: from, To: to, Domains: []DomainStats{}}
 	settings := s.Settings()
 	result.QueryLogEnabled = settings.QueryLogEnabled
 	if !settings.QueryLogEnabled {
@@ -124,20 +133,49 @@ func (s *Store) TopDomains(ctx context.Context, userID string, from, to time.Tim
 	if err != nil {
 		return result, err
 	}
-	for _, d := range counts {
-		result.Domains = append(result.Domains, *d)
-	}
-	sort.Slice(result.Domains, func(i, j int) bool {
-		a, b := result.Domains[i], result.Domains[j]
-		if a.Queries != b.Queries {
-			return a.Queries > b.Queries
-		}
-		return a.Name < b.Name
-	})
-	if len(result.Domains) > limit {
-		result.Domains = result.Domains[:limit]
-	}
+	result.Domains = topDomainStats(counts, limit)
 	return result, nil
+}
+
+// ranksBefore orders the ranking: most queried first, then by name.
+func ranksBefore(a, b *DomainStats) bool {
+	if a.Queries != b.Queries {
+		return a.Queries > b.Queries
+	}
+	return a.Name < b.Name
+}
+
+// domainHeap is a min-heap on rank: its root is the lowest ranked name kept.
+type domainHeap []*DomainStats
+
+func (h domainHeap) Len() int           { return len(h) }
+func (h domainHeap) Less(i, j int) bool { return ranksBefore(h[j], h[i]) }
+func (h domainHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *domainHeap) Push(x any)        { *h = append(*h, x.(*DomainStats)) }
+func (h *domainHeap) Pop() any {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
+}
+
+// topDomainStats selects the limit best ranked names in O(D log limit)
+// rather than sorting all D names.
+func topDomainStats(counts map[string]*DomainStats, limit int) []DomainStats {
+	h := make(domainHeap, 0, min(limit, len(counts)))
+	for _, d := range counts {
+		if len(h) < limit {
+			heap.Push(&h, d)
+		} else if ranksBefore(d, h[0]) {
+			h[0] = d
+			heap.Fix(&h, 0)
+		}
+	}
+	out := make([]DomainStats, len(h))
+	for i := len(h) - 1; i >= 0; i-- {
+		out[i] = *heap.Pop(&h).(*DomainStats)
+	}
+	return out
 }
 
 func (s *Store) mysqlTopDomains(parent context.Context, userID string, limit int, result TopDomains) (TopDomains, error) {
@@ -157,13 +195,13 @@ func (s *Store) mysqlTopDomains(parent context.Context, userID string, limit int
 	if err != nil {
 		return result, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var d DomainStats
 		if err := rows.Scan(&d.Name, &d.Queries, &d.CacheHits); err != nil {
+			_ = rows.Close()
 			return result, err
 		}
 		result.Domains = append(result.Domains, d)
 	}
-	return result, rows.Err()
+	return result, finishRows(rows)
 }
