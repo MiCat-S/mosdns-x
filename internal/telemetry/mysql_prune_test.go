@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -169,5 +170,49 @@ func TestExecMultiRowChunksByRowsAndBytes(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A batch chosen as a deadlock victim was rolled back whole, so it runs
+// once more instead of dropping its events; other errors are not retried.
+func TestWriteMySQLBatchRetriesADeadlockOnce(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		second  error
+		wantErr bool
+	}{
+		{"recovers", nil, false},
+		{"gives up after one retry", &mysqlDriver.MySQLError{Number: 1213}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+			store := &Store{mysql: db, mysqlTimeout: time.Second, now: func() time.Time { return now }}
+			store.mysqlPrunedAt.Store(now.Unix())
+			mock.ExpectBegin()
+			mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta`)).WillReturnError(&mysqlDriver.MySQLError{Number: 1213, Message: "Deadlock found"})
+			mock.ExpectRollback()
+			mock.ExpectBegin()
+			if c.second == nil {
+				mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta`)).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			} else {
+				mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta`)).WillReturnError(c.second)
+				mock.ExpectRollback()
+			}
+			if err := store.writeMySQLBatch(nil); (err != nil) != c.wantErr {
+				t.Fatalf("err=%v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if retryableMySQLError(errors.New("connection reset")) || retryableMySQLError(&mysqlDriver.MySQLError{Number: 1062}) {
+		t.Fatal("non-lock error treated as retryable")
 	}
 }

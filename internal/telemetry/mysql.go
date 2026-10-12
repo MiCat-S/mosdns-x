@@ -502,24 +502,7 @@ func (s *Store) writeMySQLBatch(events []event) error {
 		upstreamRows = append(upstreamRows, []any{key.Scope, key.UserID, key.Minute, key.Upstream, a.Attempts, a.Failures, a.LatencyUS})
 	}
 
-	ctx, cancel := s.mysqlContext(context.Background())
-	defer cancel()
-	now := s.now().UTC()
-	minute := now.Truncate(time.Minute).Unix()
-	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return fmt.Errorf("mysql telemetry: %w", err)
-	}
-	rollback := func(err error) error {
-		_ = tx.Rollback()
-		return fmt.Errorf("mysql telemetry: %w", err)
-	}
-	// One failed chunk rolls back the whole batch, so a retry never counts
-	// a partly committed batch twice.
-	for _, stmt := range []struct {
-		head, tuple, tail string
-		rows              [][]any
-	}{
+	statements := []mysqlMultiRowStatement{
 		{`INSERT INTO mosdns_telemetry_minutes
 			(scope_kind, scope_id, minute_epoch, completed, failed, cache_hits, latency_us) VALUES `, `(?, ?, ?, ?, ?, ?, ?)`,
 			` ON DUPLICATE KEY UPDATE completed=completed+VALUES(completed), failed=failed+VALUES(failed), cache_hits=cache_hits+VALUES(cache_hits), latency_us=latency_us+VALUES(latency_us)`,
@@ -539,20 +522,59 @@ func (s *Store) writeMySQLBatch(events []event) error {
 			 edns_trace_version, upstream_stage_status, upstream_request_edns_json, upstream_response_edns_json, response_edns_json,
 			 response_source, response_source_id, upstream_id, upstream_label, trace_json) VALUES `,
 			`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ``, queryRows},
-	} {
-		if err := execMultiRow(ctx, tx, stmt.head, stmt.tuple, stmt.tail, stmt.rows); err != nil {
-			return rollback(err)
-		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE mosdns_telemetry_meta SET updated_at_ns=? WHERE id=1`, now.UnixNano()); err != nil {
-		return rollback(err)
+	ctx, cancel := s.mysqlContext(context.Background())
+	defer cancel()
+	now := s.now().UTC()
+	minute := now.Truncate(time.Minute).Unix()
+	// The background prune deletes from the same tables. A batch picked as
+	// a deadlock victim or timed out on a row lock was rolled back whole,
+	// so it is safe to run once more instead of dropping its events.
+	err := s.commitMySQLBatch(ctx, now, statements)
+	if retryableMySQLError(err) {
+		err = s.commitMySQLBatch(ctx, now, statements)
 	}
-	if err = tx.Commit(); err != nil {
+	if err != nil {
 		return fmt.Errorf("mysql telemetry: %w", err)
 	}
 	s.updatedUnixNano.Store(now.UnixNano())
 	s.startMySQLPrune(now, minute, settings)
 	return nil
+}
+
+type mysqlMultiRowStatement struct {
+	head, tuple, tail string
+	rows              [][]any
+}
+
+// commitMySQLBatch writes the statements and the update time in one
+// transaction. One failed chunk rolls back the whole batch, so a retry
+// never counts a partly committed batch twice.
+func (s *Store) commitMySQLBatch(ctx context.Context, now time.Time, statements []mysqlMultiRowStatement) error {
+	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	rollback := func(err error) error {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, stmt := range statements {
+		if err := execMultiRow(ctx, tx, stmt.head, stmt.tuple, stmt.tail, stmt.rows); err != nil {
+			return rollback(err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE mosdns_telemetry_meta SET updated_at_ns=? WHERE id=1`, now.UnixNano()); err != nil {
+		return rollback(err)
+	}
+	return tx.Commit()
+}
+
+// retryableMySQLError reports a deadlock (1213) or row lock wait timeout
+// (1205); MySQL has rolled the statement or transaction back for both.
+func retryableMySQLError(err error) bool {
+	var mysqlErr *mysqlDriver.MySQLError
+	return errors.As(err, &mysqlErr) && (mysqlErr.Number == 1213 || mysqlErr.Number == 1205)
 }
 
 // startMySQLPrune hands the minute sweep to a background task so a slow
