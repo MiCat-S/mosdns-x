@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"net/netip"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -201,5 +204,92 @@ func TestLazyCacheHitRecordsHitBeforeRefresh(t *testing.T) {
 	steps := journal.Snapshot(0).Steps
 	if len(steps) < 2 || steps[0].Kind != query_context.RouteStepCacheHit || steps[1].Kind != query_context.RouteStepLazyRefresh {
 		t.Fatalf("steps = %+v", steps)
+	}
+}
+
+// Stale hits on a key being refreshed are answered from the cache without
+// a second refresh; once it finishes, the next stale hit refreshes again.
+func TestLazyRefreshRunsOncePerKey(t *testing.T) {
+	p := newTestCache(false)
+	defer p.backend.Close()
+	p.args.LazyCacheTTL = 3600
+	q := new(dns.Msg).SetQuestion("example.org.", dns.TypeA)
+	r := new(dns.Msg)
+	r.SetReply(q)
+	rr, _ := dns.NewRR("example.org. 60 IN A 192.0.2.1")
+	r.Answer = []dns.RR{rr}
+	packed, err := r.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := p.getMsgKey(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeStale := func() { p.backend.Store(key, packed, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)) }
+	storeStale()
+
+	var calls atomic.Int32
+	release := make(chan struct{})
+	next := executable_seq.WrapExecutable(execFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+		calls.Add(1)
+		<-release
+		return nil // no response: the entry stays stale
+	}))
+	hit := func() {
+		qCtx := query_context.NewContext(q.Copy(), query_context.NewRequestMeta(netip.Addr{}))
+		if err := p.Exec(context.Background(), qCtx, next); err != nil {
+			t.Error(err)
+		}
+		if !qCtx.StaleHit() {
+			t.Error("not answered from the cache")
+		}
+	}
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() { defer wg.Done(); hit() }()
+	}
+	wg.Wait()
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("refreshes while one runs: %d", n)
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.lazyMu.Lock()
+		n := len(p.lazyUpdating)
+		p.lazyMu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("refresh never released its key")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	hit()
+	deadline = time.Now().Add(2 * time.Second)
+	for calls.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("refreshes after the first finished: %d", n)
+	}
+}
+
+func TestLazyRefreshesAreBoundedAcrossKeys(t *testing.T) {
+	p := newTestCache(false)
+	for i := range maxLazyUpdates {
+		if !p.claimLazyUpdate(strconv.Itoa(i)) {
+			t.Fatalf("claim %d refused", i)
+		}
+	}
+	if p.claimLazyUpdate("one-more") {
+		t.Fatal("claim beyond the bound accepted")
+	}
+	p.releaseLazyUpdate("0")
+	if !p.claimLazyUpdate("one-more") {
+		t.Fatal("claim refused after a refresh finished")
 	}
 }
