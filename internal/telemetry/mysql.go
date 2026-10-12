@@ -676,7 +676,7 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		var p SeriesPoint
 		var latency uint64
 		if err := rows.Scan(&minute, &p.Completed, &p.Failed, &p.CacheHits, &latency); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		p.Time = time.Unix(minute, 0).UTC()
@@ -689,7 +689,7 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		snapshot.CacheHits += p.CacheHits
 		totalUS += latency
 	}
-	if err := rows.Close(); err != nil {
+	if err := finishRows(rows); err != nil {
 		return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 	}
 	if snapshot.Completed > 0 {
@@ -704,12 +704,12 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		var code string
 		var count uint64
 		if err := rcodeRows.Scan(&code, &count); err != nil {
-			rcodeRows.Close()
+			_ = rcodeRows.Close()
 			return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		snapshot.RcodeCounts[code] = count
 	}
-	if err := rcodeRows.Close(); err != nil {
+	if err := finishRows(rcodeRows); err != nil {
 		return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 	}
 	latencyRows, err := s.mysql.QueryContext(opCtx, `SELECT bucket, SUM(query_count) FROM mosdns_telemetry_latency
@@ -723,7 +723,7 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		var bucket int
 		var count uint64
 		if err := latencyRows.Scan(&bucket, &count); err != nil {
-			latencyRows.Close()
+			_ = latencyRows.Close()
 			return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		seen += count
@@ -731,7 +731,7 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 			snapshot.P95LatencyMS = float64((uint64(1) << (bucket + 1)) - 1)
 		}
 	}
-	if err := latencyRows.Close(); err != nil {
+	if err := finishRows(latencyRows); err != nil {
 		return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 	}
 	upstreamRows, err := s.mysql.QueryContext(opCtx, `SELECT upstream_id, SUM(attempts), SUM(failures), SUM(latency_us)
@@ -744,7 +744,7 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		var item UpstreamStats
 		var latency uint64
 		if err := upstreamRows.Scan(&item.ID, &item.Attempts, &item.Failures, &latency); err != nil {
-			upstreamRows.Close()
+			_ = upstreamRows.Close()
 			return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 		}
 		if item.Attempts > 0 {
@@ -752,11 +752,19 @@ func (s *Store) mysqlSnapshot(ctx context.Context, userID string, from, to time.
 		}
 		snapshot.Upstreams = append(snapshot.Upstreams, item)
 	}
-	if err := upstreamRows.Close(); err != nil {
+	if err := finishRows(upstreamRows); err != nil {
 		return snapshot, fmt.Errorf("mysql telemetry: %w", err)
 	}
 	sort.Slice(snapshot.Upstreams, func(i, j int) bool { return snapshot.Upstreams[i].ID < snapshot.Upstreams[j].ID })
 	return snapshot, nil
+}
+
+// finishRows reports an iteration error that ended Next early as well as
+// the Close error; Close alone would hide the former and turn a failed read
+// into a short result. Closing promptly also frees the connection before
+// the next statement.
+func finishRows(rows *sql.Rows) error {
+	return errors.Join(rows.Err(), rows.Close())
 }
 
 func mysqlQueryCursor(value string) (int64, string, error) {
