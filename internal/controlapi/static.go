@@ -12,6 +12,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,15 +23,18 @@ const viteManifest = ".vite/manifest.json"
 const panelCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 
 // staticAsset is one panel file held in memory: the embedded files never
-// change while the process runs, so they are read, hashed and compressed
-// once instead of on every request.
+// change while the process runs, so they are read and hashed once at start
+// and compressed once, on the first request that takes gzip.
 type staticAsset struct {
-	body        []byte
-	etag        string
-	gzipBody    []byte // nil when gzip does not pay
-	gzipETag    string
-	contentType string
-	hashed      bool // the name changes whenever the content does
+	body         []byte
+	etag         string
+	contentType  string
+	hashed       bool // the name changes whenever the content does
+	compressible bool
+
+	gzipOnce sync.Once
+	gzipBody []byte // nil when gzip does not pay
+	gzipETag string
 }
 
 // loadStaticAssets reads every file under assets/ plus index.html. A file
@@ -50,14 +54,7 @@ func loadStaticAssets(fsys fs.FS) map[string]*staticAsset {
 		if a.contentType == "" {
 			a.contentType = http.DetectContentType(body)
 		}
-		if compressible(a.contentType) {
-			var buf bytes.Buffer
-			zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-			if _, err := zw.Write(body); err == nil && zw.Close() == nil && buf.Len() < len(body)*9/10 {
-				a.gzipBody = buf.Bytes()
-				a.gzipETag = `"` + tag + `-gz"`
-			}
-		}
+		a.compressible = compressible(a.contentType)
 		assets[name] = a
 	}
 	add("index.html")
@@ -97,6 +94,20 @@ func hashedAssetNames(fsys fs.FS) map[string]bool {
 	return names
 }
 
+// gzipped returns the compressed body and its ETag, compressing on first
+// use, or nil when gzip saves less than a tenth.
+func (a *staticAsset) gzipped() ([]byte, string) {
+	a.gzipOnce.Do(func() {
+		var buf bytes.Buffer
+		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		if _, err := zw.Write(a.body); err == nil && zw.Close() == nil && buf.Len() < len(a.body)*9/10 {
+			a.gzipBody = buf.Bytes()
+			a.gzipETag = strings.TrimSuffix(a.etag, `"`) + `-gz"`
+		}
+	})
+	return a.gzipBody, a.gzipETag
+}
+
 func compressible(contentType string) bool {
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	return strings.HasPrefix(mediaType, "text/") || mediaType == "application/javascript" ||
@@ -133,11 +144,13 @@ func (a *staticAsset) serve(w http.ResponseWriter, r *http.Request, name string)
 		h.Set("Cache-Control", "no-cache")
 	}
 	body, etag := a.body, a.etag
-	if a.gzipBody != nil {
+	if a.compressible {
 		h.Add("Vary", "Accept-Encoding")
 		if acceptsGzip(r) {
-			body, etag = a.gzipBody, a.gzipETag
-			h.Set("Content-Encoding", "gzip")
+			if gz, gzETag := a.gzipped(); gz != nil {
+				body, etag = gz, gzETag
+				h.Set("Content-Encoding", "gzip")
+			}
 		}
 	}
 	h.Set("ETag", etag)
