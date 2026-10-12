@@ -186,6 +186,10 @@ type Store struct {
 	mysql               *sql.DB
 	mysqlTimeout        time.Duration
 	mysqlPrunedAt       atomic.Int64
+	maintenanceBusy     atomic.Bool
+	maintenanceWG       sync.WaitGroup
+	maintenanceCtx      context.Context
+	cancelMaintenance   context.CancelFunc
 	queue               chan event
 	stop                chan struct{}
 	done                chan struct{}
@@ -210,6 +214,10 @@ type Store struct {
 	runErr              error
 	enqueueMu           sync.RWMutex
 	logger              *zap.Logger
+	// topDomains caches rankings; topDomainsGeneration invalidates those
+	// computed before it.
+	topDomains           topDomainsCache
+	topDomainsGeneration atomic.Uint64
 }
 
 func Open(opts Options) (*Store, error) {
@@ -339,6 +347,7 @@ func (s *Store) UpdateSettings(settings Settings) error {
 	s.queryRetention = query
 	s.maxQueryRecords = records
 	s.settingsMu.Unlock()
+	s.invalidateTopDomains()
 	if s.db != nil && s.boltExpiryRetention != aggregate {
 		// Expiry keys include the retention value that was active when an
 		// aggregate was written. Rebuild them when the setting changes so
@@ -485,6 +494,12 @@ func (s *Store) Close() error {
 		close(s.stop)
 		s.enqueueMu.Unlock()
 		<-s.done
+		// run has exited, so no new maintenance task can start; cancel the
+		// one in flight and wait for it before closing the database.
+		if s.cancelMaintenance != nil {
+			s.cancelMaintenance()
+		}
+		s.maintenanceWG.Wait()
 		var backendErr error
 		if s.db != nil {
 			backendErr = s.db.Close()

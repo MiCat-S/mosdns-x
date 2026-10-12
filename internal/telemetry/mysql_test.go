@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"database/sql/driver"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -33,10 +34,10 @@ func TestWriteMySQLBatchPersistsAggregatesAndQueryDetail(t *testing.T) {
 		{time: now, attempt: &query_context.UpstreamAttempt{Principal: principal, UpstreamID: "remote", Duration: 6 * time.Millisecond}},
 	}
 	mock.ExpectBegin()
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_minutes`, 2)
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_rcodes`, 2)
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_latency`, 2)
-	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_upstreams`, 2)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_minutes`, 1)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_rcodes`, 1)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_latency`, 1)
+	expectTelemetryExecutions(mock, `INSERT INTO mosdns_telemetry_upstreams`, 1)
 	expectTelemetryExecutions(mock, `INSERT INTO mosdns_query_logs`, 1)
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_telemetry_meta SET updated_at_ns=? WHERE id=1`)).WithArgs(now.UnixNano()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -258,5 +259,43 @@ func TestMySQLQueriesReadsNullAndObservedNoOPTStages(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMySQLSnapshotReportsRowIterationErrors(t *testing.T) {
+	queries := []struct {
+		sql     string
+		columns []string
+		row     []driver.Value
+	}{
+		{`SELECT minute_epoch, completed`, []string{"minute_epoch", "completed", "failed", "cache_hits", "latency_us"}, []driver.Value{int64(0), uint64(1), uint64(0), uint64(0), uint64(10)}},
+		{`SELECT rcode, SUM(query_count) FROM mosdns_telemetry_rcodes`, []string{"rcode", "count"}, []driver.Value{"NOERROR", uint64(1)}},
+		{`SELECT bucket, SUM(query_count) FROM mosdns_telemetry_latency`, []string{"bucket", "count"}, []driver.Value{int64(1), uint64(1)}},
+		{`SELECT upstream_id, SUM(attempts)`, []string{"upstream_id", "attempts", "failures", "latency"}, []driver.Value{"remote", uint64(1), uint64(0), uint64(10)}},
+	}
+	now := time.Date(2026, 9, 11, 12, 34, 0, 0, time.UTC)
+	for failing := range queries {
+		t.Run(fmt.Sprint(failing), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			store := &Store{mysql: db, mysqlTimeout: time.Second, aggregateRetention: 24 * time.Hour, now: func() time.Time { return now }}
+			for i, q := range queries {
+				rows := sqlmock.NewRows(q.columns).AddRow(q.row...).AddRow(q.row...)
+				if i == failing {
+					rows.RowError(1, fmt.Errorf("connection lost"))
+				}
+				mock.ExpectQuery(regexp.QuoteMeta(q.sql)).WillReturnRows(rows)
+				if i == failing {
+					break
+				}
+			}
+			_, err = store.mysqlSnapshot(context.Background(), "", now.Add(-time.Hour), now)
+			if err == nil || !strings.Contains(err.Error(), "connection lost") {
+				t.Fatalf("err=%v, want the iteration error", err)
+			}
+		})
 	}
 }

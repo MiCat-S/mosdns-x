@@ -10,10 +10,12 @@ import {
 import {
   APIError,
   clearSecrets,
+  decodeSession,
   json,
   message,
   onUnauthorized,
   request,
+  requestVoid,
   setCSRF,
 } from "./api";
 import type { Session } from "./types";
@@ -41,7 +43,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const c = new AbortController();
     setLoading(true);
     setError("");
-    request<Session>("/session", { signal: c.signal })
+    request("/session", { signal: c.signal }, decodeSession)
       .then((s) => {
         if (c.signal.aborted) return;
         setCSRF(s.csrf_token);
@@ -58,9 +60,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => c.abort();
   }, [expire, attempt]);
   const login = useCallback(async (username: string, password: string) => {
-    const s = await request<Session>(
+    const s = await request(
       "/session",
       json("POST", { username, password }),
+      decodeSession,
     );
     setCSRF(s.csrf_token);
     setSession(s);
@@ -68,7 +71,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
   const logout = useCallback(async () => {
     try {
-      await request("/session", { method: "DELETE" });
+      await requestVoid("/session", { method: "DELETE" });
       expire();
     } catch (e) {
       if (e instanceof APIError && e.status === 401) {

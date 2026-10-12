@@ -23,6 +23,12 @@ export const en: Record<string, string> = {
     "Some caches could not be cleared. Check the service log and try again.",
   "另一次清除正在进行，请稍后再试。":
     "Another purge is still running. Try again in a moment.",
+  "服务返回的数据格式无效。":
+    "The service returned data in an unexpected format.",
+  "分页数量超过上限（{max} 页），已停止加载。":
+    "Stopped loading: the list has more than {max} pages.",
+  "服务返回了重复的分页游标，已停止加载。":
+    "Stopped loading: the service repeated a page cursor.",
 };
 
 export const ja: Record<string, string> = {
@@ -50,4 +56,9 @@ export const ja: Record<string, string> = {
     "一部のキャッシュを消去できませんでした。サービスログを確認して再試行してください。",
   "另一次清除正在进行，请稍后再试。":
     "別の消去処理が実行中です。しばらくしてからもう一度お試しください。",
+  "服务返回的数据格式无效。": "サーバーの応答形式が正しくありません。",
+  "分页数量超过上限（{max} 页），已停止加载。":
+    "ページ数が上限（{max} ページ）を超えたため、読み込みを中止しました。",
+  "服务返回了重复的分页游标，已停止加载。":
+    "サーバーが同じページ位置を再度返したため、読み込みを中止しました。",
 };

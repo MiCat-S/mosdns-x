@@ -8,17 +8,16 @@ import {
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { credentialStatus, credentialCanRevoke } from "./pages/credentials";
+import { QueryDetails } from "./pages/query-log";
 import {
-  credentialStatus,
-  credentialCanRevoke,
   fromLocalDateTime,
-  QueryDetails,
   successRate,
   toLocalDateTime,
   usageSummary,
-} from "./pages";
+} from "./pages/shared";
 import { SessionProvider } from "./session";
-import { LanguageProvider } from "./i18n";
+import { en } from "./locales";
 const user = {
   id: "u1",
   username: "alice",
@@ -53,11 +52,7 @@ function mount(path: string) {
     ],
     { initialEntries: [path] },
   );
-  return render(
-    <LanguageProvider>
-      <RouterProvider router={router} />
-    </LanguageProvider>,
-  );
+  return render(<RouterProvider router={router} />);
 }
 beforeEach(() => vi.restoreAllMocks());
 describe("前端访问与秘密处理", () => {
@@ -985,5 +980,119 @@ describe("前端访问与秘密处理", () => {
     expect(writes().map(([url]) => String(url))).toEqual([
       expect.stringMatching(/\/me\/credentials\/k\/rotate$/),
     ]);
+  });
+  it("切换界面语言不重新挂载页面：保留本地状态并更新文案", async () => {
+    const fetcher = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(
+        url.endsWith("/session")
+          ? response(
+              {
+                error: {
+                  code: "unauthenticated",
+                  message: "用户名或密码错误",
+                },
+              },
+              401,
+            )
+          : response({ items: [] }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    mount("/login");
+    const username = (await screen.findByLabelText(
+      "用户名",
+    )) as HTMLInputElement;
+    fireEvent.change(username, { target: { value: "alice" } });
+    fireEvent.change(screen.getByLabelText("密码"), {
+      target: { value: "secret-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "登录" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "用户名或密码错误",
+    );
+    const sessionReads = fetcher.mock.calls.length;
+    fireEvent.change(screen.getByRole("combobox", { name: "界面语言" }), {
+      target: { value: "en" },
+    });
+    expect(
+      await screen.findByRole("heading", { name: en["登录网络控制台"] }),
+    ).toBeInTheDocument();
+    // Same input element and the login error kept in component state.
+    expect(screen.getByLabelText(en["用户名"])).toBe(username);
+    expect(username.value).toBe("alice");
+    expect(screen.getByRole("alert")).toHaveTextContent("用户名或密码错误");
+    // The session provider was not remounted, so it did not fetch again.
+    expect(fetcher.mock.calls.length).toBe(sessionReads);
+  });
+  it("热门域名与统计并行请求，排行失败不影响统计展示", async () => {
+    let finishStats!: (value: Response) => void;
+    const fetcher = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/session"))
+        return Promise.resolve(
+          response({
+            user,
+            csrf_token: "c",
+            expires_at: "2027-01-01T00:00:00Z",
+          }),
+        );
+      if (url.includes("/me/stats"))
+        return new Promise<Response>((resolve) => (finishStats = resolve));
+      if (url.includes("/me/top-domains"))
+        return Promise.resolve(
+          response(
+            { error: { code: "unavailable", message: "排行暂不可用" } },
+            503,
+          ),
+        );
+      return Promise.resolve(response({ items: [] }));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    mount("/app/usage");
+    // The ranking is requested while the stats are still loading.
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.some(([url]) =>
+          String(url).includes("/me/top-domains"),
+        ),
+      ).toBe(true),
+    );
+    expect(finishStats).toBeTypeOf("function");
+    const top = new URL(
+      String(
+        fetcher.mock.calls.find(([url]) =>
+          String(url).includes("/me/top-domains"),
+        )?.[0],
+      ),
+      "http://panel",
+    );
+    const stats = new URL(
+      String(
+        fetcher.mock.calls.find(([url]) =>
+          String(url).includes("/me/stats"),
+        )?.[0],
+      ),
+      "http://panel",
+    );
+    expect(top.searchParams.get("from")).toBe(stats.searchParams.get("from"));
+    expect(top.searchParams.get("to")).toBe(stats.searchParams.get("to"));
+    finishStats(
+      response({
+        from: stats.searchParams.get("from"),
+        to: stats.searchParams.get("to"),
+        completed: 10,
+        failed: 1,
+        cache_hits: 4,
+        avg_latency_ms: 2,
+        p95_latency_ms: 5,
+        rcode_counts: {},
+        series: [],
+        upstreams: [],
+        dropped: 0,
+        updated_at: "2026-10-10T00:00:00Z",
+        query_log_enabled: false,
+      }),
+    );
+    expect(await screen.findByText("处理完成")).toBeInTheDocument();
+    expect(await screen.findByText("排行暂不可用")).toBeInTheDocument();
   });
 });

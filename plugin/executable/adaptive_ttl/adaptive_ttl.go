@@ -254,6 +254,18 @@ func (p *adaptiveTTL) keyOf(q *dns.Msg) (key, bool) {
 // TTL to give the response, or 0 to leave it unchanged.
 func (p *adaptiveTTL) observe(k key, r *dns.Msg, stale bool) uint32 {
 	now := p.now()
+	// An expired entry served while the cache refreshes it repeats an answer
+	// already seen, and its short TTL is what makes the client come back for
+	// the refreshed one.
+	learn := r != nil && !stale && (r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError)
+	var fp uint64
+	var extendable bool
+	if learn {
+		// r belongs to this query alone, so it is read outside the lock
+		// every query takes.
+		fp = fingerprint(r)
+		extendable = r.Rcode == dns.RcodeSuccess && (len(r.Answer) > 0 || p.empty && hasSOA(r))
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	e := p.keys[k]
@@ -285,17 +297,14 @@ func (p *adaptiveTTL) observe(k key, r *dns.Msg, stale bool) uint32 {
 		e.hot = true
 		e.hotSince = now
 	}
-	// An expired entry served while the cache refreshes it repeats an answer
-	// already seen, and its short TTL is what makes the client come back for
-	// the refreshed one.
-	if r == nil || stale || (r.Rcode != dns.RcodeSuccess && r.Rcode != dns.RcodeNameError) {
+	if !learn {
 		return 0
 	}
-	if fp := fingerprint(r); fp != e.answer || e.stableSince.IsZero() {
+	if fp != e.answer || e.stableSince.IsZero() {
 		e.answer = fp
 		e.stableSince = now
 	}
-	e.extendable = r.Rcode == dns.RcodeSuccess && (len(r.Answer) > 0 || p.empty && hasSOA(r))
+	e.extendable = extendable
 	return p.ttl(e, now)
 }
 

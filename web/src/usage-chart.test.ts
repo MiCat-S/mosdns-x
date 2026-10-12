@@ -1,11 +1,24 @@
-import { describe, expect, it } from "vitest";
-import {
+import { render } from "@testing-library/react";
+import { createElement } from "react";
+import { describe, expect, it, vi } from "vitest";
+import UsageChart, {
+  chartTheme,
   formatAxisMinute,
   formatChartMinute,
   showPointSymbols,
   timeAxisBounds,
   toTimedData,
 } from "./usage-chart";
+
+const instance = vi.hoisted(() => ({
+  setOption: vi.fn(),
+  resize: vi.fn(),
+  dispose: vi.fn(),
+}));
+vi.mock("echarts/core", async (original) => ({
+  ...(await original<typeof import("echarts/core")>()),
+  init: vi.fn(() => instance),
+}));
 
 const point = (time: string, completed: number) => ({
   time,
@@ -45,5 +58,39 @@ describe("用量图时间数据", () => {
     expect(formatAxisMinute(Date.parse(from))).toMatch(
       /\d{2}\/\d{2}\n\d{2}:\d{2}/,
     );
+  });
+});
+
+describe("用量图实例", () => {
+  it("数据更新复用同一个实例，卸载时释放", async () => {
+    const echarts = await import("echarts/core");
+    const chart = (series: ReturnType<typeof point>[]) =>
+      createElement(UsageChart, {
+        series,
+        from: "2026-09-11T00:00:00Z",
+        to: "2026-09-12T00:00:00Z",
+        kind: "results",
+      });
+    const view = render(chart([]));
+    expect(echarts.init).not.toHaveBeenCalled();
+    view.rerender(chart([point("2026-09-11T08:00:00Z", 3)]));
+    expect(echarts.init).toHaveBeenCalledTimes(1);
+    view.rerender(
+      chart([
+        point("2026-09-11T08:00:00Z", 3),
+        point("2026-09-11T08:01:00Z", 4),
+      ]),
+    );
+    expect(echarts.init).toHaveBeenCalledTimes(1);
+    expect(instance.setOption).toHaveBeenCalledTimes(2);
+    expect(instance.dispose).not.toHaveBeenCalled();
+    view.unmount();
+    expect(instance.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("主题解析为 ECharts 可混色的 rgb 颜色", () => {
+    const theme = chartTheme();
+    for (const value of Object.values(theme)) expect(value).toMatch(/^rgba?\(/);
+    expect(document.body.querySelectorAll("span[hidden]")).toHaveLength(0);
   });
 });

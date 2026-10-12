@@ -1,7 +1,6 @@
 package controlapi
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -85,6 +84,8 @@ type Handler struct {
 	kdfSlots  chan struct{}
 	limiter   *ipLimiter
 	health    healthState
+	// static holds the panel files read from opts.Assets at start.
+	static map[string]*staticAsset
 }
 
 func New(opts Options) (*Handler, error) {
@@ -154,8 +155,12 @@ func New(opts Options) (*Handler, error) {
 	if opts.Development {
 		opts.Logger.Warn("control development mode enabled; HTTP is for loopback use only, authentication remains required; do not expose through a public proxy")
 	}
+	var static map[string]*staticAsset
+	if opts.Assets != nil {
+		static = loadStaticAssets(opts.Assets)
+	}
 	return &Handler{
-		opts: opts, publicURL: u,
+		opts: opts, publicURL: u, static: static,
 		kdfSlots: make(chan struct{}, opts.LoginConcurrency),
 		limiter:  newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
 		health:   healthState{startedAt: opts.Now().UTC(), monotonicNow: time.Now},
@@ -1417,13 +1422,13 @@ func (h *Handler) staticFile(w http.ResponseWriter, r *http.Request, name string
 		http.NotFound(w, r)
 		return
 	}
-	data, err := fs.ReadFile(h.opts.Assets, name)
-	if err != nil {
+	asset := h.static[name]
+	if asset == nil {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
-	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+	w.Header().Set("Content-Security-Policy", panelCSP)
+	asset.serve(w, r, name)
 }
 
 func (h *Handler) clientIP(r *http.Request) string {

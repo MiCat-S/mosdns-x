@@ -55,7 +55,17 @@ type MySQLStore struct {
 	closeCh          chan struct{}
 	closeErr         error
 	rollbackErrors   atomic.Uint64
+	// admitSlots bounds admissions running or waiting for a connection.
+	// The pool caps connections, not the requests queued for them, so
+	// without it an overloaded database would stack up DNS requests until
+	// each hits the operation timeout. Nil means unbounded.
+	admitSlots chan struct{}
 }
+
+// admitSlotsPerConn sizes admitSlots from the connection limit: enough to
+// keep every connection busy through brief stalls, small enough that a slow
+// database turns away the excess at once instead of after a timeout.
+const admitSlotsPerConn = 8
 
 var mysqlControlMigrations = []string{
 	`CREATE TABLE IF NOT EXISTS mosdns_schema_migrations (
@@ -292,7 +302,7 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*MySQLStore, e
 	db.SetMaxOpenConns(opts.MaxOpenConns)
 	db.SetMaxIdleConns(opts.MaxIdleConns)
 	db.SetConnMaxLifetime(opts.ConnMaxLifetime)
-	s := &MySQLStore{db: db, clock: opts.Clock, operationTimeout: opts.OperationTimeout, closeCh: make(chan struct{})}
+	s := &MySQLStore{db: db, clock: opts.Clock, operationTimeout: opts.OperationTimeout, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, opts.MaxOpenConns*admitSlotsPerConn)}
 	startupTimeout := max(opts.OperationTimeout, 15*time.Second)
 	ctx, cancel := context.WithTimeout(parent, startupTimeout)
 	defer cancel()
@@ -1361,6 +1371,14 @@ func (s *MySQLStore) AuthenticateCredential(ctx context.Context, token string) (
 }
 
 func (s *MySQLStore) Admit(ctx context.Context, identity Identity) error {
+	if s.admitSlots != nil {
+		select {
+		case s.admitSlots <- struct{}{}:
+			defer func() { <-s.admitSlots }()
+		default:
+			return ErrUnavailable
+		}
+	}
 	return s.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		now := s.clock.Now().UTC()
 		u, err := mysqlUser(ctx, tx, identity.UserID, true)
@@ -1403,18 +1421,20 @@ func (s *MySQLStore) Admit(ctx context.Context, identity Identity) error {
 			return err
 		}
 		u.QuotaUsed++
-		if err := updateMySQLUser(ctx, tx, u); err != nil {
+		// Admission changes only the quota and rate state; the full update
+		// would resend the password hash and every stable setting.
+		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_users SET quota_start=?, quota_high_start=?, quota_used=?,
+			rate_tokens=?, rate_at_ns=? WHERE id=?`, u.QuotaStart, u.QuotaHighStart, u.QuotaUsed,
+			u.RateTokens, u.RateAt, u.ID); err != nil {
 			return err
 		}
+		// One statement for the three usage rows, listed in the same order
+		// every time so admissions lock them in the same order.
 		minute := now.Truncate(time.Minute).Unix()
-		for _, row := range [][3]string{{"g", "", ""}, {"u", u.ID, ""}, {"d", u.ID, identity.CredentialID}} {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO mosdns_usage_minutes
-				(scope_kind, scope_id, credential_id, minute_epoch, query_count) VALUES (?, ?, ?, ?, 1)
-				ON DUPLICATE KEY UPDATE query_count=query_count+1`, row[0], row[1], row[2], minute); err != nil {
-				return err
-			}
-		}
-		return nil
+		_, err = tx.ExecContext(ctx, `INSERT INTO mosdns_usage_minutes
+			(scope_kind, scope_id, credential_id, minute_epoch, query_count) VALUES ('g', '', '', ?, 1), ('u', ?, '', ?, 1), ('d', ?, ?, ?, 1)
+			ON DUPLICATE KEY UPDATE query_count=query_count+1`, minute, u.ID, minute, u.ID, identity.CredentialID, minute)
+		return err
 	})
 }
 

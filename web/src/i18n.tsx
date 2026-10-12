@@ -1,4 +1,4 @@
-import { Fragment, useSyncExternalStore, type ReactNode } from "react";
+import { useSyncExternalStore } from "react";
 import { en, ja } from "./locales";
 
 // The panel is written in Simplified Chinese and the Chinese text is the
@@ -72,6 +72,50 @@ export function locale() {
   return languages.find((l) => l.code === current)!.locale;
 }
 
+// Intl formatters are costly to build and tables format thousands of
+// values, so one formatter is kept per locale and set of options.
+const numberFormats = new Map<string, Intl.NumberFormat>();
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+
+function cached<F, O>(
+  cache: Map<string, F>,
+  make: (tag: string, options?: O) => F,
+  tag: string,
+  options?: O,
+) {
+  const key = options ? `${tag} ${JSON.stringify(options)}` : tag;
+  let formatter = cache.get(key);
+  if (!formatter) {
+    formatter = make(tag, options);
+    cache.set(key, formatter);
+  }
+  return formatter;
+}
+
+export function numberFormat(
+  options?: Intl.NumberFormatOptions,
+  tag = locale(),
+) {
+  return cached(
+    numberFormats,
+    (l, o?: Intl.NumberFormatOptions) => new Intl.NumberFormat(l, o),
+    tag,
+    options,
+  );
+}
+
+export function dateFormat(
+  options?: Intl.DateTimeFormatOptions,
+  tag = locale(),
+) {
+  return cached(
+    dateFormats,
+    (l, o?: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(l, o),
+    tag,
+    options,
+  );
+}
+
 export function t(source: string, params?: Record<string, string | number>) {
   const text = tables[current]?.[source] ?? source;
   if (!params) return text;
@@ -114,11 +158,19 @@ export function useLang() {
   return useSyncExternalStore(subscribe, lang, lang);
 }
 
-// Remounts the tree when the language changes, so text computed outside
-// React state (helpers, tables) is rendered again in the new language.
-export function LanguageProvider({ children }: { children: ReactNode }) {
-  const value = useLang();
-  return <Fragment key={value}>{children}</Fragment>;
+// Text translated under one language and kept in state, such as the error
+// of a failed request, is mapped back to its source so it can be shown in
+// the current language. Text with parameters filled in cannot be mapped
+// and is shown as it was.
+let sources: Map<string, string> | undefined;
+export function retranslate(text: string) {
+  if (!sources) {
+    sources = new Map();
+    for (const table of Object.values(tables))
+      for (const [source, value] of Object.entries(table ?? {}))
+        sources.set(value, source);
+  }
+  return t(sources.get(text) ?? text);
 }
 
 applyDocument();

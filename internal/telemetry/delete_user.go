@@ -67,6 +67,7 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 	if err != nil {
 		return err
 	}
+	s.invalidateTopDomains()
 	s.droppedMu.Lock()
 	for key := range s.droppedByWindow {
 		if strings.HasPrefix(key, userID+"\x00") {

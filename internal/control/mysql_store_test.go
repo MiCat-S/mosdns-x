@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -208,10 +209,11 @@ func TestMySQLAdmitUpdatesQuotaRateAndUsageAtomically(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlUserColumns + ` FROM mosdns_users WHERE id = ? FOR UPDATE`)).WithArgs("user-1").WillReturnRows(mysqlTestUserRow(now, 2, 5, now.Add(-500*time.Millisecond).UnixNano()))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlCredentialColumns + ` FROM mosdns_credentials WHERE id=? FOR UPDATE`)).WithArgs("credential-1").WillReturnRows(mysqlTestCredentialRow(now, make([]byte, 32)))
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_users SET`)).WillReturnResult(sqlmock.NewResult(0, 1))
-	for range 3 {
-		mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_usage_minutes`)).WillReturnResult(sqlmock.NewResult(1, 1))
-	}
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_users SET quota_start=?, quota_high_start=?, quota_used=?,`)).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "user-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_usage_minutes`)).
+		WithArgs(now.Truncate(time.Minute).Unix(), "user-1", now.Truncate(time.Minute).Unix(), "user-1", "credential-1", now.Truncate(time.Minute).Unix()).
+		WillReturnResult(sqlmock.NewResult(1, 3))
 	mock.ExpectCommit()
 
 	err = store.Admit(context.Background(), Identity{UserID: "user-1", CredentialID: "credential-1", CredentialVersion: 1})
@@ -322,5 +324,21 @@ func TestMySQLAdditivePolicyAlterAddsOnlyMissingColumns(t *testing.T) {
 	}
 	if got := mysqlAdditivePolicyAlter(all); got != "" {
 		t.Fatalf("complete table alter = %q, want none", got)
+	}
+}
+
+func TestMySQLAdmitTurnsAwayRequestsBeyondItsSlots(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := &MySQLStore{db: db, clock: &fakeClock{t: time.Now()}, operationTimeout: time.Second, closeCh: make(chan struct{}), admitSlots: make(chan struct{}, 1)}
+	store.admitSlots <- struct{}{} // another admission holds the only slot
+	if err := store.Admit(context.Background(), Identity{UserID: "user-1", CredentialID: "credential-1", CredentialVersion: 1}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err=%v, want ErrUnavailable", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("admission reached the database: %v", err)
 	}
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { detectLang, lang, msg, setLang, t } from "./i18n";
+import { detectLang, lang, msg, retranslate, setLang, t } from "./i18n";
 import { en, ja, localeParts } from "./locales";
 
 // Raw text of every panel source file (tests excluded) and locale table.
@@ -10,7 +10,14 @@ const raw = (files: Record<string, string>) =>
   }));
 const sources = raw(
   import.meta.glob<string>(
-    ["./*.ts", "./*.tsx", "!./*.test.ts", "!./*.test.tsx", "!./vite-env.d.ts"],
+    [
+      "./*.ts",
+      "./*.tsx",
+      "./pages/*.tsx",
+      "!./*.test.ts",
+      "!./*.test.tsx",
+      "!./vite-env.d.ts",
+    ],
     { query: "?raw", import: "default", eager: true },
   ),
 );
@@ -136,5 +143,17 @@ describe("界面文案翻译", () => {
     expect(detectLang(null, ["zh-TW", "en"])).toBe("zh");
     expect(detectLang(null, ["ja-JP"])).toBe("ja");
     expect(detectLang("fr", ["fr-FR", "de"])).toBe("en");
+  });
+});
+
+describe("retranslate", () => {
+  it("shows text kept from another language in the current one", () => {
+    setLang("ja");
+    const kept = t("你没有执行此操作的权限。");
+    setLang("en");
+    expect(retranslate(kept)).toBe("You don't have permission to do this.");
+    setLang("zh");
+    expect(retranslate(kept)).toBe("你没有执行此操作的权限。");
+    expect(retranslate("server said no")).toBe("server said no");
   });
 });

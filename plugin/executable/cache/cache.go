@@ -25,6 +25,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -32,7 +33,6 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/pmkol/mosdns-x/coremain"
 	"github.com/pmkol/mosdns-x/pkg/cache"
@@ -58,7 +58,10 @@ func init() {
 
 const (
 	defaultLazyUpdateTimeout = time.Second * 5
-	defaultEmptyAnswerTTL    = time.Second * 300
+	// maxLazyUpdates bounds background refreshes across all keys. A stale
+	// hit beyond it is still answered from the cache; a later hit refreshes.
+	maxLazyUpdates        = 512
+	defaultEmptyAnswerTTL = time.Second * 300
 )
 
 var _ coremain.ExecutablePlugin = (*cachePlugin)(nil)
@@ -66,7 +69,7 @@ var _ coremain.ExecutablePlugin = (*cachePlugin)(nil)
 type Args struct {
 	Size              int    `yaml:"size"`
 	Redis             string `yaml:"redis"`
-	RedisTimeout      int    `yaml:"redis_timeout"`
+	RedisTimeout      int    `yaml:"redis_timeout"` // ms per Redis call, default 1000; set from the measured RTT
 	LazyCacheTTL      int    `yaml:"lazy_cache_ttl"`
 	LazyCacheReplyTTL int    `yaml:"lazy_cache_reply_ttl"`
 	CacheEverything   bool   `yaml:"cache_everything"`
@@ -78,9 +81,12 @@ type cachePlugin struct {
 	*coremain.BP
 	args *Args
 
-	whenHit      executable_seq.Executable
-	backend      cache.Backend
-	lazyUpdateSF singleflight.Group
+	whenHit executable_seq.Executable
+	backend cache.Backend
+	// lazyMu guards lazyUpdating, the keys being refreshed in the
+	// background; its size is the number of refreshes running.
+	lazyMu       sync.Mutex
+	lazyUpdating map[string]struct{}
 	purging      uint32 // one purge at a time; it walks the whole backend
 
 	queryTotal   prometheus.Counter
@@ -325,19 +331,26 @@ func (c *cachePlugin) lookupCache(msgKey string) (r *dns.Msg, origin string, laz
 	return nil, "", false, nil
 }
 
-// doLazyUpdate starts a new goroutine to execute next node and update the cache in the background.
-// It has an inner singleflight.Group to de-duplicate same msgKey.
+// doLazyUpdate refreshes msgKey in the background. Only the first stale hit
+// of a key starts a refresh, and only while fewer than maxLazyUpdates run;
+// the others are answered from the cache without copying the query or
+// starting a goroutine.
 func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, next executable_seq.ExecutableChainNode) {
-	lazyQCtx := qCtx.Copy()
-	lazyQCtx.EnterBranch("lazy_refresh")
 	qCtx.Journal().Step(qCtx.Branch(), query_context.RouteStepLazyRefresh, c.Tag())
-	releaseWork, ok := qCtx.ReqMeta().AcquireBackgroundWork()
-	if !ok {
+	if !c.claimLazyUpdate(msgKey) {
 		return
 	}
-	lazyUpdateFunc := func() (interface{}, error) {
+	releaseWork, ok := qCtx.ReqMeta().AcquireBackgroundWork()
+	if !ok {
+		c.releaseLazyUpdate(msgKey)
+		return
+	}
+	lazyQCtx := qCtx.Copy()
+	lazyQCtx.EnterBranch("lazy_refresh")
+	go func() {
+		defer releaseWork()
+		defer c.releaseLazyUpdate(msgKey)
 		c.L().Debug("start lazy cache update", lazyQCtx.InfoField())
-		defer c.lazyUpdateSF.Forget(msgKey)
 		lazyCtx, cancel := context.WithTimeout(context.Background(), defaultLazyUpdateTimeout)
 		defer cancel()
 
@@ -349,17 +362,31 @@ func (c *cachePlugin) doLazyUpdate(msgKey string, qCtx *query_context.Context, n
 		r := lazyQCtx.R()
 		if r != nil {
 			if err := c.tryStoreMsg(msgKey, r, responseOrigin(lazyQCtx)); err != nil {
-				c.L().Error("cache store", qCtx.InfoField(), zap.Error(err))
+				c.L().Error("cache store", lazyQCtx.InfoField(), zap.Error(err))
 			}
 		}
 		c.L().Debug("lazy cache updated", lazyQCtx.InfoField())
-		return nil, nil
-	}
-	result := c.lazyUpdateSF.DoChan(msgKey, lazyUpdateFunc) // DoChan won't block this goroutine
-	go func() {
-		defer releaseWork()
-		<-result
 	}()
+}
+
+// claimLazyUpdate reports whether the caller owns the refresh of msgKey.
+func (c *cachePlugin) claimLazyUpdate(msgKey string) bool {
+	c.lazyMu.Lock()
+	defer c.lazyMu.Unlock()
+	if _, busy := c.lazyUpdating[msgKey]; busy || len(c.lazyUpdating) >= maxLazyUpdates {
+		return false
+	}
+	if c.lazyUpdating == nil {
+		c.lazyUpdating = make(map[string]struct{})
+	}
+	c.lazyUpdating[msgKey] = struct{}{}
+	return true
+}
+
+func (c *cachePlugin) releaseLazyUpdate(msgKey string) {
+	c.lazyMu.Lock()
+	delete(c.lazyUpdating, msgKey)
+	c.lazyMu.Unlock()
 }
 
 // tryStoreMsg tries to store r to cache. If r should be cached.
