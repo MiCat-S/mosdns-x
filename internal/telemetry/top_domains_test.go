@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"reflect"
@@ -164,5 +165,69 @@ func BenchmarkRankDomains(b *testing.B) {
 		if _, err := s.rankDomains(context.Background(), "", from, to, MaxTopDomains); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// A request whose caller has gone neither computes nor caches a ranking,
+// and leaves no flight behind for the next request to join.
+func TestTopDomainsCanceledRequestIsNotShared(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	s := openTestStore(t, true, now)
+	observeNames(s, "u1", "a.example.")
+	flush(t, s)
+	from, to := now.Add(-time.Hour), now.Add(time.Minute)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.TopDomains(canceled, "u1", from, to, 15); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		s.topDomains.mu.Lock()
+		n := len(s.topDomains.flights)
+		s.topDomains.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("flight left behind")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got, err := s.TopDomains(context.Background(), "u1", from, to, 15)
+	if err != nil || len(got.Domains) != 1 {
+		t.Fatalf("after cancel = %+v err=%v", got, err)
+	}
+}
+
+// When the only caller leaves mid-scan it gets its context error at once,
+// and the flight is dropped so a later request starts afresh.
+func TestTopDomainsAbandonedScanIsDropped(t *testing.T) {
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	s := openTestStore(t, true, now)
+	for i := range 5000 {
+		r := result("u1", "c1", dns.RcodeSuccess)
+		r.QuestionName = fmt.Sprintf("d%d.example.", i%500)
+		s.Observe(r)
+		if i%50 == 49 {
+			flush(t, s)
+		}
+	}
+	flush(t, s)
+	from, to := now.Add(-time.Hour), now.Add(time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if _, err := s.TopDomains(ctx, "", from, to, 15); !errors.Is(err, context.DeadlineExceeded) {
+		t.Skipf("scan finished before the deadline: %v", err)
+	}
+	s.topDomains.mu.Lock()
+	n := len(s.topDomains.flights)
+	s.topDomains.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d flights left after the caller left", n)
+	}
+	got, err := s.TopDomains(context.Background(), "", from, to, 15)
+	if err != nil || len(got.Domains) != 15 || got.Queries != 5000 {
+		t.Fatalf("fresh request = %d domains, %d queries, err=%v", len(got.Domains), got.Queries, err)
 	}
 }

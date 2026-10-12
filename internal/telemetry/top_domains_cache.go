@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 )
 
 // A ranking is reused for topDomainsReuse when a request asks for the same
@@ -34,7 +32,17 @@ type topDomainsEntry struct {
 type topDomainsCache struct {
 	mu      sync.Mutex
 	entries map[topDomainsKey]topDomainsEntry
-	flight  singleflight.Group
+	flights map[string]*topDomainsFlight
+}
+
+// topDomainsFlight is one ranking being computed for every request that
+// asked for it. The computation is canceled once all of them have left.
+type topDomainsFlight struct {
+	done    chan struct{}
+	cancel  context.CancelFunc
+	waiters int // guarded by topDomainsCache.mu
+	result  TopDomains
+	err     error
 }
 
 // invalidateTopDomains drops every cached ranking. Erasing a user or
@@ -85,22 +93,62 @@ func (s *Store) cachedTopDomains(ctx context.Context, userID string, from, to ti
 	if v, ok := s.topDomains.get(key, from, to, generation); ok {
 		return v, nil
 	}
-	flightKey := fmt.Sprintf("%s\x00%d\x00%d\x00%d", userID, limit, from.UnixNano(), to.UnixNano())
-	v, err, _ := s.topDomains.flight.Do(flightKey, func() (any, error) {
-		computedAt := time.Now()
-		// A computation that does not finish inside the request is not
-		// shared: another caller may still want it, so ignore one ctx.
-		result, err := s.rankDomains(context.WithoutCancel(ctx), userID, from, to, limit)
-		if err != nil {
-			return nil, err
-		}
-		s.topDomains.put(key, topDomainsEntry{from: from, to: to, computedAt: computedAt, generation: generation, result: result})
-		return result, nil
-	})
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return TopDomains{}, err
 	}
-	return cloneTopDomains(v.(TopDomains)), nil
+	// The generation is part of the flight key, so a request made after an
+	// invalidation never joins a computation that started before it.
+	flightKey := fmt.Sprintf("%d\x00%s\x00%d\x00%d\x00%d", generation, userID, limit, from.UnixNano(), to.UnixNano())
+	c := &s.topDomains
+	c.mu.Lock()
+	f := c.flights[flightKey]
+	if f == nil {
+		flightCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		f = &topDomainsFlight{done: make(chan struct{}), cancel: cancel}
+		if c.flights == nil {
+			c.flights = make(map[string]*topDomainsFlight)
+		}
+		c.flights[flightKey] = f
+		go func() {
+			defer cancel()
+			computedAt := time.Now()
+			result, err := s.rankDomains(flightCtx, userID, from, to, limit)
+			if err == nil {
+				c.put(key, topDomainsEntry{from: from, to: to, computedAt: computedAt, generation: generation, result: result})
+			}
+			c.mu.Lock()
+			if c.flights[flightKey] == f {
+				delete(c.flights, flightKey)
+			}
+			c.mu.Unlock()
+			f.result, f.err = result, err
+			close(f.done)
+		}()
+	}
+	f.waiters++
+	c.mu.Unlock()
+	select {
+	case <-f.done:
+		c.mu.Lock()
+		f.waiters--
+		c.mu.Unlock()
+		if f.err != nil {
+			return TopDomains{}, f.err
+		}
+		return cloneTopDomains(f.result), nil
+	case <-ctx.Done():
+		c.mu.Lock()
+		if f.waiters--; f.waiters == 0 {
+			// Nobody wants it any more: stop the scan, and let a later
+			// request start afresh rather than join a canceled one.
+			f.cancel()
+			if c.flights[flightKey] == f {
+				delete(c.flights, flightKey)
+			}
+		}
+		c.mu.Unlock()
+		return TopDomains{}, ctx.Err()
+	}
 }
 
 func cloneTopDomains(v TopDomains) TopDomains {
