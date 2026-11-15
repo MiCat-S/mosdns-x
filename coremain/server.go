@@ -241,7 +241,7 @@ func (m *Mosdns) startServerListener(cfg *ServerListenerConfig, dnsHandler D.Han
 		err := s.Shutdown(shutdownCtx)
 		cancel()
 		if err != nil {
-			m.logger.Warn("server shutdown error", zap.Error(err))
+			m.logger.Warn("server shutdown error", zap.String("protocol", cfg.Protocol), zap.String("addr", cfg.Addr), zap.Error(err))
 			_ = s.Shutdown(context.Background())
 		}
 		if !serveDone {

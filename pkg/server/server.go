@@ -188,7 +188,12 @@ func (s *Server) Close() {
 
 type gracefulCloser interface{ Shutdown(context.Context) error }
 
+// Shutdown closes the server and waits for its in-flight queries until ctx
+// ends. A graceful transport still draining when ctx ends is force closed:
+// this call then reports ctx's error, but the shutdown itself completed, so
+// later calls do not repeat it.
 func (s *Server) Shutdown(ctx context.Context) error {
+	graceExpired := false
 	s.closeOnce.Do(func() {
 		s.m.Lock()
 		s.closed = true
@@ -203,7 +208,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		for _, c := range closers {
 			if graceful, ok := c.(gracefulCloser); ok {
 				if err := graceful.Shutdown(ctx); err != nil {
-					errs = append(errs, err)
+					if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+						graceExpired = true
+					} else {
+						errs = append(errs, err)
+					}
 				}
 				// Shutdown drains handlers; Close then releases the listener so
 				// the serving goroutine always terminates.
@@ -228,6 +237,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
+		if graceExpired {
+			return errors.Join(s.closeErr, ctx.Err())
+		}
 		return s.closeErr
 	case <-ctx.Done():
 		return errors.Join(s.closeErr, ctx.Err())

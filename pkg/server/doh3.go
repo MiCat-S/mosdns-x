@@ -48,11 +48,11 @@ func (s *Server) ServeH3(l *quic.EarlyListener) error {
 		idleTimeout = defaultQUICIdleTimeout
 	}
 
-	hs := &http3.Server{
+	hs := h3Server{Server: &http3.Server{
 		Handler:        &sHandler{h: s.opts.HttpHandler, s: s},
 		IdleTimeout:    idleTimeout,
 		MaxHeaderBytes: 2048,
-	}
+	}, s: s}
 	if ok := s.trackCloser(hs, true); !ok {
 		return ErrServerClosed
 	}
@@ -65,6 +65,46 @@ func (s *Server) ServeH3(l *quic.EarlyListener) error {
 		return err
 	}
 	return nil
+}
+
+// h3IdleGrace is how long a graceful HTTP/3 shutdown waits, after the last
+// in-flight query ended, for clients to close their connections. It also
+// lets the last responses, sent after their handlers return, reach the
+// clients: a DNS answer fits well inside QUIC's initial flow-control window
+// and needs about one round trip. A client that does not take its answer
+// within the grace, such as one that stopped reading, loses it and retries
+// against the restarted server, rather than holding every shutdown open.
+var h3IdleGrace = time.Second
+
+// h3Server bounds a graceful shutdown by the server's in-flight queries.
+// http3.Server.Shutdown sends GOAWAY and then waits for the clients to close
+// their connections; a client that keeps an idle connection until its own
+// idle timeout held every shutdown until the deadline. The DoH server closes
+// idle connections at once, and DNS needs nothing more than the queries to
+// finish, so connections still open h3IdleGrace after them are closed.
+type h3Server struct {
+	*http3.Server
+	s *Server
+}
+
+// Shutdown runs after Server.Shutdown marked the server closed, so no new
+// query can join queryWG while it waits.
+func (h h3Server) Shutdown(ctx context.Context) error {
+	drainCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		h.s.queryWG.Wait()
+		select {
+		case <-time.After(h3IdleGrace):
+			cancel()
+		case <-drainCtx.Done():
+		}
+	}()
+	err := h.Server.Shutdown(drainCtx)
+	if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		return nil
+	}
+	return err
 }
 
 type sHandler struct {

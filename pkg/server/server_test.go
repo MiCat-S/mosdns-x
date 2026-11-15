@@ -39,6 +39,22 @@ func TestShutdownDeadlineForceClosesTransport(t *testing.T) {
 	}
 }
 
+// The deadline belongs to the call that hit it. A later call, such as the
+// final one made before the process exits, must not report it again: the
+// transport was force closed and the shutdown completed.
+func TestShutdownDeadlineIsReportedOnce(t *testing.T) {
+	s := NewServer(ServerOpts{})
+	s.trackCloser(new(blockingGracefulCloser), true)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := s.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first shutdown = %v, want deadline exceeded", err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("later shutdown = %v, want nil", err)
+	}
+}
+
 func TestShutdownDoesNotHoldServerMutexWhileClosing(t *testing.T) {
 	s := NewServer(ServerOpts{})
 	s.trackCloser(&callbackCloser{close: func() { _ = s.Closed() }}, true)
