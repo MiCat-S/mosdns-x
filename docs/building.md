@@ -2,7 +2,7 @@
 
 本页面向可信的本地开发或构建机。生产部署机应从 [MiCat-S/mosdns-x Releases](https://github.com/MiCat-S/mosdns-x/releases)下载匹配架构的已发布包并校验 `SHA256SUMS`，不安装 Git、Go 或 Node.js，也不在服务器上编译。完整发布步骤见[发布流程](releasing.md)，服务器安装见[部署教程](deployment.md)。
 
-构建机使用 Go 1.26.3 或更新版本。包含管理界面时还需 Node.js 22.22.2 或同一 22.x 主版本的更新版本。
+构建机使用 Go 1.27.4 或更新版本。包含管理界面时还需 Node.js 22.22.2 或同一 22.x 主版本的更新版本。
 
 ## 无网页界面的构建
 
