@@ -261,6 +261,140 @@ describe("管理端运行配置", () => {
     });
   });
 
+  it("在面板中编辑递归解析参数并随验证提交", async () => {
+    const recursive = {
+      ...config,
+      plugins: [
+        {
+          tag: "recursive",
+          type: "recursive",
+          editable: true,
+          recursive: {
+            label: "递归解析",
+            disable_dnssec: false,
+            disable_qname_min: false,
+            no_ipv4: false,
+            no_ipv6: true,
+            cache_size: 0,
+            local_root: true,
+            opportunistic_dot: false,
+            prefetch: true,
+            prefetch_key: false,
+          },
+        },
+      ],
+    };
+    const fetcher = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/admin/runtime/history"))
+        return Promise.resolve(response({ items: [] }));
+      if (url.endsWith("/admin/runtime/config/validate"))
+        return Promise.resolve(
+          response({
+            token: "t",
+            expires_at: "2026-09-12T00:05:00Z",
+            revision: "current-revision",
+            will_clear_caches: true,
+          }),
+        );
+      if (url.endsWith("/admin/runtime/config"))
+        return Promise.resolve(
+          response({ revision: "current-revision", config: recursive }),
+        );
+      return Promise.reject(new Error(`unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    renderRuntime();
+
+    expect(await screen.findByText("递归解析 · recursive")).toBeVisible();
+    expect(
+      screen.getByRole("textbox", { name: "recursive 日志显示名称" }),
+    ).toHaveValue("递归解析");
+    const dnssec = screen.getByRole("checkbox", { name: "DNSSEC 验证" });
+    const prefetchKey = screen.getByRole("checkbox", {
+      name: "提前获取已签名区的 DNSSEC 密钥",
+    });
+    expect(dnssec).toBeChecked();
+    expect(prefetchKey).toBeEnabled();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "使用本地根区（不再查询根服务器）",
+      }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "通过 IPv6 访问权威服务器" }),
+    ).not.toBeChecked();
+
+    // Without DNSSEC there are no keys to fetch early.
+    fireEvent.click(dnssec);
+    expect(prefetchKey).toBeDisabled();
+    fireEvent.click(dnssec);
+
+    // Turning off the last address family is refused before validation.
+    const ipv4 = screen.getByRole("checkbox", {
+      name: "通过 IPv4 访问权威服务器",
+    });
+    fireEvent.click(ipv4);
+    expect(
+      screen.getByText("递归解析需要至少使用 IPv4 或 IPv6 之一。"),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "验证修改" }));
+    await waitFor(() =>
+      expect(
+        screen.getAllByText("递归解析需要至少使用 IPv4 或 IPv6 之一。"),
+      ).toHaveLength(2),
+    );
+    expect(
+      fetcher.mock.calls.some(([url]) => String(url).endsWith("/validate")),
+    ).toBe(false);
+    fireEvent.click(ipv4);
+
+    fireEvent.change(
+      screen.getByRole("spinbutton", { name: /^缓存条目上限/ }),
+      {
+        target: { value: "65536" },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "权威服务器支持时改用 DoT 加密" }),
+    );
+    fireEvent.change(screen.getByLabelText("recursive 代理链接"), {
+      target: { value: "socks5://127.0.0.1:1080" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "导入" }));
+    expect(
+      screen.getByText("递归插件 recursive 的参数已修改"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "验证修改" }));
+    await waitFor(() =>
+      expect(
+        fetcher.mock.calls.some(([url]) => String(url).endsWith("/validate")),
+      ).toBe(true),
+    );
+    const body = JSON.parse(
+      String(
+        (
+          fetcher.mock.calls.find(([url]) =>
+            String(url).endsWith("/validate"),
+          )?.[1] as RequestInit
+        ).body,
+      ),
+    );
+    expect(body.config.plugins[0].recursive).toEqual({
+      label: "递归解析",
+      disable_dnssec: false,
+      disable_qname_min: false,
+      no_ipv4: false,
+      no_ipv6: true,
+      cache_size: 65536,
+      local_root: true,
+      opportunistic_dot: true,
+      prefetch: true,
+      prefetch_key: false,
+      proxy: { type: "socks5", server: "127.0.0.1:1080" },
+    });
+  });
+
   it("复制上游生成紧随其后的备用副本，并为两条开启信任", async () => {
     const proxied = {
       ...config,

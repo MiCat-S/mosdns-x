@@ -141,6 +141,22 @@ export interface RuntimePlugin {
   read_only_reason?: string;
   fast_forward?: RuntimeFastForward;
   cache?: RuntimeCache;
+  recursive?: RuntimeRecursive;
+}
+// A recursive resolver's panel-editable parameters, named as in the plugin's
+// args. File paths and the local root source stay in the main config.
+export interface RuntimeRecursive {
+  label?: string;
+  disable_dnssec: boolean;
+  disable_qname_min: boolean;
+  no_ipv4: boolean;
+  no_ipv6: boolean;
+  cache_size: number;
+  local_root: boolean;
+  opportunistic_dot: boolean;
+  prefetch: boolean;
+  prefetch_key: boolean;
+  proxy?: RuntimeProxy;
 }
 export interface RuntimeConfig {
   version: number;

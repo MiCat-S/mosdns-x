@@ -98,7 +98,13 @@
 | POST | `/admin/runtime/upstreams/{tag}/probe` | 每个上游的安全标识、耗时、RCODE 和成功状态 |
 | GET | `/admin/data-providers` | 主配置数据源声明、文件状态和可用的运行状态；未知值为 `null` 或 `unsupported` |
 
-安全视图只包含 `fast_forward` 上游、非 Redis 内存缓存、`query_log` 和统计保留策略；地址里带凭据的上游仍为只读。上游代理以 `proxy` 对象表示：`{type, server, method?, username?, password?, password_set?}`，其中 `type` 为 `shadowsocks` 或 `socks5`。响应从不包含 `password`，只用 `password_set: true` 表示已保存密钥；验证请求中 `password` 为空时沿用代理类型、服务器、加密方式和用户名都相同的已保存密钥，否则必须提供新密钥。应用前完整构建候选运行代；失败时当前运行代保持不变。成功后所有入口一次切换，旧运行代等待在途请求和后台上游工作完成再关闭。修改任何需要重建运行代的配置且当前存在内存缓存时，验证结果会提示缓存清空。
+安全视图包含 `fast_forward` 上游、`recursive` 解析器、非 Redis 内存缓存、`query_log` 和统计保留策略；地址里带凭据的上游仍为只读。可编辑插件在 `plugins[]` 中分别使用 `fast_forward`、`recursive`、`cache` 参数对象，`tag` 和 `type` 仍由主配置决定。
+
+`recursive` 参数对象为 `{label?, disable_dnssec, disable_qname_min, no_ipv4, no_ipv6, cache_size, local_root, opportunistic_dot, prefetch, prefetch_key, proxy?}`。各开关与插件 YAML 参数相同；`cache_size` 为非负整数，`0` 选择默认的 32768 个记录集；不能同时关闭 IPv4 和 IPv6。`label` 不超过 64 个字符且不含控制字符。主配置中的 `root_hints`、`trust_anchor`、`local_root_source`、`local_root_file`、`auto_trust_anchor_file`、`so_mark`、`bind_to_device` 在应用编辑时保留，不属于可提交的参数。含未知插件参数的实例保持只读。旧 managed 文件中 `editable: false` 且无参数的递归条目继续使用主配置，升级不会将原有参数重置为默认值。
+
+上游和递归解析器的代理都以 `proxy` 对象表示：`{type, server, method?, username?, password?, password_set?}`，其中 `type` 为 `shadowsocks` 或 `socks5`。响应从不包含 `password`，只用 `password_set: true` 表示已保存密钥；验证请求中 `password` 为空时沿用同一插件中代理类型、服务器、加密方式和用户名都相同的已保存密钥，否则必须提供新密钥。省略 `proxy` 关闭该代理。旧 `socks5`、`s5_username`、`s5_password` 参数会读为同一个代理对象；应用后写为 `proxy` URL，完整 URL 仅保存在权限为 `0600` 的 managed 文件及其历史中，不通过 JSON 返回。
+
+应用前完整构建候选运行代；失败时当前运行代保持不变。成功后所有入口一次切换，旧运行代等待在途请求和后台上游工作完成再关闭。修改任何需要重建运行代的配置且当前存在内存缓存（包括递归内部缓存）时，验证结果会提示缓存清空。本地根区和根密钥轮换状态仍按主配置中的路径加载；参数验证会创建并关闭临时解析器，应用和回滚均通过现有运行代切换完成。上游探测接口仍只支持 `fast_forward`。
 
 ## 受理与兼容边界
 

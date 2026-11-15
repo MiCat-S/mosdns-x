@@ -35,6 +35,7 @@ type Plugin struct {
 	ReadOnlyReason string       `json:"read_only_reason,omitempty" yaml:"read_only_reason,omitempty"`
 	FastForward    *FastForward `json:"fast_forward,omitempty" yaml:"fast_forward,omitempty"`
 	Cache          *Cache       `json:"cache,omitempty" yaml:"cache,omitempty"`
+	Recursive      *Recursive   `json:"recursive,omitempty" yaml:"recursive,omitempty"`
 }
 
 type FastForward struct {
@@ -149,6 +150,14 @@ func Inspect(queryLog bool, telemetry Telemetry, sources []PluginSource) (Config
 				plugin.Editable = true
 				plugin.Cache = cache
 			}
+		case "recursive":
+			recursive, err := inspectRecursive(source.Args)
+			if err != nil {
+				plugin.ReadOnlyReason = readOnlyReason(err)
+			} else {
+				plugin.Editable = true
+				plugin.Recursive = recursive
+			}
 		default:
 			plugin.ReadOnlyReason = "unsupported_type"
 		}
@@ -174,14 +183,14 @@ func Validate(config Config) error {
 		}
 		seen[plugin.Tag] = struct{}{}
 		if !plugin.Editable {
-			if plugin.FastForward != nil || plugin.Cache != nil {
+			if plugin.FastForward != nil || plugin.Cache != nil || plugin.Recursive != nil {
 				return fmt.Errorf("read-only plugin %q must not contain parameters", plugin.Tag)
 			}
 			continue
 		}
 		switch plugin.Type {
 		case "fast_forward":
-			if plugin.FastForward == nil || plugin.Cache != nil {
+			if plugin.FastForward == nil || plugin.Cache != nil || plugin.Recursive != nil {
 				return fmt.Errorf("plugin %q requires fast_forward parameters", plugin.Tag)
 			}
 			if len(plugin.FastForward.Upstreams) == 0 {
@@ -214,11 +223,18 @@ func Validate(config Config) error {
 				}
 			}
 		case "cache":
-			if plugin.Cache == nil || plugin.FastForward != nil {
+			if plugin.Cache == nil || plugin.FastForward != nil || plugin.Recursive != nil {
 				return fmt.Errorf("plugin %q requires cache parameters", plugin.Tag)
 			}
 			if plugin.Cache.Size < 0 || plugin.Cache.LazyCacheTTL < 0 || plugin.Cache.LazyCacheReplyTTL < 0 {
 				return fmt.Errorf("plugin %q cache values cannot be negative", plugin.Tag)
+			}
+		case "recursive":
+			if plugin.Recursive == nil || plugin.FastForward != nil || plugin.Cache != nil {
+				return fmt.Errorf("plugin %q requires recursive parameters", plugin.Tag)
+			}
+			if err := validateRecursive(*plugin.Recursive); err != nil {
+				return fmt.Errorf("plugin %q recursive: %w", plugin.Tag, err)
 			}
 		default:
 			return fmt.Errorf("plugin %q has unsupported editable type %q", plugin.Tag, plugin.Type)
@@ -263,7 +279,7 @@ func Apply(sources []PluginSource, desired Config) ([]PluginSource, error) {
 			return nil, fmt.Errorf("plugin %q does not match the source configuration", plugin.Tag)
 		}
 		if !view.Editable {
-			if plugin.Editable || plugin.FastForward != nil || plugin.Cache != nil {
+			if plugin.Editable || plugin.FastForward != nil || plugin.Cache != nil || plugin.Recursive != nil {
 				return nil, fmt.Errorf("plugin %q is read-only", plugin.Tag)
 			}
 			continue
@@ -296,6 +312,17 @@ func Apply(sources []PluginSource, desired Config) ([]PluginSource, error) {
 			raw["lazy_cache_ttl"] = override.Cache.LazyCacheTTL
 			raw["lazy_cache_reply_ttl"] = override.Cache.LazyCacheReplyTTL
 			raw["compress_resp"] = override.Cache.CompressResp
+		case "recursive":
+			values, err := argsMap(override.Recursive)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q recursive args: %w", source.Tag, err)
+			}
+			for _, key := range recursiveEditableKeys {
+				delete(raw, key)
+			}
+			for key, value := range values {
+				raw[key] = value
+			}
 		}
 		result = append(result, PluginSource{Tag: source.Tag, Type: source.Type, Args: raw})
 	}
@@ -331,6 +358,11 @@ func ImmutableArgsEqual(before, after PluginSource) (bool, error) {
 			delete(afterRaw, "upstream")
 		case "cache":
 			for _, key := range []string{"size", "lazy_cache_ttl", "lazy_cache_reply_ttl", "compress_resp"} {
+				delete(beforeRaw, key)
+				delete(afterRaw, key)
+			}
+		case "recursive":
+			for _, key := range recursiveEditableKeys {
 				delete(beforeRaw, key)
 				delete(afterRaw, key)
 			}
@@ -380,21 +412,11 @@ func inspectFastForward(args any) (*FastForward, error) {
 		}
 		// The legacy socks5 fields become the same proxy URL the panel
 		// edits; writing the plugin back stores them as "proxy".
-		switch {
-		case upstream.Socks5 != "" && upstream.Proxy != "":
-			return nil, errUnknownArgs
-		case upstream.Socks5 != "":
-			upstream.Proxy = dialer.ProxySpec{
-				Type: dialer.ProxySocks5, Server: upstream.Socks5,
-				Username: upstream.S5Username, Password: upstream.S5Password,
-			}.URL()
-		case upstream.S5Username != "" || upstream.S5Password != "":
+		proxy, err := normalizeProxy(upstream.Proxy, upstream.Socks5, upstream.S5Username, upstream.S5Password)
+		if err != nil || proxy != "" && (dialer.ValidateProxyURL(proxy) != nil || strings.HasPrefix(strings.TrimSpace(upstream.Addr), "udpme://")) {
 			return nil, errUnknownArgs
 		}
-		if upstream.Proxy != "" && (dialer.ValidateProxyURL(upstream.Proxy) != nil ||
-			strings.HasPrefix(strings.TrimSpace(upstream.Addr), "udpme://")) {
-			return nil, errUnknownArgs
-		}
+		upstream.Proxy = proxy
 		upstream.ProxySettings = nil
 		forward.Upstreams = append(forward.Upstreams, upstream.Upstream)
 	}

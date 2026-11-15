@@ -70,6 +70,32 @@ export const en: Record<string, string> = {
   "上游插件 {tag} 的连接参数已修改":
     "Connection parameters of upstream plugin {tag} changed",
   "缓存插件 {tag} 的参数已修改": "Parameters of cache plugin {tag} changed",
+  "递归插件 {tag} 的参数已修改": "Parameters of recursive plugin {tag} changed",
+  "递归解析需要至少使用 IPv4 或 IPv6 之一。":
+    "Recursive resolution needs IPv4, IPv6 or both.",
+  "递归解析 · {tag}": "Recursive resolver · {tag}",
+  "从根区开始逐级查询权威服务器，不经过上游 DNS。根提示、信任锚、本地根区的来源与文件路径只能在主配置中修改。":
+    "Resolves names itself, querying authoritative servers level by level from the root zone instead of an upstream DNS. Root hints, trust anchors, and the local root zone's source and file paths can only be changed in the main configuration.",
+  "可选。留空时显示插件名。":
+    "Optional. If left empty, the plugin name is shown.",
+  "{tag} 日志显示名称": "{tag} display name in logs",
+  "例如：递归解析…": "e.g. Recursive…",
+  缓存条目上限: "Cache entry limit",
+  "0 表示默认的 32768 条。否定应答、DNSSEC 密钥等另有缓存，各为该值的四分之一。":
+    "0 uses the default of 32768. Negative answers, DNSSEC keys and the like have their own caches, each a quarter of this size.",
+  "DNSSEC 验证": "DNSSEC validation",
+  "提前获取已签名区的 DNSSEC 密钥": "Fetch DNSSEC keys of signed zones early",
+  "QNAME 最小化（只向各级服务器透露必要的域名部分）":
+    "QNAME minimisation (each server sees only the part of the name it needs)",
+  "使用本地根区（不再查询根服务器）":
+    "Use a local root zone (no queries to root servers)",
+  后台刷新即将过期的记录: "Refresh records about to expire in the background",
+  "权威服务器支持时改用 DoT 加密":
+    "Use DoT encryption when an authoritative server supports it",
+  "通过 IPv4 访问权威服务器": "Reach authoritative servers over IPv4",
+  "通过 IPv6 访问权威服务器": "Reach authoritative servers over IPv6",
+  "全部递归查询都经代理转发，代理服务器需要支持 UDP。递归要向许多服务器发起大量短查询，经代理会明显变慢。密钥只保存在服务器上，保存后面板不再显示。":
+    "All recursive queries go through the proxy, which must relay UDP. Recursion sends many short queries to many servers, so a proxy makes it noticeably slower. The key is stored only on the server and is not shown again after saving.",
   修改预览: "Change preview",
   "尚未修改可托管的运行参数。":
     "No managed runtime parameters have been changed yet.",
@@ -183,24 +209,24 @@ export const en: Record<string, string> = {
   从链接导入: "Import from link",
   "支持 ss:// 与 socks5:// 链接，在浏览器中解析后填入下方字段。":
     "Accepts ss:// and socks5:// links. The link is parsed in your browser and fills in the fields below.",
-  "上游 {index} 代理链接": "Upstream {index} proxy link",
+  "{name} 代理链接": "{name} proxy link",
   导入: "Import",
   代理类型: "Proxy type",
-  "上游 {index} 代理类型": "Upstream {index} proxy type",
+  "{name} 代理类型": "{name} proxy type",
   不使用代理: "No proxy",
   代理服务器: "Proxy server",
   "主机:端口": "host:port",
-  "上游 {index} 代理服务器": "Upstream {index} proxy server",
+  "{name} 代理服务器": "{name} proxy server",
   加密方式: "Cipher",
-  "上游 {index} 加密方式": "Upstream {index} cipher",
+  "{name} 加密方式": "{name} cipher",
   密钥: "Key",
   "2022 加密方式填写 Base64 密钥，其他方式填写密码。":
     "2022 ciphers take a Base64 key; other ciphers take a password.",
-  "上游 {index} 代理密钥": "Upstream {index} proxy key",
+  "{name} 代理密钥": "{name} proxy key",
   已保存: "Saved",
   可选: "Optional",
-  "上游 {index} 代理用户名": "Upstream {index} proxy username",
-  "上游 {index} 代理密码": "Upstream {index} proxy password",
+  "{name} 代理用户名": "{name} proxy username",
+  "{name} 代理密码": "{name} proxy password",
   "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。":
     "Both TCP and UDP queries go through the proxy; UDP, DoQ and DoH3 upstreams need a proxy server that relays UDP. The key is stored only on the server and is not shown again after saving.",
   "{label}（备用）": "{label} (backup)",
@@ -284,6 +310,31 @@ export const ja: Record<string, string> = {
     "アップストリームプラグイン {tag} の接続パラメーターを変更",
   "缓存插件 {tag} 的参数已修改":
     "キャッシュプラグイン {tag} のパラメーターを変更",
+  "递归插件 {tag} 的参数已修改": "再帰プラグイン {tag} のパラメーターを変更",
+  "递归解析需要至少使用 IPv4 或 IPv6 之一。":
+    "再帰解決には IPv4 と IPv6 の少なくとも一方が必要です。",
+  "递归解析 · {tag}": "再帰リゾルバー · {tag}",
+  "从根区开始逐级查询权威服务器，不经过上游 DNS。根提示、信任锚、本地根区的来源与文件路径只能在主配置中修改。":
+    "上位の DNS を使わず、ルートゾーンから権威サーバーへ順に問い合わせて名前を解決します。ルートヒント、トラストアンカー、ローカルルートゾーンの取得元とファイルパスはメイン設定でのみ変更できます。",
+  "可选。留空时显示插件名。": "任意。空欄の場合はプラグイン名を表示します。",
+  "{tag} 日志显示名称": "{tag} のログ表示名",
+  "例如：递归解析…": "例：再帰解決…",
+  缓存条目上限: "キャッシュ件数の上限",
+  "0 表示默认的 32768 条。否定应答、DNSSEC 密钥等另有缓存，各为该值的四分之一。":
+    "0 は既定の 32768 件です。否定応答や DNSSEC 鍵などには別のキャッシュがあり、それぞれこの値の 4 分の 1 です。",
+  "DNSSEC 验证": "DNSSEC 検証",
+  "提前获取已签名区的 DNSSEC 密钥": "署名済みゾーンの DNSSEC 鍵を先に取得する",
+  "QNAME 最小化（只向各级服务器透露必要的域名部分）":
+    "QNAME 最小化（各サーバーには必要な部分の名前だけを送る）",
+  "使用本地根区（不再查询根服务器）":
+    "ローカルルートゾーンを使う（ルートサーバーに問い合わせない）",
+  后台刷新即将过期的记录: "期限切れが近いレコードをバックグラウンドで更新する",
+  "权威服务器支持时改用 DoT 加密":
+    "権威サーバーが対応していれば DoT で暗号化する",
+  "通过 IPv4 访问权威服务器": "IPv4 で権威サーバーに接続する",
+  "通过 IPv6 访问权威服务器": "IPv6 で権威サーバーに接続する",
+  "全部递归查询都经代理转发，代理服务器需要支持 UDP。递归要向许多服务器发起大量短查询，经代理会明显变慢。密钥只保存在服务器上，保存后面板不再显示。":
+    "すべての再帰クエリがプロキシ経由で転送されるため、プロキシサーバーは UDP を中継できる必要があります。再帰では多数のサーバーへ短いクエリを大量に送るので、プロキシ経由では目に見えて遅くなります。キーはサーバーにのみ保存され、保存後はパネルに表示されません。",
   修改预览: "変更のプレビュー",
   "尚未修改可托管的运行参数。":
     "マネージド対象の実行パラメーターはまだ変更されていません。",
@@ -399,24 +450,24 @@ export const ja: Record<string, string> = {
   从链接导入: "リンクから読み込む",
   "支持 ss:// 与 socks5:// 链接，在浏览器中解析后填入下方字段。":
     "ss:// と socks5:// のリンクに対応しています。リンクはブラウザー内で解析され、下の項目に入力されます。",
-  "上游 {index} 代理链接": "アップストリーム {index} のプロキシリンク",
+  "{name} 代理链接": "{name} のプロキシリンク",
   导入: "読み込む",
   代理类型: "プロキシの種類",
-  "上游 {index} 代理类型": "アップストリーム {index} のプロキシの種類",
+  "{name} 代理类型": "{name} のプロキシの種類",
   不使用代理: "プロキシを使用しない",
   代理服务器: "プロキシサーバー",
   "主机:端口": "ホスト:ポート",
-  "上游 {index} 代理服务器": "アップストリーム {index} のプロキシサーバー",
+  "{name} 代理服务器": "{name} のプロキシサーバー",
   加密方式: "暗号方式",
-  "上游 {index} 加密方式": "アップストリーム {index} の暗号方式",
+  "{name} 加密方式": "{name} の暗号方式",
   密钥: "キー",
   "2022 加密方式填写 Base64 密钥，其他方式填写密码。":
     "2022 暗号方式では Base64 のキーを、その他の方式ではパスワードを入力します。",
-  "上游 {index} 代理密钥": "アップストリーム {index} のプロキシキー",
+  "{name} 代理密钥": "{name} のプロキシキー",
   已保存: "保存済み",
   可选: "任意",
-  "上游 {index} 代理用户名": "アップストリーム {index} のプロキシユーザー名",
-  "上游 {index} 代理密码": "アップストリーム {index} のプロキシパスワード",
+  "{name} 代理用户名": "{name} のプロキシユーザー名",
+  "{name} 代理密码": "{name} のプロキシパスワード",
   "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。":
     "TCP と UDP のクエリはどちらもプロキシ経由で転送されます。UDP・DoQ・DoH3 のアップストリームには UDP を中継できるプロキシサーバーが必要です。キーはサーバーにのみ保存され、保存後はパネルに表示されません。",
   "{label}（备用）": "{label}（予備）",

@@ -29,6 +29,7 @@ import type {
   RuntimePlugin,
   RuntimeProbe,
   RuntimeProxy,
+  RuntimeRecursive,
   RuntimeReloadResult,
   RuntimeRevision,
   RuntimeState,
@@ -81,7 +82,25 @@ function runtimeDraftError(config: RuntimeConfig) {
     )
   )
     return t("请先修正标记的代理设置。");
+  for (const plugin of config.plugins) {
+    const recursive = plugin.editable ? plugin.recursive : undefined;
+    if (!recursive) continue;
+    if (!validCacheSize(recursive.cache_size))
+      return t("请先修正标记为无效的数值字段。");
+    if (recursive.no_ipv4 && recursive.no_ipv6)
+      return t("递归解析需要至少使用 IPv4 或 IPv6 之一。");
+    if (recursive.proxy && proxyDraftError(recursive.proxy, ""))
+      return t("请先修正标记的代理设置。");
+  }
   return "";
+}
+
+const maxRecursiveCacheSize = 2147483647;
+
+function validCacheSize(value: number) {
+  return (
+    Number.isInteger(value) && value >= 0 && value <= maxRecursiveCacheSize
+  );
 }
 
 function inputNumber(value: string) {
@@ -157,22 +176,25 @@ function RuntimeSwitch({
   );
 }
 
+// name says whose proxy this is in the fields' accessible names, such as
+// "上游 1"; caption explains how the queries use it.
 function RuntimeProxyEditor({
   proxy,
   addr,
-  index,
+  name,
+  caption,
   disabled,
   onChange,
 }: {
   proxy?: RuntimeProxy;
   addr: string;
-  index: number;
+  name: string;
+  caption: string;
   disabled: boolean;
   onChange: (proxy: RuntimeProxy | undefined) => void;
 }) {
   const [link, setLink] = useState("");
   const [linkError, setLinkError] = useState("");
-  const number = index + 1;
   const problem = proxy ? proxyDraftError(proxy, addr) : "";
   // Show the problem under the field it is about.
   const typeProblem =
@@ -237,7 +259,7 @@ function RuntimeProxyEditor({
           }
         >
           <input
-            aria-label={t("上游 {index} 代理链接", { index: number })}
+            aria-label={t("{name} 代理链接", { name })}
             value={link}
             disabled={disabled}
             autoComplete="off"
@@ -261,7 +283,7 @@ function RuntimeProxyEditor({
       <div className="form-grid">
         <Field label={t("代理类型")} hint={typeProblem || undefined}>
           <select
-            aria-label={t("上游 {index} 代理类型", { index: number })}
+            aria-label={t("{name} 代理类型", { name })}
             value={proxy?.type ?? ""}
             disabled={disabled}
             aria-invalid={typeProblem ? true : undefined}
@@ -275,7 +297,7 @@ function RuntimeProxyEditor({
         {proxy ? (
           <Field label={t("代理服务器")} hint={serverProblem || t("主机:端口")}>
             <input
-              aria-label={t("上游 {index} 代理服务器", { index: number })}
+              aria-label={t("{name} 代理服务器", { name })}
               value={proxy.server}
               disabled={disabled}
               autoComplete="off"
@@ -290,7 +312,7 @@ function RuntimeProxyEditor({
           <>
             <Field label={t("加密方式")}>
               <select
-                aria-label={t("上游 {index} 加密方式", { index: number })}
+                aria-label={t("{name} 加密方式", { name })}
                 value={proxy.method ?? ""}
                 disabled={disabled}
                 onChange={(event) => update({ method: event.target.value })}
@@ -313,7 +335,7 @@ function RuntimeProxyEditor({
             >
               <input
                 type="password"
-                aria-label={t("上游 {index} 代理密钥", { index: number })}
+                aria-label={t("{name} 代理密钥", { name })}
                 value={proxy.password ?? ""}
                 disabled={disabled}
                 autoComplete="new-password"
@@ -331,7 +353,7 @@ function RuntimeProxyEditor({
           <>
             <Field label={t("用户名")} hint={t("可选")}>
               <input
-                aria-label={t("上游 {index} 代理用户名", { index: number })}
+                aria-label={t("{name} 代理用户名", { name })}
                 value={proxy.username ?? ""}
                 disabled={disabled}
                 autoComplete="off"
@@ -346,7 +368,7 @@ function RuntimeProxyEditor({
             >
               <input
                 type="password"
-                aria-label={t("上游 {index} 代理密码", { index: number })}
+                aria-label={t("{name} 代理密码", { name })}
                 value={proxy.password ?? ""}
                 disabled={disabled}
                 autoComplete="new-password"
@@ -359,11 +381,7 @@ function RuntimeProxyEditor({
           </>
         ) : null}
       </div>
-      <p className="caption">
-        {t(
-          "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。",
-        )}
-      </p>
+      <p className="caption">{caption}</p>
     </details>
   );
 }
@@ -442,7 +460,10 @@ function RuntimeUpstreamEditor({
       <RuntimeProxyEditor
         proxy={upstream.proxy}
         addr={upstream.addr}
-        index={index}
+        name={t("上游 {index}", { index: number })}
+        caption={t(
+          "TCP 与 UDP 查询都经代理转发；UDP、DoQ、DoH3 上游需要代理服务器支持 UDP。密钥只保存在服务器上，保存后面板不再显示。",
+        )}
         disabled={disabled}
         onChange={(proxy) => update("proxy", proxy)}
       />
@@ -649,6 +670,124 @@ function RuntimeProbeResults({ probes }: { probes: RuntimeProbe[] }) {
   );
 }
 
+function RuntimeRecursiveEditor({
+  plugin,
+  disabled,
+  onChange,
+}: {
+  plugin: RuntimePlugin;
+  disabled: boolean;
+  onChange: (recursive: RuntimeRecursive) => void;
+}) {
+  const recursive = plugin.recursive;
+  if (!recursive) return null;
+  const update = <K extends keyof RuntimeRecursive>(
+    key: K,
+    value: RuntimeRecursive[K],
+  ) => onChange(updateValue(recursive, key, value));
+  const noFamily = recursive.no_ipv4 && recursive.no_ipv6;
+  return (
+    <Card
+      title={t("递归解析 · {tag}", { tag: plugin.tag })}
+      className="runtime-plugin-card"
+    >
+      <p className="caption">
+        {t(
+          "从根区开始逐级查询权威服务器，不经过上游 DNS。根提示、信任锚、本地根区的来源与文件路径只能在主配置中修改。",
+        )}
+      </p>
+      <div className="form-grid">
+        <Field label={t("日志显示名称")} hint={t("可选。留空时显示插件名。")}>
+          <input
+            aria-label={t("{tag} 日志显示名称", { tag: plugin.tag })}
+            value={recursive.label ?? ""}
+            disabled={disabled}
+            maxLength={64}
+            placeholder={t("例如：递归解析…")}
+            onChange={(event) =>
+              update("label", event.target.value || undefined)
+            }
+          />
+        </Field>
+        <RuntimeNumberField
+          label={t("缓存条目上限")}
+          value={recursive.cache_size}
+          min={0}
+          max={maxRecursiveCacheSize}
+          hint={t(
+            "0 表示默认的 32768 条。否定应答、DNSSEC 密钥等另有缓存，各为该值的四分之一。",
+          )}
+          disabled={disabled}
+          onChange={(value) => update("cache_size", value)}
+        />
+      </div>
+      <div className="runtime-switches">
+        <RuntimeSwitch
+          label={t("DNSSEC 验证")}
+          checked={!recursive.disable_dnssec}
+          disabled={disabled}
+          onChange={(value) => update("disable_dnssec", !value)}
+        />
+        <RuntimeSwitch
+          label={t("提前获取已签名区的 DNSSEC 密钥")}
+          checked={recursive.prefetch_key}
+          disabled={disabled || recursive.disable_dnssec}
+          onChange={(value) => update("prefetch_key", value)}
+        />
+        <RuntimeSwitch
+          label={t("QNAME 最小化（只向各级服务器透露必要的域名部分）")}
+          checked={!recursive.disable_qname_min}
+          disabled={disabled}
+          onChange={(value) => update("disable_qname_min", !value)}
+        />
+        <RuntimeSwitch
+          label={t("使用本地根区（不再查询根服务器）")}
+          checked={recursive.local_root}
+          disabled={disabled}
+          onChange={(value) => update("local_root", value)}
+        />
+        <RuntimeSwitch
+          label={t("后台刷新即将过期的记录")}
+          checked={recursive.prefetch}
+          disabled={disabled}
+          onChange={(value) => update("prefetch", value)}
+        />
+        <RuntimeSwitch
+          label={t("权威服务器支持时改用 DoT 加密")}
+          checked={recursive.opportunistic_dot}
+          disabled={disabled}
+          onChange={(value) => update("opportunistic_dot", value)}
+        />
+        <RuntimeSwitch
+          label={t("通过 IPv4 访问权威服务器")}
+          checked={!recursive.no_ipv4}
+          disabled={disabled}
+          onChange={(value) => update("no_ipv4", !value)}
+        />
+        <RuntimeSwitch
+          label={t("通过 IPv6 访问权威服务器")}
+          checked={!recursive.no_ipv6}
+          disabled={disabled}
+          onChange={(value) => update("no_ipv6", !value)}
+        />
+      </div>
+      <Alert
+        error={noFamily ? t("递归解析需要至少使用 IPv4 或 IPv6 之一。") : ""}
+      />
+      <RuntimeProxyEditor
+        proxy={recursive.proxy}
+        addr=""
+        name={plugin.tag}
+        caption={t(
+          "全部递归查询都经代理转发，代理服务器需要支持 UDP。递归要向许多服务器发起大量短查询，经代理会明显变慢。密钥只保存在服务器上，保存后面板不再显示。",
+        )}
+        disabled={disabled}
+        onChange={(proxy) => update("proxy", proxy)}
+      />
+    </Card>
+  );
+}
+
 function RuntimeCacheEditor({
   plugin,
   disabled,
@@ -787,6 +926,13 @@ function RuntimeChangePreview({
       if (plugin.type === "cache" && plugin.cache) {
         if (JSON.stringify(original.cache) !== JSON.stringify(plugin.cache))
           items.push(t("缓存插件 {tag} 的参数已修改", { tag: plugin.tag }));
+      }
+      if (plugin.type === "recursive" && plugin.recursive) {
+        if (
+          JSON.stringify(original.recursive) !==
+          JSON.stringify(plugin.recursive)
+        )
+          items.push(t("递归插件 {tag} 的参数已修改", { tag: plugin.tag }));
       }
     }
     return items;
@@ -1361,6 +1507,21 @@ export function RuntimeConfigPage() {
                   </div>
                 ) : null}
               </section>
+            ))}
+          {draft.plugins
+            .filter((plugin) => plugin.editable && plugin.type === "recursive")
+            .map((plugin) => (
+              <RuntimeRecursiveEditor
+                key={plugin.tag}
+                plugin={plugin}
+                disabled={Boolean(busy) || !canManage}
+                onChange={(recursive) =>
+                  updatePlugin(plugin.tag, (current) => ({
+                    ...current,
+                    recursive,
+                  }))
+                }
+              />
             ))}
           {draft.plugins
             .filter((plugin) => plugin.editable && plugin.type === "cache")

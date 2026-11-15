@@ -1961,6 +1961,14 @@ summary {
   font-weight: var(--w-medium);
 }
 
+.runtime-switch:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.runtime-switch:has(input:disabled) .runtime-switch-copy {
+  color: var(--text-3);
+}
+
 .runtime-upstream {
   min-width: 0;
   margin: var(--sp-3) 0 0;

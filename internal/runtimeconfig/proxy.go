@@ -34,24 +34,36 @@ func PublicView(config Config) Config {
 			forward := *plugin.FastForward
 			forward.Upstreams = make([]Upstream, len(plugin.FastForward.Upstreams))
 			for j, upstream := range plugin.FastForward.Upstreams {
-				upstream.ProxySettings = nil
-				if upstream.Proxy != "" {
-					// Inspect and Validate only admit proxies that parse.
-					if spec, err := dialer.ParseProxyURL(upstream.Proxy); err == nil {
-						upstream.ProxySettings = &ProxySettings{
-							Type: spec.Type, Server: spec.Server, Method: spec.Method,
-							Username: spec.Username, PasswordSet: spec.Password != "",
-						}
-					}
-				}
+				upstream.ProxySettings = publicProxy(upstream.Proxy)
 				upstream.Proxy = ""
 				forward.Upstreams[j] = upstream
 			}
 			plugin.FastForward = &forward
 		}
+		if plugin.Recursive != nil {
+			recursive := *plugin.Recursive
+			recursive.ProxySettings = publicProxy(recursive.Proxy)
+			recursive.Proxy = ""
+			plugin.Recursive = &recursive
+		}
 		result.Plugins[i] = plugin
 	}
 	return result
+}
+
+func publicProxy(raw string) *ProxySettings {
+	// Inspect and Validate only admit proxies that parse.
+	if raw == "" {
+		return nil
+	}
+	spec, err := dialer.ParseProxyURL(raw)
+	if err != nil {
+		return nil
+	}
+	return &ProxySettings{
+		Type: spec.Type, Server: spec.Server, Method: spec.Method,
+		Username: spec.Username, PasswordSet: spec.Password != "",
+	}
 }
 
 // ResolveProxies turns the panel's proxy settings in desired into proxy
@@ -73,12 +85,16 @@ func ResolveProxies(current, desired Config) (Config, error) {
 	}
 	saved := make(map[string][]savedProxy)
 	for _, plugin := range current.Plugins {
-		if plugin.FastForward == nil {
-			continue
+		if plugin.FastForward != nil {
+			for j, upstream := range plugin.FastForward.Upstreams {
+				if spec, err := dialer.ParseProxyURL(upstream.Proxy); upstream.Proxy != "" && err == nil {
+					saved[plugin.Tag] = append(saved[plugin.Tag], savedProxy{spec: spec, url: upstream.Proxy, addr: upstream.Addr, index: j})
+				}
+			}
 		}
-		for j, upstream := range plugin.FastForward.Upstreams {
-			if spec, err := dialer.ParseProxyURL(upstream.Proxy); upstream.Proxy != "" && err == nil {
-				saved[plugin.Tag] = append(saved[plugin.Tag], savedProxy{spec: spec, url: upstream.Proxy, addr: upstream.Addr, index: j})
+		if plugin.Recursive != nil && plugin.Recursive.Proxy != "" {
+			if spec, err := dialer.ParseProxyURL(plugin.Recursive.Proxy); err == nil {
+				saved[plugin.Tag] = append(saved[plugin.Tag], savedProxy{spec: spec, url: plugin.Recursive.Proxy})
 			}
 		}
 	}
@@ -99,6 +115,17 @@ func ResolveProxies(current, desired Config) (Config, error) {
 				forward.Upstreams[j] = upstream
 			}
 			plugin.FastForward = &forward
+		}
+		if plugin.Recursive != nil {
+			recursive := *plugin.Recursive
+			if recursive.ProxySettings != nil {
+				url, err := resolveProxy(*recursive.ProxySettings, saved[plugin.Tag], "", 0)
+				if err != nil {
+					return Config{}, fmt.Errorf("plugin %q recursive proxy: %w", plugin.Tag, err)
+				}
+				recursive.Proxy, recursive.ProxySettings = url, nil
+			}
+			plugin.Recursive = &recursive
 		}
 		result.Plugins[i] = plugin
 	}

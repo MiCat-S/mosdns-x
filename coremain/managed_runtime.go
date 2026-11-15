@@ -572,6 +572,9 @@ func hasManagedMemoryCache(config runtimeconfig.Config) bool {
 		if plugin.Type == "cache" && plugin.Editable && plugin.Cache != nil {
 			return true
 		}
+		if plugin.Type == "recursive" {
+			return true
+		}
 	}
 	return false
 }
@@ -711,12 +714,7 @@ func managedCachesWillClear(before, after runtimeconfig.Config) bool {
 	if reflect.DeepEqual(before, after) {
 		return false
 	}
-	for _, plugin := range before.Plugins {
-		if plugin.Editable && plugin.Type == "cache" && plugin.Cache != nil {
-			return true
-		}
-	}
-	return false
+	return hasManagedMemoryCache(before)
 }
 
 func configsEqual(before, after *Config) bool {
