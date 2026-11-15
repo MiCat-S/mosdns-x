@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pmkol/mosdns-x/coremain"
+	"github.com/pmkol/mosdns-x/pkg/bundled_upstream"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/recursor"
 	"github.com/pmkol/mosdns-x/pkg/upstream"
+	upstreamtrace "github.com/pmkol/mosdns-x/pkg/upstream/trace"
 )
 
 const PluginType = "recursive"
@@ -142,19 +145,46 @@ func (p *recursive) collectors() []prometheus.Collector {
 }
 
 func (p *recursive) Exec(ctx context.Context, qCtx *query_context.Context, next executable_seq.ExecutableChainNode) error {
-	r, err := p.r.Resolve(ctx, qCtx.Q())
+	// Record one logical resolution through the same observer and journal
+	// path as fast_forward. Authority addresses are internal to the resolver.
+	result, err := bundled_upstream.ExchangeParallel(ctx, qCtx, []bundled_upstream.Upstream{p}, p.L())
 	if err != nil {
+		if qCtx.CaptureQueryDetails() {
+			qCtx.SetResponseTrace(query_context.ResponseTrace{
+				UpstreamStageStatus: query_context.UpstreamStageAttemptedNoSelection,
+			})
+		}
 		return err
 	}
-	// Name the plugin as the upstream so query logs and the cache record
-	// where the answer came from; a private resolver is labelled by its tag.
-	qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{
+	trace := query_context.ResponseTrace{
 		Source:        query_context.ResponseSourceUpstream,
 		SourceID:      p.Tag(),
-		UpstreamLabel: p.Tag(),
-	})
+		UpstreamID:    result.UpstreamID,
+		UpstreamLabel: result.UpstreamLabel,
+		AttemptSeq:    result.AttemptSeq,
+	}
+	if qCtx.CaptureQueryDetails() {
+		// A resolution can query several authorities. There is no single
+		// upstream EDNS exchange to attach to the selected logical result.
+		trace.UpstreamStageStatus = query_context.UpstreamStageUnavailable
+	}
+	qCtx.SetResponseWithTrace(result.Response, trace)
 	return executable_seq.ExecChainNode(ctx, qCtx, next)
 }
+
+func (p *recursive) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+	return p.r.Resolve(ctx, q)
+}
+
+func (p *recursive) ObserverID() string { return p.Tag() + "/0" }
+func (p *recursive) Address() string    { return p.Tag() }
+func (p *recursive) Trusted() bool      { return true }
+func (p *recursive) PluginTag() string  { return p.Tag() }
+func (p *recursive) DisplayName() string {
+	return upstreamtrace.DisplayName(p.Tag(), 0, "recursive://", p.Tag())
+}
+
+func (p *recursive) UpstreamIDs() []string { return []string{p.ObserverID()} }
 
 func (p *recursive) Close() error {
 	return p.r.Close()

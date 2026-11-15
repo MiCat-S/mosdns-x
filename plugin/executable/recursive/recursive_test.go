@@ -2,6 +2,7 @@ package recursive
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/pmkol/mosdns-x/coremain"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
+	"github.com/pmkol/mosdns-x/pkg/server/dns_handler"
 )
 
 func TestArgsToOpts(t *testing.T) {
@@ -93,5 +95,79 @@ func TestProxyArg(t *testing.T) {
 	}
 	if _, err := newOpts(bp, &Args{Proxy: "socks5://127.0.0.1:1080", Socks5: "127.0.0.1:1080"}); err == nil {
 		t.Fatal("proxy together with socks5 accepted")
+	}
+}
+
+func TestEntryObservesRecursiveResolution(t *testing.T) {
+	for _, capture := range []bool{false, true} {
+		for _, closed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("details=%t/closed=%t", capture, closed), func(t *testing.T) {
+				p, err := newRecursive(coremain.NewBP("recurse", PluginType, nil, nil), &Args{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { p.Close() })
+				if closed {
+					p.Close()
+				}
+				var lister coremain.UpstreamIDLister = p
+				ids := lister.UpstreamIDs()
+				if len(ids) != 1 || ids[0] != "recurse/0" {
+					t.Fatalf("active upstream IDs = %v", ids)
+				}
+				principal := query_context.Principal{UserID: "user", CredentialID: "device"}
+				meta := new(query_context.RequestMeta)
+				meta.SetPrincipal(principal)
+				var attempts []query_context.UpstreamAttempt
+				meta.SetUpstreamObserver(func(a query_context.UpstreamAttempt) { attempts = append(attempts, a) })
+				var result dns_handler.Result
+				h, err := dns_handler.NewEntryHandler(dns_handler.EntryHandlerOpts{
+					Entry: p, CaptureQueryDetails: capture,
+					Observe: func(r dns_handler.Result) { result = r },
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// An unsupported transfer returns locally, so this exercises the
+				// complete observation path without querying public DNS.
+				q := new(dns.Msg).SetQuestion("example.com.", dns.TypeAXFR)
+				q.Id = 42
+				resp, err := h.ServeDNS(context.Background(), q, meta)
+				if err != nil || resp.Id != 42 || q.Id != 42 {
+					t.Fatalf("response = %v, query = %v, error = %v", resp, q, err)
+				}
+				if len(attempts) != 1 || attempts[0].Principal != principal || attempts[0].UpstreamID != ids[0] || attempts[0].Failed != closed {
+					t.Fatalf("observed attempts = %+v", attempts)
+				}
+				if closed {
+					if resp.Rcode != dns.RcodeServerFailure || !result.ExecError || result.UpstreamID != "" || attempts[0].Rcode != -1 {
+						t.Fatalf("closed result = %+v, response = %v", result, resp)
+					}
+				} else if resp.Rcode != dns.RcodeNotImplemented || result.UpstreamID != ids[0] || result.UpstreamLabel != "recurse" ||
+					result.ResponseSource != query_context.ResponseSourceUpstream || result.ResponseSourceID != "recurse" || attempts[0].Rcode != dns.RcodeNotImplemented {
+					t.Fatalf("selected result = %+v, response = %v", result, resp)
+				}
+				if !capture {
+					if result.Trace != nil {
+						t.Fatalf("details disabled, trace = %+v", result.Trace)
+					}
+					return
+				}
+				if result.UpstreamRequestEDNS != nil || result.UpstreamResponseEDNS != nil || result.Trace == nil || len(result.Trace.Attempts) != 1 {
+					t.Fatalf("unexpected exchange details = %+v", result)
+				}
+				attempt := result.Trace.Attempts[0]
+				if attempt.Plugin != "recurse" || attempt.Upstream != "recurse" || !attempt.Done || attempt.Selected == closed {
+					t.Fatalf("journal attempt = %+v", attempt)
+				}
+				if closed {
+					if result.UpstreamStageStatus != query_context.UpstreamStageAttemptedNoSelection || attempt.Error == "" {
+						t.Fatalf("failed trace = %+v", result)
+					}
+				} else if result.UpstreamStageStatus != query_context.UpstreamStageUnavailable || attempt.Rcode != "NOTIMP" || attempt.Error != "" {
+					t.Fatalf("selected trace = %+v", result)
+				}
+			})
+		}
 	}
 }
