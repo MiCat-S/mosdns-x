@@ -105,3 +105,14 @@ export function useSession() {
   if (!v) throw Error("SessionProvider is missing");
   return v;
 }
+// useFollower reports whether this node mirrors its accounts from a master,
+// so account, password and credential changes are made there instead.
+export function useFollower() {
+  return useSession().session?.identity_sync?.mode === "follower";
+}
+// useSyncMaster reports whether this node is the master of multi-node
+// account sync, where a user's quota period and timezone are fixed once the
+// account exists.
+export function useSyncMaster() {
+  return useSession().session?.identity_sync?.mode === "master";
+}

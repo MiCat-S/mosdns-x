@@ -33,6 +33,9 @@ export const en: Record<string, string> = {
   界面语言: "Interface language",
   关闭: "Close",
   未设置: "Not set",
+  "本节点的账户由主控统一管理：账户、密码和设备凭证请到主控面板修改，稍后会同步到本节点。":
+    "Accounts on this node are managed by the master: change accounts, passwords, and device credentials in the master panel, and they sync to this node shortly.",
+  前往主控面板: "Open the master panel",
 };
 
 export const ja: Record<string, string> = {
@@ -69,4 +72,7 @@ export const ja: Record<string, string> = {
   界面语言: "表示言語",
   关闭: "閉じる",
   未设置: "未設定",
+  "本节点的账户由主控统一管理：账户、密码和设备凭证请到主控面板修改，稍后会同步到本节点。":
+    "このノードのアカウントはマスターで一元管理されています。アカウント、パスワード、デバイス認証情報はマスターのパネルで変更してください。変更はまもなくこのノードに同期されます。",
+  前往主控面板: "マスターのパネルを開く",
 };

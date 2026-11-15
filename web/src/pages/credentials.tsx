@@ -11,6 +11,7 @@ import {
   useLoad,
 } from "../components";
 import { msg, t } from "../i18n";
+import { useFollower } from "../session";
 import type { Credential, IssuedCredential } from "../types";
 
 function Secret({
@@ -101,6 +102,9 @@ export function CredentialManager({
       kind: "rotate" | "revoke";
       c: Credential;
     } | null>(null);
+  // A follower lists the credentials it mirrors; they change on the master,
+  // which the page says once.
+  const readOnly = useFollower();
   const load = useCallback(
     (s: AbortSignal) => allPages<Credential>(`${base}/credentials`, s),
     [base, version],
@@ -163,38 +167,40 @@ export function CredentialManager({
       .length ?? 0;
   return (
     <>
-      <Card title={t("创建凭证")}>
-        <form className="inline-form" onSubmit={create}>
-          <Field label={t("名称")}>
-            <input
-              name="name"
-              required
-              maxLength={80}
-              autoComplete="off"
-              placeholder={t("例如：家中路由器…")}
-            />
-          </Field>
-          <Field label={t("单独到期")} hint={t("留空则跟随账户")}>
-            <input name="expires_at" type="datetime-local" />
-          </Field>
-          <button
-            className="primary"
-            disabled={
-              busy === "create" || (max !== undefined && activeCount >= max)
-            }
-          >
-            {busy === "create" ? t("正在创建…") : t("创建凭证")}
-          </button>
-        </form>
-        {max !== undefined ? (
-          <p className="caption">
-            {t("已使用 {used} / {max} 个凭证名额", {
-              used: activeCount,
-              max,
-            })}
-          </p>
-        ) : null}
-      </Card>
+      {readOnly ? null : (
+        <Card title={t("创建凭证")}>
+          <form className="inline-form" onSubmit={create}>
+            <Field label={t("名称")}>
+              <input
+                name="name"
+                required
+                maxLength={80}
+                autoComplete="off"
+                placeholder={t("例如：家中路由器…")}
+              />
+            </Field>
+            <Field label={t("单独到期")} hint={t("留空则跟随账户")}>
+              <input name="expires_at" type="datetime-local" />
+            </Field>
+            <button
+              className="primary"
+              disabled={
+                busy === "create" || (max !== undefined && activeCount >= max)
+              }
+            >
+              {busy === "create" ? t("正在创建…") : t("创建凭证")}
+            </button>
+          </form>
+          {max !== undefined ? (
+            <p className="caption">
+              {t("已使用 {used} / {max} 个凭证名额", {
+                used: activeCount,
+                max,
+              })}
+            </p>
+          ) : null}
+        </Card>
+      )}
       <Alert error={error || loadError} />
       {loading ? (
         <Spinner />
@@ -212,9 +218,11 @@ export function CredentialManager({
                 <th>{t("创建")}</th>
                 <th>{t("单独到期")}</th>
                 <th>{t("状态")}</th>
-                <th>
-                  <span className="sr-only">{t("操作")}</span>
-                </th>
+                {readOnly ? null : (
+                  <th>
+                    <span className="sr-only">{t("操作")}</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -233,24 +241,26 @@ export function CredentialManager({
                         {t(status)}
                       </span>
                     </td>
-                    <td className="table-actions">
-                      <button
-                        className="btn-sm"
-                        aria-label={t("轮换 {name}", { name: c.name })}
-                        disabled={busy === c.id || !active}
-                        onClick={() => setPending({ kind: "rotate", c })}
-                      >
-                        {t("轮换")}
-                      </button>
-                      <button
-                        className="danger btn-sm"
-                        aria-label={t("撤销 {name}", { name: c.name })}
-                        disabled={busy === c.id || !credentialCanRevoke(c)}
-                        onClick={() => setPending({ kind: "revoke", c })}
-                      >
-                        {t("撤销")}
-                      </button>
-                    </td>
+                    {readOnly ? null : (
+                      <td className="table-actions">
+                        <button
+                          className="btn-sm"
+                          aria-label={t("轮换 {name}", { name: c.name })}
+                          disabled={busy === c.id || !active}
+                          onClick={() => setPending({ kind: "rotate", c })}
+                        >
+                          {t("轮换")}
+                        </button>
+                        <button
+                          className="danger btn-sm"
+                          aria-label={t("撤销 {name}", { name: c.name })}
+                          disabled={busy === c.id || !credentialCanRevoke(c)}
+                          onClick={() => setPending({ kind: "revoke", c })}
+                        >
+                          {t("撤销")}
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
               })}

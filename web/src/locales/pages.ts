@@ -376,6 +376,18 @@ export const en: Record<string, string> = {
   会话: "Session",
   凭证: "Credential",
   修订: "Revision",
+  "已启用多节点同步，开设后不能修改":
+    "Multi-node sync is on; can't be changed after creation",
+  "已启用多节点同步，开设后不能修改周期和时区":
+    "Multi-node sync is on; the period and time zone can't be changed after creation",
+  本节点剩余额度: "Remaining quota on this node",
+  查看设备凭证: "View device credentials",
+  "查看账户状态与设备凭证。":
+    "View your account status and device credentials.",
+  "主控签发的专属地址在本节点同样可用：将地址中令牌之前的部分换成上方地址即可。不要将凭证令牌分享给他人。":
+    "Personal addresses issued on the master also work on this node: replace the part before the token with the address above. Don't share credential tokens with anyone.",
+  从主控同步账户: "Sync accounts from master",
+  节点: "Node",
 };
 
 export const ja: Record<string, string> = {
@@ -754,4 +766,16 @@ export const ja: Record<string, string> = {
   会话: "セッション",
   凭证: "認証情報",
   修订: "リビジョン",
+  "已启用多节点同步，开设后不能修改":
+    "マルチノード同期が有効なため、作成後は変更できません",
+  "已启用多节点同步，开设后不能修改周期和时区":
+    "マルチノード同期が有効なため、作成後は期間とタイムゾーンを変更できません",
+  本节点剩余额度: "このノードの残りクォータ",
+  查看设备凭证: "デバイス認証情報を見る",
+  "查看账户状态与设备凭证。":
+    "アカウントの状態とデバイス認証情報を確認します。",
+  "主控签发的专属地址在本节点同样可用：将地址中令牌之前的部分换成上方地址即可。不要将凭证令牌分享给他人。":
+    "マスターで発行した専用アドレスはこのノードでも使えます。アドレスのトークンより前の部分を上のアドレスに置き換えてください。認証情報のトークンは他人と共有しないでください。",
+  从主控同步账户: "マスターからアカウントを同期",
+  节点: "ノード",
 };

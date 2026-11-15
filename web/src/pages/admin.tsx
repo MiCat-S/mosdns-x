@@ -6,6 +6,7 @@ import {
   Card,
   Empty,
   LanguageSelect,
+  MasterManaged,
   Metric,
   PageTitle,
   Spinner,
@@ -16,6 +17,7 @@ import {
 import { msg, t } from "../i18n";
 import { CachePurgeCard } from "../cache-purge";
 import { HealthPanel } from "../health-panel";
+import { useFollower } from "../session";
 import { useTopDomains } from "../top-domains";
 import { PasswordForm } from "./password";
 import { QueryDetails } from "./query-log";
@@ -106,15 +108,20 @@ export function AdminLogs() {
 }
 
 export function PasswordPage() {
+  const follower = useFollower();
   return (
     <>
       <PageTitle
         title={t("修改密码")}
-        description={t("修改后，当前会话会立即退出")}
+        description={follower ? undefined : t("修改后，当前会话会立即退出")}
       />
-      <Card className="narrow">
-        <PasswordForm />
-      </Card>
+      {follower ? (
+        <MasterManaged />
+      ) : (
+        <Card className="narrow">
+          <PasswordForm />
+        </Card>
+      )}
     </>
   );
 }
@@ -159,6 +166,7 @@ const auditActionNames: Record<string, string> = {
   runtime_rollback: msg("回滚运行配置"),
   runtime_reload: msg("重载主配置"),
   cache_purge: msg("清除域名缓存"),
+  identity_sync: msg("从主控同步账户"),
 };
 const auditTargetNames: Record<string, string> = {
   user: msg("账户"),
@@ -166,6 +174,7 @@ const auditTargetNames: Record<string, string> = {
   credential: msg("凭证"),
   revision: msg("修订"),
   domain: msg("域名"),
+  node: msg("节点"),
 };
 export function auditActionName(action: string) {
   return action in auditActionNames ? t(auditActionNames[action]) : action;

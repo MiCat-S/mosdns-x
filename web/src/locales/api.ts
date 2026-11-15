@@ -29,6 +29,10 @@ export const en: Record<string, string> = {
     "Stopped loading: the list has more than {max} pages.",
   "服务返回了重复的分页游标，已停止加载。":
     "Stopped loading: the service repeated a page cursor.",
+  "本节点的账户由主控统一管理，请到主控面板修改。":
+    "Accounts on this node are managed by the master. Make the change in the master panel.",
+  "启用多节点同步后，账户的额度周期和时区在开设后不能修改。":
+    "With multi-node sync on, an account's quota period and time zone can't be changed after it's created.",
 };
 
 export const ja: Record<string, string> = {
@@ -61,4 +65,8 @@ export const ja: Record<string, string> = {
     "ページ数が上限（{max} ページ）を超えたため、読み込みを中止しました。",
   "服务返回了重复的分页游标，已停止加载。":
     "サーバーが同じページ位置を再度返したため、読み込みを中止しました。",
+  "本节点的账户由主控统一管理，请到主控面板修改。":
+    "このノードのアカウントはマスターで一元管理されています。マスターのパネルで変更してください。",
+  "启用多节点同步后，账户的额度周期和时区在开设后不能修改。":
+    "マルチノード同期が有効な場合、アカウントのクォータ期間とタイムゾーンは作成後に変更できません。",
 };

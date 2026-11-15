@@ -94,6 +94,39 @@ describe("管理员健康监控", () => {
     ).toBeInTheDocument();
   });
 
+  it("从节点显示账户同步状态，失败只展示错误码对应的说明", async () => {
+    const data = report();
+    data.overall_status = "critical";
+    data.metrics.push({
+      key: "identity_sync",
+      label: "账户同步延迟",
+      value: 420,
+      unit: "秒",
+      status: "critical",
+      reason: "sync_failed",
+    });
+    data.identity_sync = {
+      mode: "follower",
+      source: "gz.example",
+      last_attempt_at: "2026-09-14T12:00:00Z",
+      last_success_at: "2026-09-14T11:53:00Z",
+      last_error: "fetch_failed",
+      users: 3,
+      credentials: 7,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(data)));
+    render(<HealthPanel />);
+    expect(await screen.findByText("gz.example")).toBeInTheDocument();
+    expect(screen.getByText("3 / 7")).toBeInTheDocument();
+    expect(screen.getByText("420 秒")).toBeInTheDocument();
+    expect(
+      screen.getByText("最近一次同步失败，正在使用上次同步的数据"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "无法连接主控，正在使用上次同步的数据。",
+    );
+  });
+
   it("刷新失败时不保留之前的正常显示", async () => {
     const data = report();
     data.overall_status = "healthy";

@@ -5,6 +5,7 @@ import {
   Alert,
   Card,
   LanguageSelect,
+  MasterManaged,
   Metric,
   PageTitle,
   Spinner,
@@ -12,6 +13,7 @@ import {
   useLoad,
 } from "../components";
 import { t } from "../i18n";
+import { useFollower, useSession } from "../session";
 import { useTopDomains } from "../top-domains";
 import { CredentialManager } from "./credentials";
 import { PasswordForm } from "./password";
@@ -21,6 +23,9 @@ import { DeviceUsage, StatsBlocks } from "./stats";
 import type { Credential, Me, Stats, UsagePoint } from "../types";
 
 export function ServicePage() {
+  // With multi-node sync each node counts the quota on its own.
+  const synced = Boolean(useSession().session?.identity_sync);
+  const follower = useFollower();
   const load = useCallback(
     (s: AbortSignal) =>
       Promise.all([
@@ -54,7 +59,7 @@ export function ServicePage() {
                 <code className="block">{data[0].public_dns_url}</code>
               </div>
               <Link className="primary action-link" to="/app/account">
-                {t("管理设备凭证")}
+                {follower ? t("查看设备凭证") : t("管理设备凭证")}
               </Link>
             </div>
             <div className="credential-summary">
@@ -72,7 +77,7 @@ export function ServicePage() {
           </Card>
           <div className="metrics">
             <Metric
-              label={t("剩余额度")}
+              label={synced ? t("本节点剩余额度") : t("剩余额度")}
               value={fmt.num(data[0].quota.remaining)}
               hint={t("已用 {used} / {limit}", {
                 used: fmt.num(data[0].quota.used),
@@ -201,6 +206,7 @@ export function CredentialsPage() {
 }
 
 export function AccountPage() {
+  const follower = useFollower();
   const load = useCallback(
     (signal: AbortSignal) => request<Me>("/me", { signal }),
     [],
@@ -210,8 +216,13 @@ export function AccountPage() {
     <>
       <PageTitle
         title={t("账户中心")}
-        description={t("管理账户状态、设备凭证与登录密码。")}
+        description={
+          follower
+            ? t("查看账户状态与设备凭证。")
+            : t("管理账户状态、设备凭证与登录密码。")
+        }
       />
+      <MasterManaged />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
         <>
@@ -226,16 +237,22 @@ export function AccountPage() {
           <Card title={t("公共 DNS 地址")}>
             <code className="block">{data.public_dns_url}</code>
             <p className="caption">
-              {t(
-                "请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。",
-              )}
+              {follower
+                ? t(
+                    "主控签发的专属地址在本节点同样可用：将地址中令牌之前的部分换成上方地址即可。不要将凭证令牌分享给他人。",
+                  )
+                : t(
+                    "请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。",
+                  )}
             </p>
           </Card>
           <CredentialManager base="/me" max={data.user.max_credentials} />
-          <Card className="narrow" title={t("修改密码")}>
-            <p className="caption">{t("修改成功后，当前会话会立即退出。")}</p>
-            <PasswordForm />
-          </Card>
+          {follower ? null : (
+            <Card className="narrow" title={t("修改密码")}>
+              <p className="caption">{t("修改成功后，当前会话会立即退出。")}</p>
+              <PasswordForm />
+            </Card>
+          )}
         </>
       ) : null}
       <Card className="language-card" title={t("界面语言")}>

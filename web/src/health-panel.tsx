@@ -55,6 +55,17 @@ export interface HealthReport {
     };
     bbolt?: { open_read_transactions: number; pending_pages: number };
   };
+  // Present on a follower node of multi-node account sync.
+  identity_sync?: IdentitySyncHealth;
+}
+interface IdentitySyncHealth {
+  mode: "follower";
+  source: string;
+  last_attempt_at: string | null;
+  last_success_at: string | null;
+  last_error?: string;
+  users: number;
+  credentials: number;
 }
 
 const labels: Record<HealthStatus, string> = {
@@ -82,6 +93,9 @@ const reasons: Record<string, string> = {
   invalid_value: msg("采集值无效"),
   invalid_capacity: msg("无法读取有效容量"),
   runtime_unavailable: msg("运行统计不可用"),
+  sync_never: msg("尚未从主控同步成功"),
+  sync_failed: msg("最近一次同步失败，正在使用上次同步的数据"),
+  period_mismatch: msg("有账户的额度周期或时区与主控不一致"),
 };
 // The server sends metric labels and units in Chinese. The labels it uses
 // today are listed so they get translations; anything else is shown as sent.
@@ -91,6 +105,7 @@ const metricLabels = [
   msg("控制库连接池占用"),
   msg("凭证一致性异常"),
   msg("累计 MySQL 回滚失败"),
+  msg("账户同步延迟"),
 ];
 function metricLabel(label: string) {
   return metricLabels.includes(label) ? t(label) : label;
@@ -101,6 +116,8 @@ function withUnit(number: string, unit: string) {
       return t("{value}处", { value: number });
     case "次": // i18n-ignore: unit sent by the server
       return t("{value}次", { value: number });
+    case "秒": // i18n-ignore: unit sent by the server
+      return t("{value} 秒", { value: number });
     default:
       return `${number}${unit}`;
   }
@@ -122,6 +139,62 @@ function Status({ status }: { status: HealthStatus }) {
 }
 function value(number: number | null | undefined) {
   return number != null && Number.isFinite(number) ? fmt.num(number) : "—";
+}
+
+// The server reports a sync failure as a fixed code, never the raw error.
+const syncErrors: Record<string, string> = {
+  fetch_failed: msg("无法连接主控，正在使用上次同步的数据。"),
+  invalid_snapshot: msg("主控返回的数据未通过校验，已保留上次同步的数据。"),
+  apply_failed: msg("同步数据写入本地数据库失败，已保留上次同步的数据。"),
+  cleanup_failed: msg("已删除账户的本地记录未能清理，稍后会自动重试。"),
+};
+// Not a failure: the other changes were applied, only the cycle was kept.
+const periodMismatch = msg(
+  "有账户在主控上的额度周期或时区与本节点不一致。本节点保留原周期和已用额度，其余改动已同步。请暂时关闭主控的同步，将该账户改回原设置；也可以在主控上删除并重新开设该账户，但这会清空它在各节点的已用额度。",
+);
+export function syncError(code: string) {
+  if (code === "period_mismatch") return t(periodMismatch);
+  const status = /^http_(\d{3})$/.exec(code)?.[1];
+  if (status === "401" || status === "403")
+    return t("主控不接受本节点的同步令牌，请核对两边配置的令牌。");
+  if (status)
+    return t("主控返回 HTTP {status}，正在使用上次同步的数据。", { status });
+  return syncErrors[code]
+    ? t(syncErrors[code])
+    : t("同步失败（{code}），正在使用上次同步的数据。", { code });
+}
+function SyncStatus({ sync }: { sync: IdentitySyncHealth }) {
+  return (
+    <>
+      {sync.last_error === "period_mismatch" ? (
+        <div className="notice" role="status">
+          {syncError(sync.last_error)}
+        </div>
+      ) : sync.last_error ? (
+        <Alert error={syncError(sync.last_error)} />
+      ) : null}
+      <div className="metrics health-summary">
+        <Metric label={t("账户同步来源")} value={sync.source} size="text" />
+        <Metric
+          label={t("上次同步成功")}
+          value={
+            sync.last_success_at
+              ? fmt.date(sync.last_success_at)
+              : t("尚未成功")
+          }
+          hint={
+            sync.last_attempt_at
+              ? t("上次尝试：{time}", { time: fmt.date(sync.last_attempt_at) })
+              : undefined
+          }
+        />
+        <Metric
+          label={t("已同步账户 / 凭证")}
+          value={`${value(sync.users)} / ${value(sync.credentials)}`}
+        />
+      </div>
+    </>
+  );
 }
 
 export function HealthPanel() {
@@ -255,6 +328,7 @@ export function HealthPanel() {
               )}
             />
           ) : null}
+          {data.identity_sync ? <SyncStatus sync={data.identity_sync} /> : null}
           <div
             className="table-wrap"
             role="region"

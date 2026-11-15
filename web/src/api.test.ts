@@ -112,8 +112,25 @@ describe("API 边界类型", () => {
       { user, csrf_token: 1 },
       { user: { ...user, role: "root" }, csrf_token: "c" },
       { csrf_token: "c" },
+      { user, csrf_token: "c", identity_sync: { mode: "replica" } },
+      { user, csrf_token: "c", identity_sync: "follower" },
+      {
+        user,
+        csrf_token: "c",
+        identity_sync: { mode: "follower", master_panel_url: 1 },
+      },
     ])
       expect(() => decodeSession(bad)).toThrow(ResponseError);
+    expect(
+      decodeSession({
+        user,
+        csrf_token: "c",
+        identity_sync: {
+          mode: "follower",
+          master_panel_url: "https://gz.example",
+        },
+      }).identity_sync?.mode,
+    ).toBe("follower");
 
     expect(decodePage({ items: [1], next_cursor: "n" }).items).toEqual([1]);
     expect(decodePage({ items: [] }).next_cursor).toBeUndefined();

@@ -54,6 +54,28 @@ export function Alert({ error }: { error: string }) {
     </div>
   ) : null;
 }
+// MasterManaged tells a follower node's users where account, password and
+// credential changes are made; it renders nothing on any other node.
+export function MasterManaged({ children }: { children?: ReactNode }) {
+  const sync = useSession().session?.identity_sync;
+  if (sync?.mode !== "follower") return null;
+  const url = sync.master_panel_url;
+  return (
+    <div className="notice info" role="note">
+      <p>
+        {t(
+          "本节点的账户由主控统一管理：账户、密码和设备凭证请到主控面板修改，稍后会同步到本节点。",
+        )}{" "}
+        {children}
+      </p>
+      {url && /^https?:\/\//i.test(url) ? (
+        <a href={url} target="_blank" rel="noopener noreferrer">
+          {t("前往主控面板")}
+        </a>
+      ) : null}
+    </div>
+  );
+}
 export function Empty({
   children,
   action,

@@ -118,6 +118,15 @@ export function decodeSession(value: unknown): Session {
     (value.user.role !== "admin" && value.user.role !== "user")
   )
     invalid();
+  const sync = value.identity_sync;
+  if (
+    sync !== undefined &&
+    (!isObject(sync) ||
+      (sync.mode !== "master" && sync.mode !== "follower") ||
+      (sync.master_panel_url !== undefined &&
+        typeof sync.master_panel_url !== "string"))
+  )
+    invalid();
   return value as unknown as Session;
 }
 // decodePage checks the envelope only; the items keep their declared type.
@@ -224,6 +233,12 @@ export function message(error: unknown) {
       invalid_domain: t("请输入有效的域名，例如 example.com。"),
       cache_purge_failed: t("部分缓存未能清除，请查看服务日志后重试。"),
       cache_purge_busy: t("另一次清除正在进行，请稍后再试。"),
+      identity_managed_by_master: t(
+        "本节点的账户由主控统一管理，请到主控面板修改。",
+      ),
+      identity_period_locked: t(
+        "启用多节点同步后，账户的额度周期和时区在开设后不能修改。",
+      ),
     };
     if (messages[error.code]) return messages[error.code];
   }

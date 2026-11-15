@@ -15,10 +15,18 @@ export interface User {
   created_at: string;
   updated_at: string;
 }
+// IdentitySync is present when this node takes part in multi-node account
+// sync: the master is the only place accounts and credentials change, and a
+// follower mirrors them.
+export interface IdentitySync {
+  mode: "master" | "follower";
+  master_panel_url?: string;
+}
 export interface Session {
   user: User;
   csrf_token: string;
   expires_at: string;
+  identity_sync?: IdentitySync;
 }
 export interface Quota {
   period: Period;

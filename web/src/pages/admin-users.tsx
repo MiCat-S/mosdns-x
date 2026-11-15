@@ -12,6 +12,7 @@ import {
   Alert,
   Empty,
   Field,
+  MasterManaged,
   Metric,
   Modal,
   PageTitle,
@@ -19,7 +20,7 @@ import {
   fmt,
   useLoad,
 } from "../components";
-import { useSession } from "../session";
+import { useFollower, useSession, useSyncMaster } from "../session";
 import { t } from "../i18n";
 import { useTopDomains } from "../top-domains";
 import { CredentialManager } from "./credentials";
@@ -57,6 +58,10 @@ function UserForm({
   onCancel: () => void;
 }) {
   const edit = Boolean(initial);
+  // With multi-node sync each node counts quota on its own, so the period
+  // and timezone are fixed once the account exists.
+  const syncMaster = useSyncMaster();
+  const cycleLocked = edit && syncMaster;
   const [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -67,8 +72,9 @@ function UserForm({
     const values = {
       enabled: f.get("enabled") === "on",
       expires_at: fromLocalDateTime(String(f.get("expires_at"))),
-      period: String(f.get("period")),
-      timezone: String(f.get("timezone")),
+      // A disabled field is left out of the form data.
+      period: cycleLocked ? initial!.period : String(f.get("period")),
+      timezone: cycleLocked ? initial!.timezone : String(f.get("timezone")),
       limit: Number(f.get("limit")),
       qps: Number(f.get("qps")),
       burst: Number(f.get("burst")),
@@ -140,14 +146,31 @@ function UserForm({
             </Field>
           </>
         ) : null}
-        <Field label={t("周期")}>
-          <select name="period" defaultValue={v.period}>
+        <Field
+          label={t("周期")}
+          hint={
+            cycleLocked
+              ? t("已启用多节点同步，开设后不能修改")
+              : syncMaster
+                ? t("已启用多节点同步，开设后不能修改周期和时区")
+                : undefined
+          }
+        >
+          <select name="period" defaultValue={v.period} disabled={cycleLocked}>
             <option value="daily">{t("每日")}</option>
             <option value="monthly">{t("每月")}</option>
           </select>
         </Field>
-        <Field label={t("时区")}>
-          <input name="timezone" defaultValue={v.timezone} required />
+        <Field
+          label={t("时区")}
+          hint={cycleLocked ? t("已启用多节点同步，开设后不能修改") : undefined}
+        >
+          <input
+            name="timezone"
+            defaultValue={v.timezone}
+            required
+            disabled={cycleLocked}
+          />
         </Field>
         <Field label={t("到期时间")} hint={t("留空表示长期有效")}>
           <input
@@ -217,6 +240,7 @@ function UserForm({
   );
 }
 export function Users() {
+  const follower = useFollower();
   const [version, setVersion] = useState(0),
     [modal, setModal] = useState(false);
   const {
@@ -233,11 +257,14 @@ export function Users() {
         title={t("用户管理")}
         description={t("设置账户状态、服务期限、额度与速率")}
         action={
-          <button className="primary" onClick={() => setModal(true)}>
-            {t("＋ 开设账户")}
-          </button>
+          follower ? null : (
+            <button className="primary" onClick={() => setModal(true)}>
+              {t("＋ 开设账户")}
+            </button>
+          )
         }
       />
+      <MasterManaged />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data?.length ? (
         <div
@@ -299,9 +326,11 @@ export function Users() {
       ) : !loading && !error ? (
         <Empty
           action={
-            <button className="primary" onClick={() => setModal(true)}>
-              {t("开设账户")}
-            </button>
+            follower ? null : (
+              <button className="primary" onClick={() => setModal(true)}>
+                {t("开设账户")}
+              </button>
+            )
           }
         >
           {t("尚未开设账户")}
@@ -340,6 +369,9 @@ function UserDetailContent({ id }: { id: string }) {
     [resetPassword, setResetPassword] = useState(false),
     [removing, setRemoving] = useState(false);
   const { session } = useSession();
+  const follower = useFollower();
+  // With multi-node sync each node counts the quota on its own.
+  const synced = Boolean(session?.identity_sync);
   const nav = useNavigate();
   const params = useMemo(range, [id]);
   const base = `/admin/users/${encodeURIComponent(id)}`;
@@ -370,7 +402,7 @@ function UserDetailContent({ id }: { id: string }) {
         title={account?.user.username ?? t("用户详情")}
         description={t("账户状态、当前额度与代管设备凭证")}
         action={
-          account ? (
+          account && !follower ? (
             <>
               <button onClick={() => setResetPassword(true)}>
                 {t("重置密码")}
@@ -385,12 +417,13 @@ function UserDetailContent({ id }: { id: string }) {
           ) : null
         }
       />
+      <MasterManaged />
       {loading ? <Spinner /> : <Alert error={error} />}
       {account ? (
         <>
           <div className="metrics">
             <Metric
-              label={t("剩余额度")}
+              label={synced ? t("本节点剩余额度") : t("剩余额度")}
               value={fmt.num(account.quota.remaining)}
               hint={t("已用 {used} / {limit}", {
                 used: fmt.num(account.quota.used),

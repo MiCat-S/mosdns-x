@@ -78,6 +78,34 @@ export const en: Record<string, string> = {
   面板登录: "Panel sign-in",
   "面板 DNS 查询": "Panel DNS queries",
   "暂无监控数据。": "No monitoring data yet.",
+  尚未从主控同步成功: "Hasn't synced from the master yet",
+  "最近一次同步失败，正在使用上次同步的数据":
+    "The last sync failed; using the previously synced data",
+  账户同步延迟: "Account sync lag",
+  "{value} 秒": "{value} s",
+  "无法连接主控，正在使用上次同步的数据。":
+    "Can't reach the master; using the previously synced data.",
+  "主控返回的数据未通过校验，已保留上次同步的数据。":
+    "The master's data failed validation; the previously synced data is kept.",
+  "同步数据写入本地数据库失败，已保留上次同步的数据。":
+    "Couldn't write the synced data to the local database; the previously synced data is kept.",
+  "已删除账户的本地记录未能清理，稍后会自动重试。":
+    "Local records of deleted accounts couldn't be cleared; this is retried automatically.",
+  "主控不接受本节点的同步令牌，请核对两边配置的令牌。":
+    "The master rejected this node's sync token. Check that both sides use the same token.",
+  "主控返回 HTTP {status}，正在使用上次同步的数据。":
+    "The master returned HTTP {status}; using the previously synced data.",
+  "同步失败（{code}），正在使用上次同步的数据。":
+    "Sync failed ({code}); using the previously synced data.",
+  账户同步来源: "Account sync source",
+  上次同步成功: "Last successful sync",
+  尚未成功: "Not yet",
+  "上次尝试：{time}": "Last attempt: {time}",
+  "已同步账户 / 凭证": "Synced accounts / credentials",
+  有账户的额度周期或时区与主控不一致:
+    "Some accounts' quota period or time zone differs from the master",
+  "有账户在主控上的额度周期或时区与本节点不一致。本节点保留原周期和已用额度，其余改动已同步。请暂时关闭主控的同步，将该账户改回原设置；也可以在主控上删除并重新开设该账户，但这会清空它在各节点的已用额度。":
+    "Some accounts have a different quota period or time zone on the master. This node keeps the original period and used quota; all other changes were synced. Briefly turn off sync on the master and change the account back, or delete and recreate the account there, which resets its used quota on every node.",
 };
 
 export const ja: Record<string, string> = {
@@ -160,4 +188,32 @@ export const ja: Record<string, string> = {
   面板登录: "パネルログイン",
   "面板 DNS 查询": "パネル DNS クエリ",
   "暂无监控数据。": "監視データはまだありません。",
+  尚未从主控同步成功: "マスターからの同期にまだ成功していません",
+  "最近一次同步失败，正在使用上次同步的数据":
+    "直近の同期に失敗しました。前回同期したデータを使用しています",
+  账户同步延迟: "アカウント同期の遅延",
+  "{value} 秒": "{value} 秒",
+  "无法连接主控，正在使用上次同步的数据。":
+    "マスターに接続できません。前回同期したデータを使用しています。",
+  "主控返回的数据未通过校验，已保留上次同步的数据。":
+    "マスターから受け取ったデータが検証に失敗しました。前回同期したデータを保持しています。",
+  "同步数据写入本地数据库失败，已保留上次同步的数据。":
+    "同期データをローカルデータベースに書き込めませんでした。前回同期したデータを保持しています。",
+  "已删除账户的本地记录未能清理，稍后会自动重试。":
+    "削除されたアカウントのローカル記録を消去できませんでした。後で自動的に再試行します。",
+  "主控不接受本节点的同步令牌，请核对两边配置的令牌。":
+    "マスターがこのノードの同期トークンを受け付けません。両方に設定したトークンを確認してください。",
+  "主控返回 HTTP {status}，正在使用上次同步的数据。":
+    "マスターが HTTP {status} を返しました。前回同期したデータを使用しています。",
+  "同步失败（{code}），正在使用上次同步的数据。":
+    "同期に失敗しました（{code}）。前回同期したデータを使用しています。",
+  账户同步来源: "アカウント同期元",
+  上次同步成功: "最終同期成功",
+  尚未成功: "未成功",
+  "上次尝试：{time}": "最終試行：{time}",
+  "已同步账户 / 凭证": "同期済みアカウント / 認証情報",
+  有账户的额度周期或时区与主控不一致:
+    "一部のアカウントのクォータ期間またはタイムゾーンがマスターと一致しません",
+  "有账户在主控上的额度周期或时区与本节点不一致。本节点保留原周期和已用额度，其余改动已同步。请暂时关闭主控的同步，将该账户改回原设置；也可以在主控上删除并重新开设该账户，但这会清空它在各节点的已用额度。":
+    "一部のアカウントで、マスター上のクォータ期間またはタイムゾーンがこのノードと一致しません。このノードは元の期間と使用済みクォータをそのまま保持し、その他の変更は同期済みです。マスターの同期を一時的に無効にしてアカウントを元の設定に戻すか、マスターでアカウントを削除して作成し直してください（各ノードの使用済みクォータはリセットされます）。",
 };

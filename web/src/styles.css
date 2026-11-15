@@ -912,6 +912,22 @@ td small {
   color: var(--warning);
 }
 
+/* A standing fact about this node, not a problem to fix. */
+.notice.info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-3);
+  border-left-color: var(--info);
+  background: var(--info-soft);
+  color: var(--text);
+}
+
+.notice.info p {
+  margin: 0;
+  flex: 1 1 24rem;
+}
+
 /* Tables */
 
 .table-wrap {
