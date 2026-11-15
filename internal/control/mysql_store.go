@@ -36,6 +36,9 @@ const (
 )
 
 type MySQLOptions struct {
+	// IdentityMode is master, follower, or standalone. Empty inherits the stored mode
+	// so offline commands respect follower restrictions.
+	IdentityMode     string
 	DSN              string
 	MaxOpenConns     int
 	MaxIdleConns     int
@@ -47,6 +50,7 @@ type MySQLOptions struct {
 }
 
 type MySQLStore struct {
+	identityMode     string
 	db               *sql.DB
 	clock            Clock
 	operationTimeout time.Duration
@@ -225,6 +229,16 @@ var mysqlControlMigrations = []string{
 		CONSTRAINT fk_mosdns_user_public_lists_user FOREIGN KEY (user_id) REFERENCES mosdns_users(id),
 		CONSTRAINT fk_mosdns_user_public_lists_list FOREIGN KEY (list_id) REFERENCES mosdns_public_lists(id)
 	) ENGINE=InnoDB`,
+	`CREATE TABLE IF NOT EXISTS mosdns_identity_sync_state (
+        id TINYINT UNSIGNED PRIMARY KEY,
+        mode VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'standalone',
+        bootstrapped BOOLEAN NOT NULL DEFAULT FALSE,
+        last_success_at_ns BIGINT NULL
+    ) ENGINE=InnoDB`,
+	`INSERT INTO mosdns_identity_sync_state (id) VALUES (1) ON DUPLICATE KEY UPDATE id=VALUES(id)`,
+	`CREATE TABLE IF NOT EXISTS mosdns_identity_sync_erases (
+        user_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY
+    ) ENGINE=InnoDB`,
 }
 
 var mysqlControlV3Columns = []struct {
@@ -311,6 +325,10 @@ func OpenMySQLContext(parent context.Context, opts MySQLOptions) (*MySQLStore, e
 		return nil, mysqlStoreError(err)
 	}
 	if err := upgradeMySQLControl(parent, parsed, opts.Logger); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.configureIdentityMode(parent, opts.IdentityMode); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -597,7 +615,7 @@ func mysqlStoreError(err error) error {
 	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
 		return ErrConflict
 	}
-	return fmt.Errorf("%w: mysql: %v", ErrUnavailable, err)
+	return fmt.Errorf("%w: mysql: %w", ErrUnavailable, err)
 }
 
 func mysqlTimeValue(v time.Time) any {
@@ -743,6 +761,9 @@ func newUserRecord(spec UserSpec, salt, passwordHash []byte, now time.Time, id s
 }
 
 func (s *MySQLStore) InitializeAdmin(ctx context.Context, spec UserSpec) (User, error) {
+	if s.identityMode == "follower" {
+		return User{}, ErrIdentityManagedByMaster
+	}
 	spec.Role, spec.Enabled = RoleAdmin, true
 	spec, err := normalizeSpec(spec)
 	if err != nil {
@@ -788,6 +809,9 @@ func (s *MySQLStore) InitializeAdmin(ctx context.Context, spec UserSpec) (User, 
 }
 
 func (s *MySQLStore) CreateUser(ctx context.Context, actor string, spec UserSpec) (User, error) {
+	if s.identityMode == "follower" {
+		return User{}, ErrIdentityManagedByMaster
+	}
 	spec, err := normalizeSpec(spec)
 	if err != nil {
 		return User{}, err
@@ -974,6 +998,9 @@ func revokeMySQLUserSessions(ctx context.Context, tx *sql.Tx, userID string, now
 }
 
 func (s *MySQLStore) SetPassword(ctx context.Context, actor, userID, password string) error {
+	if s.identityMode == "follower" {
+		return ErrIdentityManagedByMaster
+	}
 	salt, passwordHash, err := hashPassword(password)
 	if err != nil {
 		return err
@@ -1003,6 +1030,9 @@ func (s *MySQLStore) SetPassword(ctx context.Context, actor, userID, password st
 }
 
 func (s *MySQLStore) ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error {
+	if s.identityMode == "follower" {
+		return ErrIdentityManagedByMaster
+	}
 	if s.closed.Load() {
 		return ErrUnavailable
 	}
@@ -1066,6 +1096,9 @@ func (s *MySQLStore) RevokeSession(ctx context.Context, actor, id string) error 
 }
 
 func (s *MySQLStore) UpdateUser(ctx context.Context, actor, userID string, p UserPatch) (User, error) {
+	if s.identityMode == "follower" {
+		return User{}, ErrIdentityManagedByMaster
+	}
 	var out User
 	now := s.clock.Now().UTC()
 	err := s.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
@@ -1108,6 +1141,9 @@ func (s *MySQLStore) UpdateUser(ctx context.Context, actor, userID string, p Use
 		periodChanges := p.Period != nil && *p.Period != r.Period
 		timezoneChanges := p.Timezone != nil && *p.Timezone != r.Timezone
 		if periodChanges || timezoneChanges {
+			if s.identityMode == "master" {
+				return ErrIdentityPeriodLocked
+			}
 			start, _, err := periodBounds(now, r.Period, r.Timezone)
 			if err != nil {
 				return ErrInvalidInput
@@ -1208,6 +1244,9 @@ func authorizeMySQLCredentialOwner(ctx context.Context, tx *sql.Tx, actor, userI
 }
 
 func (s *MySQLStore) CreateCredential(ctx context.Context, actor, userID, name string, expires time.Time) (IssuedCredential, error) {
+	if s.identityMode == "follower" {
+		return IssuedCredential{}, ErrIdentityManagedByMaster
+	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 128 {
 		return IssuedCredential{}, ErrInvalidInput
@@ -1256,6 +1295,9 @@ func (s *MySQLStore) CreateCredential(ctx context.Context, actor, userID, name s
 }
 
 func (s *MySQLStore) RotateCredential(ctx context.Context, actor, userID, id string) (IssuedCredential, error) {
+	if s.identityMode == "follower" {
+		return IssuedCredential{}, ErrIdentityManagedByMaster
+	}
 	now := s.clock.Now().UTC()
 	token, err := randomUUIDv4()
 	if err != nil {
@@ -1292,6 +1334,9 @@ func (s *MySQLStore) RotateCredential(ctx context.Context, actor, userID, id str
 }
 
 func (s *MySQLStore) RevokeCredential(ctx context.Context, actor, userID, id string) error {
+	if s.identityMode == "follower" {
+		return ErrIdentityManagedByMaster
+	}
 	now := s.clock.Now().UTC()
 	return s.withTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 		if err := authorizeMySQLCredentialOwner(ctx, tx, actor, userID, now); err != nil {

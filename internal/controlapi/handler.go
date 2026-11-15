@@ -51,6 +51,7 @@ type SystemConfig struct {
 }
 
 type Options struct {
+	IdentitySync      *IdentitySyncOptions
 	Control           control.Service
 	Telemetry         Telemetry
 	PublicDNSURL      string
@@ -96,19 +97,8 @@ func New(opts Options) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if opts.PanelOrigin == "" {
-		return nil, errors.New("panel origin is required")
-	}
-	origin, err := url.Parse(opts.PanelOrigin)
-	if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || origin.Path != "" {
-		return nil, errors.New("invalid panel origin")
-	}
-	if origin.Scheme != "https" {
-		host := origin.Hostname()
-		ip, _ := netip.ParseAddr(host)
-		if !opts.Development || origin.Scheme != "http" || (host != "localhost" && !ip.IsLoopback()) {
-			return nil, errors.New("panel origin must use https or development loopback http")
-		}
+	if err := validatePanelOrigin(opts.PanelOrigin, opts.Development); err != nil {
+		return nil, err
 	}
 	if !opts.Development && !opts.SecureCookies {
 		return nil, errors.New("secure cookies are required in production")
@@ -165,6 +155,33 @@ func New(opts Options) (*Handler, error) {
 		limiter:  newIPLimiter(opts.LoginRateLimit, opts.LoginRateWindow, opts.LoginIPCapacity, opts.Now),
 		health:   healthState{startedAt: opts.Now().UTC(), monotonicNow: time.Now},
 	}, nil
+}
+
+// ValidateOrigins applies the API's URL contract before startup opens stores
+// or performs the first destructive follower import.
+func ValidateOrigins(publicDNSURL, panelOrigin string, development bool) error {
+	if _, err := validatePublicURL(publicDNSURL, development); err != nil {
+		return err
+	}
+	return validatePanelOrigin(panelOrigin, development)
+}
+
+func validatePanelOrigin(raw string, dev bool) error {
+	if raw == "" {
+		return errors.New("panel origin is required")
+	}
+	origin, err := url.Parse(raw)
+	if err != nil || origin.Scheme == "" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || origin.Path != "" {
+		return errors.New("invalid panel origin")
+	}
+	if origin.Scheme != "https" {
+		host := origin.Hostname()
+		ip, _ := netip.ParseAddr(host)
+		if !dev || origin.Scheme != "http" || (host != "localhost" && !ip.IsLoopback()) {
+			return errors.New("panel origin must use https or development loopback http")
+		}
+	}
+	return nil
 }
 
 func validatePublicURL(raw string, dev bool) (*url.URL, error) {
@@ -256,6 +273,10 @@ func (h *Handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if p == "" {
 		p = "/"
 	}
+	if p == "/identity/snapshot" {
+		h.identitySnapshot(w, r)
+		return
+	}
 	if p == "/session" {
 		h.session(w, r)
 		return
@@ -293,9 +314,10 @@ func (h *Handler) serveAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 type sessionResponse struct {
-	User      control.User `json:"user"`
-	CSRFToken string       `json:"csrf_token"`
-	ExpiresAt time.Time    `json:"expires_at"`
+	IdentitySync *IdentitySyncInfo `json:"identity_sync,omitempty"`
+	User         control.User      `json:"user"`
+	CSRFToken    string            `json:"csrf_token"`
+	ExpiresAt    time.Time         `json:"expires_at"`
 }
 
 func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
@@ -337,13 +359,13 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.setCookie(w, token, ss.ExpiresAt)
-		writeJSON(w, http.StatusOK, sessionResponse{u, ss.CSRFToken, ss.ExpiresAt})
+		writeJSON(w, http.StatusOK, sessionResponse{h.identitySyncInfo(), u, ss.CSRFToken, ss.ExpiresAt})
 	case http.MethodGet:
 		ss, u, ok := h.auth(w, r)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, sessionResponse{u, ss.CSRFToken, ss.ExpiresAt})
+		writeJSON(w, http.StatusOK, sessionResponse{h.identitySyncInfo(), u, ss.CSRFToken, ss.ExpiresAt})
 	case http.MethodDelete:
 		ss, _, ok := h.auth(w, r)
 		if !ok {
@@ -1026,11 +1048,13 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, actorID, us
 		h.serviceError(w, err)
 		return
 	}
-	if eraser, ok := h.opts.Telemetry.(telemetry.UserEraser); ok {
-		if eraseErr := eraser.DeleteUser(r.Context(), userID); eraseErr != nil {
-			h.opts.Logger.Error("failed to erase deleted user's query logs", zap.String("user_id", userID), zap.Error(eraseErr))
-			writeError(w, http.StatusServiceUnavailable, "unavailable")
-			return
+	if _, queued := h.opts.Control.(control.UserEraseQueue); !queued {
+		if eraser, ok := h.opts.Telemetry.(telemetry.UserEraser); ok {
+			if eraseErr := eraser.DeleteUser(r.Context(), userID); eraseErr != nil {
+				h.opts.Logger.Error("failed to erase deleted user's query logs", zap.String("user_id", userID), zap.Error(eraseErr))
+				writeError(w, http.StatusServiceUnavailable, "unavailable")
+				return
+			}
 		}
 	}
 	if err != nil {
@@ -1368,6 +1392,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 }
 func (h *Handler) serviceError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, control.ErrIdentityManagedByMaster):
+		writeError(w, 409, "identity_managed_by_master")
+	case errors.Is(err, control.ErrIdentityPeriodLocked):
+		writeError(w, 409, "identity_period_locked")
 	case errors.Is(err, control.ErrInvalidInput):
 		writeError(w, 400, "invalid_input")
 	case errors.Is(err, control.ErrInvalidCredential):

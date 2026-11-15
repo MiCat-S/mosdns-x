@@ -280,9 +280,9 @@ func TestMySQLDeleteUserRemovesChildRowsBeforeUser(t *testing.T) {
 	for _, table := range []string{"mosdns_sessions", "mosdns_credentials", "mosdns_dns_policy_rules", "mosdns_dns_policy_settings", "mosdns_user_public_lists"} {
 		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM ` + table + ` WHERE user_id=?`)).WithArgs("user-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	}
-	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_usage_minutes WHERE scope_kind IN ('u', 'd') AND scope_id=?`)).WithArgs("user-1").WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_audit_logs WHERE id IN (?, ?, ?)`)).WithArgs("a1", "a3", "a4").WillReturnResult(sqlmock.NewResult(0, 3))
 	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_users WHERE id=?`)).WithArgs("user-1").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT IGNORE INTO mosdns_identity_sync_erases (user_id) VALUES (?)`)).WithArgs("user-1").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO mosdns_audit_logs`)).WithArgs(sqlmock.AnyArg(), "admin-1", "delete_user", "user", "user-1", nil, now.UnixNano()).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 

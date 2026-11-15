@@ -107,6 +107,8 @@ func cleanupMySQLControlTables(t *testing.T, dsn string) {
 	}
 	defer db.Close()
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS mosdns_identity_sync_erases`,
+		`DROP TABLE IF EXISTS mosdns_identity_sync_state`,
 		`DROP TABLE IF EXISTS mosdns_sessions`,
 		`DROP TABLE IF EXISTS mosdns_credentials`,
 		`DROP TABLE IF EXISTS mosdns_dns_policy_rules`,
@@ -224,6 +226,9 @@ func TestMySQLIntegrationDeleteUser(t *testing.T) {
 		t.Fatalf("non-admin delete err=%v", err)
 	}
 	if err := store.DeleteUser(ctx, f.admin.ID, f.victim.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DrainUserErases(ctx, func(context.Context, string) (bool, error) { return true, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.DeleteUser(ctx, f.admin.ID, f.victim.ID); !errors.Is(err, ErrNotFound) {

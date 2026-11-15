@@ -309,7 +309,7 @@ func (s *Store) batch(ctx context.Context, fn func(*bbolt.Tx) error) error {
 }
 
 func isDomainError(err error) bool {
-	return errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrRateLimited) || errors.Is(err, ErrQuotaExceeded) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalidInput)
+	return errors.Is(err, ErrIdentityManagedByMaster) || errors.Is(err, ErrIdentityPeriodLocked) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrRateLimited) || errors.Is(err, ErrQuotaExceeded) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalidInput)
 }
 
 func marshalPut(b *bbolt.Bucket, key []byte, v any) error {

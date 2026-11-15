@@ -135,6 +135,9 @@ func resolveControlStorage(configFile, database, mysqlDSN string) (string, strin
 		if cfg.Control == nil {
 			return "", "", errors.New("config does not enable control mode")
 		}
+		if cfg.Control.IdentitySync != nil && cfg.Control.IdentitySync.Mode == "follower" {
+			return "", "", control.ErrIdentityManagedByMaster
+		}
 		switch effectiveControlDriver(cfg.Control) {
 		case "mysql":
 			mysqlDSN = cfg.Control.Storage.MySQL.DSN

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/pmkol/mosdns-x/internal/control"
+	"github.com/pmkol/mosdns-x/internal/controlapi"
 	"github.com/pmkol/mosdns-x/internal/telemetry"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
 	"github.com/pmkol/mosdns-x/pkg/server/query_access"
@@ -29,6 +30,9 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	}
 	if c.Admit.QueueSize < 0 || c.Admit.WaitMS < 0 || c.Admit.BatchDelayMS < 0 || c.Admit.BatchSize < 0 {
 		return nil, nil, errors.New("control admit settings cannot be negative")
+	}
+	if err := validateIdentitySyncConfig(c); err != nil {
+		return nil, nil, err
 	}
 	controlDriver := effectiveControlDriver(c)
 	telemetryDriver := effectiveTelemetryDriver(c)
@@ -85,6 +89,9 @@ func validateControlConfig(cfg *Config) (*url.URL, []netip.Prefix, error) {
 	}
 	if c.Development && !loopbackHost(panel.Hostname()) {
 		return nil, nil, errors.New("development panel_origin must use loopback")
+	}
+	if err := controlapi.ValidateOrigins(c.PublicDNSURL, c.PanelOrigin, c.Development); err != nil {
+		return nil, nil, err
 	}
 	if cfg.API.HTTP == "" || !loopbackEndpoint(cfg.API.HTTP) {
 		return nil, nil, errors.New("control management api must listen on loopback")
@@ -221,7 +228,7 @@ func openControlStore(ctx context.Context, c *ControlConfig, logger *zap.Logger)
 		return store, nil
 	}
 	lifetime, timeout := mysqlDurations(c.Storage.MySQL)
-	store, err := control.OpenMySQLContext(ctx, control.MySQLOptions{DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, Logger: logger})
+	store, err := control.OpenMySQLContext(ctx, control.MySQLOptions{IdentityMode: identitySyncMode(c), DSN: c.Storage.MySQL.DSN, MaxOpenConns: c.Storage.MySQL.MaxOpenConns, MaxIdleConns: c.Storage.MySQL.MaxIdleConns, ConnMaxLifetime: lifetime, OperationTimeout: timeout, Logger: logger})
 	if err != nil {
 		return nil, err
 	}

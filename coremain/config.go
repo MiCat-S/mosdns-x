@@ -41,19 +41,27 @@ type Config struct {
 }
 
 type ControlConfig struct {
-	Database        string          `yaml:"database"`
-	StatsDatabase   string          `yaml:"stats_database"`
-	PublicDNSURL    string          `yaml:"public_dns_url"`
-	PanelOrigin     string          `yaml:"panel_origin"`
-	Development     bool            `yaml:"development"`
-	QueryLog        bool            `yaml:"query_log"`
-	EnablePprof     bool            `yaml:"enable_pprof"`
-	TrustedProxies  []string        `yaml:"trusted_proxies"`
-	ManagedConfig   string          `yaml:"managed_config"`
-	HealthScanLimit int             `yaml:"health_scan_limit"`
-	Admit           AdmitConfig     `yaml:"admit"`
-	Storage         StorageConfig   `yaml:"storage"`
-	Telemetry       TelemetryConfig `yaml:"telemetry"`
+	IdentitySync    *IdentitySyncConfig `yaml:"identity_sync"`
+	Database        string              `yaml:"database"`
+	StatsDatabase   string              `yaml:"stats_database"`
+	PublicDNSURL    string              `yaml:"public_dns_url"`
+	PanelOrigin     string              `yaml:"panel_origin"`
+	Development     bool                `yaml:"development"`
+	QueryLog        bool                `yaml:"query_log"`
+	EnablePprof     bool                `yaml:"enable_pprof"`
+	TrustedProxies  []string            `yaml:"trusted_proxies"`
+	ManagedConfig   string              `yaml:"managed_config"`
+	HealthScanLimit int                 `yaml:"health_scan_limit"`
+	Admit           AdmitConfig         `yaml:"admit"`
+	Storage         StorageConfig       `yaml:"storage"`
+	Telemetry       TelemetryConfig     `yaml:"telemetry"`
+}
+
+type IdentitySyncConfig struct {
+	Mode            string `yaml:"mode"`
+	Token           string `yaml:"token"`
+	MasterURL       string `yaml:"master_url"`
+	IntervalSeconds int    `yaml:"interval_seconds"`
 }
 
 // AdmitConfig tunes the per-query admission path. Every admit is still durably

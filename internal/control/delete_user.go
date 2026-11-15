@@ -238,6 +238,9 @@ func deletePrefix(b *bbolt.Bucket, prefix []byte) error {
 
 // DeleteUser is the MySQL counterpart of (*Store).DeleteUser.
 func (s *MySQLStore) DeleteUser(ctx context.Context, actor, userID string) error {
+	if s.identityMode == "follower" {
+		return ErrIdentityManagedByMaster
+	}
 	if userID == "" {
 		return ErrInvalidInput
 	}
@@ -267,55 +270,63 @@ func (s *MySQLStore) DeleteUser(ctx context.Context, actor, userID string) error
 				return fmt.Errorf("%w: cannot delete the last administrator", ErrConflict)
 			}
 		}
-		links := newUserAuditLinks(userID)
-		for _, owned := range []struct {
-			query string
-			into  map[string]struct{}
-		}{
-			{`SELECT id FROM mosdns_sessions WHERE user_id=?`, links.sessions},
-			{`SELECT id FROM mosdns_credentials WHERE user_id=?`, links.credentials},
-			{`SELECT id FROM mosdns_dns_policy_rules WHERE user_id=?`, links.rules},
-		} {
-			ids, err := mysqlStrings(ctx, tx, owned.query, userID)
-			if err != nil {
-				return err
-			}
-			for _, id := range ids {
-				owned.into[id] = struct{}{}
-			}
-		}
-		auditIDs, err := mysqlUserAuditIDs(ctx, tx, links)
-		if err != nil {
-			return err
-		}
-		for _, q := range []string{
-			`DELETE FROM mosdns_sessions WHERE user_id=?`,
-			`DELETE FROM mosdns_credentials WHERE user_id=?`,
-			`DELETE FROM mosdns_dns_policy_rules WHERE user_id=?`,
-			`DELETE FROM mosdns_dns_policy_settings WHERE user_id=?`,
-			`DELETE FROM mosdns_user_public_lists WHERE user_id=?`,
-			`DELETE FROM mosdns_usage_minutes WHERE scope_kind IN ('u', 'd') AND scope_id=?`,
-		} {
-			if _, err := tx.ExecContext(ctx, q, userID); err != nil {
-				return err
-			}
-		}
-		for start := 0; start < len(auditIDs); start += 500 {
-			chunk := auditIDs[start:min(start+500, len(auditIDs))]
-			args := make([]any, len(chunk))
-			for i, id := range chunk {
-				args[i] = id
-			}
-			q := `DELETE FROM mosdns_audit_logs WHERE id IN (?` + strings.Repeat(`, ?`, len(chunk)-1) + `)`
-			if _, err := tx.ExecContext(ctx, q, args...); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM mosdns_users WHERE id=?`, userID); err != nil {
+		if err := deleteMySQLUser(ctx, tx, userID); err != nil {
 			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "delete_user", "user", userID, nil, now)
 	})
+}
+
+// deleteMySQLUser erases a locked user and related control records in the caller transaction.
+func deleteMySQLUser(ctx context.Context, tx *sql.Tx, userID string) error {
+	links := newUserAuditLinks(userID)
+	for _, owned := range []struct {
+		query string
+		into  map[string]struct{}
+	}{
+		{`SELECT id FROM mosdns_sessions WHERE user_id=?`, links.sessions},
+		{`SELECT id FROM mosdns_credentials WHERE user_id=?`, links.credentials},
+		{`SELECT id FROM mosdns_dns_policy_rules WHERE user_id=?`, links.rules},
+	} {
+		ids, err := mysqlStrings(ctx, tx, owned.query, userID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			owned.into[id] = struct{}{}
+		}
+	}
+	auditIDs, err := mysqlUserAuditIDs(ctx, tx, links)
+	if err != nil {
+		return err
+	}
+	for _, q := range []string{
+		`DELETE FROM mosdns_sessions WHERE user_id=?`,
+		`DELETE FROM mosdns_credentials WHERE user_id=?`,
+		`DELETE FROM mosdns_dns_policy_rules WHERE user_id=?`,
+		`DELETE FROM mosdns_dns_policy_settings WHERE user_id=?`,
+		`DELETE FROM mosdns_user_public_lists WHERE user_id=?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, userID); err != nil {
+			return err
+		}
+	}
+	for start := 0; start < len(auditIDs); start += 500 {
+		chunk := auditIDs[start:min(start+500, len(auditIDs))]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		q := `DELETE FROM mosdns_audit_logs WHERE id IN (?` + strings.Repeat(`, ?`, len(chunk)-1) + `)`
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mosdns_users WHERE id=?`, userID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT IGNORE INTO mosdns_identity_sync_erases (user_id) VALUES (?)`, userID)
+	return err
 }
 
 func mysqlStrings(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {

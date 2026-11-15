@@ -39,6 +39,7 @@ type LimiterHealth struct {
 }
 
 type HealthReport struct {
+	IdentitySync      *IdentitySyncHealth   `json:"identity_sync,omitempty"`
 	Timestamp         time.Time             `json:"timestamp"`
 	StartedAt         time.Time             `json:"started_at"`
 	StorageCheckedAt  *time.Time            `json:"storage_checked_at"`
@@ -233,6 +234,11 @@ func (h *Handler) healthSnapshot() HealthReport {
 		}
 	}
 	r.Metrics = []HealthMetric{cleanup, pool, limiter, integrity, rollback}
+	if metric := h.identitySyncMetric(now); metric != nil {
+		status := h.opts.IdentitySync.Health()
+		r.IdentitySync = &status
+		r.Metrics = append(r.Metrics, *metric)
+	}
 	score, complete := 100, r.StorageStatus == "healthy" && r.RuntimeStatus == "healthy"
 	r.OverallStatus = "healthy"
 	for _, m := range r.Metrics {

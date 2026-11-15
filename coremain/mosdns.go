@@ -70,21 +70,22 @@ type Mosdns struct {
 	httpAPIServer   *http.Server
 	httpAPIListener net.Listener
 
-	metricsReg        *prometheus.Registry
-	plugins           []Plugin
-	providers         []*data_provider.DataProvider
-	servers           []*server.Server
-	ownedClosers      []io.Closer
-	control           control.Service
-	telemetry         telemetry.Service
-	controlCfg        *ControlConfig
-	trustedProxies    []netip.Prefix
-	maintenanceCancel context.CancelFunc
-	maintenanceCtx    context.Context
-	maintenanceWG     sync.WaitGroup
-	apiMu             sync.Mutex
-	apiAccepting      bool
-	apiWG             sync.WaitGroup
+	metricsReg          *prometheus.Registry
+	plugins             []Plugin
+	providers           []*data_provider.DataProvider
+	servers             []*server.Server
+	ownedClosers        []io.Closer
+	control             control.Service
+	telemetry           telemetry.Service
+	identitySyncOptions *controlapi.IdentitySyncOptions
+	controlCfg          *ControlConfig
+	trustedProxies      []netip.Prefix
+	maintenanceCancel   context.CancelFunc
+	maintenanceCtx      context.Context
+	maintenanceWG       sync.WaitGroup
+	apiMu               sync.Mutex
+	apiAccepting        bool
+	apiWG               sync.WaitGroup
 
 	sc *safe_close.SafeClose
 }
@@ -138,6 +139,21 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if err != nil {
 			return fmt.Errorf("failed to open control database: %w", err)
 		}
+		m.telemetry, err = openTelemetryStore(ctx, cfg.Control, m.logger)
+		if err != nil {
+			return fmt.Errorf("failed to open telemetry database: %w", err)
+		}
+		var follower *identityFollower
+		m.identitySyncOptions, follower, err = prepareIdentitySync(ctx, cfg.Control, m.control, m.logger)
+		if err != nil {
+			return err
+		}
+		if queue, ok := m.control.(control.UserEraseQueue); ok {
+			eraser := m.telemetry.(telemetry.BatchedUserEraser)
+			if err := drainReusedUserErases(ctx, queue, eraser, m.logger); err != nil {
+				return fmt.Errorf("initial user history cleanup failed: %s", identitySyncCause(err))
+			}
+		}
 		ready, listErr := hasEnabledAdministrator(ctx, m.control)
 		if listErr != nil {
 			return fmt.Errorf("failed to inspect control database: %w", listErr)
@@ -145,13 +161,19 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		if !ready {
 			return errors.New("control database has no enabled administrator; run control init-admin first")
 		}
-		m.telemetry, err = openTelemetryStore(ctx, cfg.Control, m.logger)
-		if err != nil {
-			return fmt.Errorf("failed to open telemetry database: %w", err)
-		}
+
 		maintCtx, cancel := context.WithCancel(context.Background())
 		m.maintenanceCancel = cancel
 		m.maintenanceCtx = maintCtx
+		if queue, ok := m.control.(control.UserEraseQueue); ok {
+			eraser := m.telemetry.(telemetry.BatchedUserEraser)
+			m.maintenanceWG.Add(1)
+			go func() { defer m.maintenanceWG.Done(); runUserErases(maintCtx, queue, eraser, follower, m.logger) }()
+		}
+		if follower != nil {
+			m.maintenanceWG.Add(1)
+			go func() { defer m.maintenanceWG.Done(); follower.run(maintCtx) }()
+		}
 		maintainer, ok := m.control.(control.Maintainer)
 		if !ok {
 			return errors.New("control backend does not implement maintenance")
@@ -201,7 +223,7 @@ func RunMosdnsContext(ctx context.Context, cfg *Config) (retErr error) {
 		var apiHandler http.Handler = m.httpAPIMux
 		if cfg.Control != nil {
 			startedAt := time.Now()
-			apiHandler, err = controlapi.New(controlapi.Options{Control: m.control, Logger: m.logger, Telemetry: m.telemetry, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, CachePurger: m.runtimeManager, ActiveUpstreams: m.runtimeManager, TTLExtensions: m.runtimeManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
+			apiHandler, err = controlapi.New(controlapi.Options{IdentitySync: m.identitySyncOptions, Control: m.control, Logger: m.logger, Telemetry: m.telemetry, RuntimeInspector: m.managedRuntime, RuntimeConfig: runtimeConfigManager, CachePurger: m.runtimeManager, ActiveUpstreams: m.runtimeManager, TTLExtensions: m.runtimeManager, PublicDNSURL: cfg.Control.PublicDNSURL, PanelOrigin: cfg.Control.PanelOrigin, SecureCookies: !cfg.Control.Development, Development: cfg.Control.Development, Assets: web.Assets(), Legacy: m.httpAPIMux, EnablePprof: cfg.Control.EnablePprof, TrustedProxyCIDRs: trustedProxies, SystemInfo: func(ctx context.Context) (controlapi.SystemInfo, error) {
 				queryLogEnabled := cfg.Control.QueryLog
 				if m.managedRuntime != nil {
 					if state, stateErr := m.managedRuntime.Get(ctx); stateErr == nil {

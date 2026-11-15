@@ -79,14 +79,41 @@ func TestMySQLDeleteUserErasesEveryUserScopedTable(t *testing.T) {
 	}
 	defer db.Close()
 	store := &Store{mysql: db, mysqlTimeout: time.Second}
-	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_query_logs WHERE user_id=?`)).WithArgs("gone").WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_query_logs WHERE user_id=? LIMIT 1000`)).WithArgs("gone").WillReturnResult(sqlmock.NewResult(0, 2))
 	for _, table := range []string{"minutes", "rcodes", "latency", "upstreams"} {
-		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_telemetry_` + table + ` WHERE scope_kind='u' AND scope_id=?`)).WithArgs("gone").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM mosdns_telemetry_` + table + ` WHERE scope_kind='u' AND scope_id=? LIMIT 1000`)).WithArgs("gone").WillReturnResult(sqlmock.NewResult(0, 1))
 	}
-	mock.ExpectCommit()
 	if err := store.mysqlDeleteUser(context.Background(), "gone"); err != nil {
 		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMySQLDeleteUserBatchLeavesFullBatchesPending(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := &Store{mysql: db, mysqlTimeout: 1500 * time.Millisecond}
+	// Test the SQL phase directly: the public batch method also flushes queued
+	// observations before this phase so old records cannot land after cleanup.
+	for _, table := range []string{"query_logs", "telemetry_minutes", "telemetry_rcodes", "telemetry_latency", "telemetry_upstreams"} {
+		query := `DELETE FROM mosdns_` + table + ` WHERE scope_kind='u' AND scope_id=? LIMIT 1000`
+		if table == "query_logs" {
+			query = `DELETE FROM mosdns_query_logs WHERE user_id=? LIMIT 1000`
+		}
+		removed := int64(0)
+		if table == "query_logs" {
+			removed = 1000
+		}
+		mock.ExpectExec(regexp.QuoteMeta(query)).WithArgs("gone").WillReturnResult(sqlmock.NewResult(0, removed))
+	}
+	done, err := store.mysqlDeleteUserBatch(context.Background(), "gone")
+	if err != nil || done {
+		t.Fatalf("done=%v err=%v", done, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

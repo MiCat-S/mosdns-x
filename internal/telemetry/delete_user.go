@@ -3,7 +3,6 @@ package telemetry
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"math"
 	"strings"
@@ -67,6 +66,11 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 	if err != nil {
 		return err
 	}
+	s.clearDeletedUserCaches(userID)
+	return nil
+}
+
+func (s *Store) clearDeletedUserCaches(userID string) {
 	s.invalidateTopDomains()
 	s.droppedMu.Lock()
 	for key := range s.droppedByWindow {
@@ -75,27 +79,61 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 		}
 	}
 	s.droppedMu.Unlock()
-	return nil
 }
 
-func (s *Store) mysqlDeleteUser(parent context.Context, userID string) error {
-	ctx, cancel := s.mysqlContext(parent)
-	defer cancel()
-	tx, err := s.mysql.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, q := range []string{
-		`DELETE FROM mosdns_query_logs WHERE user_id=?`,
-		`DELETE FROM mosdns_telemetry_minutes WHERE scope_kind='u' AND scope_id=?`,
-		`DELETE FROM mosdns_telemetry_rcodes WHERE scope_kind='u' AND scope_id=?`,
-		`DELETE FROM mosdns_telemetry_latency WHERE scope_kind='u' AND scope_id=?`,
-		`DELETE FROM mosdns_telemetry_upstreams WHERE scope_kind='u' AND scope_id=?`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, userID); err != nil {
+func (s *Store) mysqlDeleteUser(ctx context.Context, userID string) error {
+	for {
+		done, err := s.mysqlDeleteUserBatch(ctx, userID)
+		if err != nil || done {
 			return err
 		}
 	}
-	return tx.Commit()
+}
+
+// BatchedUserEraser is used by the durable control cleanup queue. A false
+// result leaves the job pending, so large histories never need one long SQL tx.
+type BatchedUserEraser interface {
+	DeleteUserBatch(context.Context, string) (bool, error)
+}
+
+func (s *Store) DeleteUserBatch(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, errors.New("telemetry: empty user id")
+	}
+	if s.mysql == nil {
+		err := s.DeleteUser(ctx, userID)
+		return err == nil, err
+	}
+	if err := s.Flush(ctx); err != nil {
+		return false, err
+	}
+	done, err := s.mysqlDeleteUserBatch(ctx, userID)
+	if err == nil && done {
+		s.clearDeletedUserCaches(userID)
+	}
+	return done, err
+}
+
+func (s *Store) mysqlDeleteUserBatch(ctx context.Context, userID string) (bool, error) {
+	done := true
+	for _, q := range []string{
+		`DELETE FROM mosdns_query_logs WHERE user_id=? LIMIT 1000`,
+		`DELETE FROM mosdns_telemetry_minutes WHERE scope_kind='u' AND scope_id=? LIMIT 1000`,
+		`DELETE FROM mosdns_telemetry_rcodes WHERE scope_kind='u' AND scope_id=? LIMIT 1000`,
+		`DELETE FROM mosdns_telemetry_latency WHERE scope_kind='u' AND scope_id=? LIMIT 1000`,
+		`DELETE FROM mosdns_telemetry_upstreams WHERE scope_kind='u' AND scope_id=? LIMIT 1000`,
+	} {
+		opCtx, cancel := s.mysqlContext(ctx)
+		result, err := s.mysql.ExecContext(opCtx, q, userID)
+		cancel()
+		if err != nil {
+			return false, err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		done = done && count < 1000
+	}
+	return done, nil
 }
