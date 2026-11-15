@@ -4,7 +4,7 @@
 
 ## 准备构建机
 
-需要 Bash、Python 3、Git、GitHub CLI、Go 1.26.3 或更新版本，以及 Node.js 22.22.2 或同一 22.x 主版本的更新版本。npm 依赖由 `web/package-lock.json` 锁定。先确认 `gh auth status` 显示的是有权发布 `MiCat-S/mosdns-x` 的账户。
+需要 Bash、Python 3、Git、GitHub CLI、Go 1.27.4 或更新版本，以及 Node.js 22.22.2 或同一 22.x 主版本的更新版本。npm 依赖由 `web/package-lock.json` 锁定。先确认 `gh auth status` 显示的是有权发布 `MiCat-S/mosdns-x` 的账户。
 
 切换到干净的 `main`，并确认本地 HEAD 与 `origin/main` 完全一致：
 
