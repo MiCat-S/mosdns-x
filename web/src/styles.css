@@ -221,15 +221,13 @@ button:disabled {
   outline-offset: 2px;
 }
 
-.primary,
-.action-link {
+.primary {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--on-accent);
 }
 
-.primary:hover:not(:disabled),
-.action-link:hover {
+.primary:hover:not(:disabled) {
   border-color: var(--accent-hover);
   background: var(--accent-hover);
   color: var(--on-accent);
@@ -286,19 +284,6 @@ button:disabled {
 
 a {
   color: var(--accent);
-}
-
-.action-link {
-  display: inline-flex;
-  min-height: 2.25rem;
-  align-items: center;
-  justify-content: center;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--accent);
-  border-radius: var(--r-sm);
-  font-size: var(--text-md);
-  font-weight: var(--w-medium);
-  text-decoration: none;
 }
 
 .wide {
@@ -1245,6 +1230,38 @@ code.block {
   overflow-wrap: anywhere;
 }
 
+.node-urls {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+}
+
+.node-urls dt {
+  margin-bottom: var(--sp-1);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  font-weight: var(--w-medium);
+}
+
+.node-urls dd {
+  margin: 0;
+}
+
+.node-urls code {
+  padding: var(--sp-2) var(--sp-3);
+  overflow-wrap: anywhere;
+}
+
+/* A credential's addresses sit under its row, read as part of it. */
+tr:has(+ .credential-urls) td {
+  border-bottom: 0;
+}
+
+.credential-urls td {
+  padding-top: 0;
+  white-space: normal;
+}
+
 pre {
   max-height: 28rem;
   padding: var(--sp-3);
@@ -1463,42 +1480,20 @@ summary {
   background: var(--accent);
 }
 
-.connection-row {
+.credential-addresses {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
   gap: var(--sp-4);
+  margin: 0;
 }
 
-.connection-row > div {
-  min-width: 0;
-}
-
-.connection-row > div > span,
-.credential-summary > span {
-  display: block;
+.credential-addresses dt {
   margin-bottom: var(--sp-2);
-  color: var(--text-3);
-  font-size: var(--text-sm);
+  color: var(--text);
   font-weight: var(--w-medium);
 }
 
-.credential-summary {
-  margin-top: var(--sp-4);
-  padding-top: var(--sp-4);
-  border-top: 1px solid var(--line);
-}
-
-.credential-summary > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-}
-
-.credential-summary p {
+.credential-addresses dd {
   margin: 0;
-  color: var(--text-3);
-  font-size: var(--text-md);
 }
 
 .connection-guide ol {
@@ -2906,17 +2901,11 @@ summary {
     grid-column: auto;
   }
 
-  .connection-row {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
-
   .copy {
     flex-direction: column;
   }
 
-  .copy button,
-  .connection-row .action-link {
+  .copy button {
     width: 100%;
   }
 

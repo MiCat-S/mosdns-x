@@ -179,9 +179,10 @@ describe("从节点面板", () => {
     mount("/app/account");
     expect(await screen.findByText("phone")).toBeInTheDocument();
     expect(screen.getByText(notice)).toBeInTheDocument();
+    expect(screen.getByText(/请到主控面板录入地址/)).toBeInTheDocument();
     expect(
-      screen.getByText(/主控签发的专属地址在本节点同样可用/),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: /录入/ }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("当前密码")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "创建凭证" }),
@@ -226,6 +227,158 @@ describe("主控面板", () => {
       within(screen.getByRole("dialog")).getByLabelText(/周期/),
     ).toBeEnabled();
     expect(screen.getByText("剩余额度")).toBeInTheDocument();
+  });
+});
+
+describe("凭证的完整地址", () => {
+  const urls = [
+    { name: "广州", url: "https://gz.example/dns-query/tok" },
+    { name: "成都", url: "https://cd.example/dns-query/tok" },
+  ];
+  function mockCredentials(stored: boolean, restoreStatus = 204) {
+    const calls: Call[] = [];
+    let restored = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        const method = init?.method ?? "GET";
+        calls.push({
+          path,
+          method,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        if (path.endsWith("/session"))
+          return response({
+            user: alice,
+            csrf_token: "c",
+            expires_at: "2027-01-01T00:00:00Z",
+            identity_sync: { mode: "master" },
+          });
+        if (path.endsWith("/me/credentials/c1/restore-token")) {
+          if (restoreStatus !== 204)
+            return response(
+              { error: { code: "token_mismatch", message: "x" } },
+              restoreStatus,
+            );
+          restored = true;
+          return response({
+            credential,
+            token: "tok",
+            doh_url: urls[0].url,
+            doh_urls: urls,
+          });
+        }
+        if (path.endsWith("/me/credentials") && method === "POST")
+          return response(
+            {
+              credential: { ...credential, id: "c2", name: "laptop" },
+              token: "tok",
+              doh_url: urls[0].url,
+              doh_urls: urls,
+            },
+            201,
+          );
+        if (path.endsWith("/me/credentials"))
+          return response({
+            items: [
+              stored || restored
+                ? {
+                    ...credential,
+                    token_available: true,
+                    doh_url: urls[0].url,
+                    doh_urls: urls,
+                  }
+                : { ...credential, token_available: false },
+            ],
+            next_cursor: "",
+          });
+        if (path.endsWith("/me"))
+          return response({
+            user: alice,
+            quota,
+            public_dns_url: "https://gz.example/dns-query",
+          });
+        if (path.endsWith("/stats")) return response(stats);
+        return response({ items: [], next_cursor: "" });
+      }),
+    );
+    return calls;
+  }
+
+  it("账户中心为每条凭证列出各节点的完整地址", async () => {
+    mockCredentials(true);
+    mount("/app/account");
+    expect(
+      await screen.findByText("https://cd.example/dns-query/tok"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("https://gz.example/dns-query/tok"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "复制 成都 的地址" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("https://gz.example/dns-query")).toBeNull();
+  });
+
+  it("主页直接给出各凭证的地址", async () => {
+    mockCredentials(true);
+    mount("/app");
+    expect(
+      await screen.findByText("https://cd.example/dns-query/tok"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/公共/)).toBeNull();
+  });
+
+  it("签发凭证时给出每个节点的完整地址", async () => {
+    mockCredentials(true);
+    mount("/app/account");
+    fireEvent.change(await screen.findByLabelText("名称"), {
+      target: { value: "laptop" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建凭证" }));
+    const dialog = await screen.findByRole("dialog", { name: "凭证已签发" });
+    expect(
+      within(dialog).getByText("https://cd.example/dns-query/tok"),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/其他节点在下次同步后/),
+    ).toBeInTheDocument();
+  });
+
+  it("旧凭证可粘贴设备上的地址补全", async () => {
+    const calls = mockCredentials(false);
+    mount("/app/account");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "录入 phone 的地址" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "录入完整地址" });
+    fireEvent.change(within(dialog).getByLabelText("专属地址或令牌"), {
+      target: { value: "  https://gz.example/dns-query/tok  " },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(
+      await screen.findByText("https://cd.example/dns-query/tok"),
+    ).toBeInTheDocument();
+    expect(calls.find((c) => c.path.endsWith("/restore-token"))?.body).toEqual({
+      token: "https://gz.example/dns-query/tok",
+    });
+  });
+
+  it("补全时地址不匹配会说明原因", async () => {
+    mockCredentials(false, 400);
+    mount("/app/account");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "录入 phone 的地址" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "录入完整地址" });
+    fireEvent.change(within(dialog).getByLabelText("专属地址或令牌"), {
+      target: { value: "wrong" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(
+      await within(dialog).findByText(/与该凭证不一致/),
+    ).toBeInTheDocument();
   });
 });
 

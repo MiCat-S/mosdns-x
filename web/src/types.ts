@@ -50,11 +50,17 @@ export interface Credential {
   revoked_at: string;
   created_at: string;
   updated_at: string;
+  // Whether the server keeps the token, so it can show full addresses.
+  token_available?: boolean;
+  doh_url?: string;
+  doh_urls?: { name: string; url: string }[];
 }
 export interface IssuedCredential {
   credential: Credential;
   token: string;
   doh_url: string;
+  // One personal address per named node.
+  doh_urls?: { name: string; url: string }[];
 }
 export interface Page<T> {
   items: T[];

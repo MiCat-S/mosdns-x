@@ -15,7 +15,7 @@ import {
 import { t } from "../i18n";
 import { useFollower, useSession } from "../session";
 import { useTopDomains } from "../top-domains";
-import { CredentialManager } from "./credentials";
+import { Addresses, CredentialManager, credentialActive } from "./credentials";
 import { PasswordForm } from "./password";
 import { QueryDetails } from "./query-log";
 import { query, range } from "./shared";
@@ -52,28 +52,38 @@ export function ServicePage() {
       <Alert error={error} />
       {data ? (
         <>
-          <Card title={t("连接信息")} className="service-connection">
-            <div className="connection-row">
-              <div>
-                <span>{t("公共 DoH 地址")}</span>
-                <code className="block">{data[0].public_dns_url}</code>
-              </div>
-              <Link className="primary action-link" to="/app/account">
+          <Card
+            title={t("设备凭证")}
+            action={
+              <Link className="link" to="/app/account">
                 {follower ? t("查看设备凭证") : t("管理设备凭证")}
               </Link>
-            </div>
-            <div className="credential-summary">
-              <span>{t("设备凭证")}</span>
-              {data[2].length ? (
-                <div>
-                  {data[2].map((credential) => (
-                    <code key={credential.id}>{credential.name}</code>
-                  ))}
-                </div>
-              ) : (
-                <p>{t("尚未创建设备凭证。每台设备请使用独立凭证接入。")}</p>
-              )}
-            </div>
+            }
+          >
+            {data[2].some(credentialActive) ? (
+              <dl className="credential-addresses">
+                {data[2].filter(credentialActive).map((c) => (
+                  <div key={c.id}>
+                    <dt>{c.name}</dt>
+                    <dd>
+                      {c.token_available ? (
+                        <Addresses urls={c.doh_urls} single={c.doh_url} />
+                      ) : (
+                        <p className="caption">
+                          {t(
+                            "该凭证签发于保存完整地址之前，可在账户中心录入。",
+                          )}
+                        </p>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <p className="caption">
+                {t("尚未创建设备凭证。每台设备请使用独立凭证接入。")}
+              </p>
+            )}
           </Card>
           <div className="metrics">
             <Metric
@@ -127,9 +137,9 @@ export function ServicePage() {
           <Card title={t("设备接入")} className="connection-guide">
             <ol>
               <li>
-                {t("为每台设备创建独立凭证，专属 DoH 地址和令牌只显示一次。")}
+                {t("为每台设备创建独立凭证，完整地址随时可在账户中心查看。")}
               </li>
-              <li>{t("在客户端填写专属地址，或使用对应的 Bearer Token。")}</li>
+              <li>{t("在客户端填写该凭证的完整地址，任选一个节点即可。")}</li>
               <li>
                 {t("设备遗失或不再使用时，请在账户中心轮换或撤销其凭证。")}
               </li>
@@ -195,7 +205,7 @@ export function CredentialsPage() {
     <>
       <PageTitle
         title={t("接入凭证")}
-        description={t("为每台设备签发独立地址或 Bearer 令牌")}
+        description={t("为每台设备签发独立的专属地址")}
       />
       {loading ? <Spinner /> : <Alert error={error} />}
       {data ? (
@@ -234,18 +244,6 @@ export function AccountPage() {
             />
             <Metric label={t("凭证名额")} value={data.user.max_credentials} />
           </div>
-          <Card title={t("公共 DNS 地址")}>
-            <code className="block">{data.public_dns_url}</code>
-            <p className="caption">
-              {follower
-                ? t(
-                    "主控签发的专属地址在本节点同样可用：将地址中令牌之前的部分换成上方地址即可。不要将凭证令牌分享给他人。",
-                  )
-                : t(
-                    "请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。",
-                  )}
-            </p>
-          </Card>
           <CredentialManager base="/me" max={data.user.max_credentials} />
           {follower ? null : (
             <Card className="narrow" title={t("修改密码")}>
@@ -273,7 +271,7 @@ export function HelpPage() {
         <Card title={t("设备接入")}>
           <p>
             {t(
-              "先在账户中心创建一个设备凭证。专属 DoH 地址和 Bearer Token 仅会显示一次，请在设备端安全保存。",
+              "先在账户中心创建一个设备凭证，再将它的完整地址填到设备上。地址随时可以在账户中心查看和复制。",
             )}
           </p>
           <p>{t("凭证遗失或设备不再使用时，可在账户中心轮换或撤销它。")}</p>

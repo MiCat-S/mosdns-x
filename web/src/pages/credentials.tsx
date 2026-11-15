@@ -1,5 +1,12 @@
-import { useCallback, useState, type FormEvent } from "react";
-import { allPages, json, message, request, requestVoid } from "../api";
+import { Fragment, useCallback, useState, type FormEvent } from "react";
+import {
+  allPages,
+  APIError,
+  json,
+  message,
+  request,
+  requestVoid,
+} from "../api";
 import {
   Alert,
   Card,
@@ -14,53 +21,66 @@ import { msg, t } from "../i18n";
 import { useFollower } from "../session";
 import type { Credential, IssuedCredential } from "../types";
 
-function Secret({
+// Addresses lists a credential's full DoH address on each node, each with
+// its own copy button.
+export function Addresses({
+  urls,
+  single,
+}: {
+  urls?: { name: string; url: string }[];
+  single?: string;
+}) {
+  const [copied, setCopied] = useState("");
+  const items = urls?.length ? urls : single ? [{ name: "", url: single }] : [];
+  if (!items.length) return null;
+  async function copy(url: string) {
+    await navigator.clipboard.writeText(url);
+    setCopied(url);
+  }
+  return (
+    <dl className="node-urls">
+      {items.map(({ name, url }) => (
+        <div key={url}>
+          {name ? <dt>{name}</dt> : null}
+          <dd className="copy">
+            <code>{url}</code>
+            <button
+              type="button"
+              className="btn-sm"
+              aria-label={
+                name ? t("复制 {name} 的地址", { name }) : t("复制地址")
+              }
+              onClick={() => copy(url)}
+            >
+              {copied === url ? t("已复制") : t("复制")}
+            </button>
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function Issued({
   issued,
   onClose,
 }: {
   issued: IssuedCredential;
   onClose: () => void;
 }) {
-  const [copied, setCopied] = useState("");
-  async function copy(label: string, value: string) {
-    await navigator.clipboard.writeText(value);
-    setCopied(label);
-  }
   return (
     <Modal title={t("凭证已签发")} onClose={onClose}>
-      <div className="notice">
-        {t("请现在保存。关闭后将无法再次查看令牌。")}
-      </div>
-      <Field label={t("DNS 地址")}>
-        <div className="copy">
-          <code>{issued.doh_url}</code>
-          <button
-            type="button"
-            onClick={() => copy(msg("已复制地址"), issued.doh_url)}
-          >
-            {t("复制")}
-          </button>
-        </div>
-      </Field>
-      <Field label={t("Bearer 令牌")}>
-        <div className="copy">
-          <code>{issued.token}</code>
-          <button
-            type="button"
-            onClick={() => copy(msg("已复制令牌"), issued.token)}
-          >
-            {t("复制")}
-          </button>
-        </div>
-      </Field>
-      {copied ? <p role="status">{t(copied)}</p> : null}
-      <Card title={t("接入说明")}>
-        <p>{t("可直接使用上方专属地址，或在固定 DNS 地址的请求中添加：")}</p>
-        <code>{t("Authorization: Bearer <令牌>")}</code>
-      </Card>
+      <p className="caption">
+        {(issued.doh_urls?.length ?? 0) > 1
+          ? t(
+              "以下是该凭证在各节点的完整地址，其他节点在下次同步后（30 秒内）生效。之后也可以在凭证列表中查看。",
+            )
+          : t("以下是该凭证的完整地址，之后也可以在凭证列表中查看。")}
+      </p>
+      <Addresses urls={issued.doh_urls} single={issued.doh_url} />
       <div className="actions">
         <button className="primary" onClick={onClose}>
-          {t("我已保存，关闭")}
+          {t("完成")}
         </button>
       </div>
     </Modal>
@@ -84,6 +104,9 @@ export function credentialStatus(c: Credential) {
     return credentialStates.expired;
   return credentialStates.active;
 }
+export function credentialActive(c: Credential) {
+  return credentialStatus(c) === credentialStates.active;
+}
 export function credentialCanRevoke(c: Credential) {
   return credentialStatus(c) !== credentialStates.revoked;
 }
@@ -102,6 +125,7 @@ export function CredentialManager({
       kind: "rotate" | "revoke";
       c: Credential;
     } | null>(null);
+  const [restoring, setRestoring] = useState<Credential | null>(null);
   // A follower lists the credentials it mirrors; they change on the master,
   // which the page says once.
   const readOnly = useFollower();
@@ -230,38 +254,67 @@ export function CredentialManager({
                 const status = credentialStatus(c);
                 const active = status === credentialStates.active;
                 return (
-                  <tr key={c.id}>
-                    <td>
-                      <strong>{c.name}</strong>
-                    </td>
-                    <td>{fmt.date(c.created_at)}</td>
-                    <td>{fmt.date(c.expires_at)}</td>
-                    <td>
-                      <span className={`badge ${active ? "ok" : "off"}`}>
-                        {t(status)}
-                      </span>
-                    </td>
-                    {readOnly ? null : (
-                      <td className="table-actions">
-                        <button
-                          className="btn-sm"
-                          aria-label={t("轮换 {name}", { name: c.name })}
-                          disabled={busy === c.id || !active}
-                          onClick={() => setPending({ kind: "rotate", c })}
-                        >
-                          {t("轮换")}
-                        </button>
-                        <button
-                          className="danger btn-sm"
-                          aria-label={t("撤销 {name}", { name: c.name })}
-                          disabled={busy === c.id || !credentialCanRevoke(c)}
-                          onClick={() => setPending({ kind: "revoke", c })}
-                        >
-                          {t("撤销")}
-                        </button>
+                  <Fragment key={c.id}>
+                    <tr>
+                      <td>
+                        <strong>{c.name}</strong>
                       </td>
-                    )}
-                  </tr>
+                      <td>{fmt.date(c.created_at)}</td>
+                      <td>{fmt.date(c.expires_at)}</td>
+                      <td>
+                        <span className={`badge ${active ? "ok" : "off"}`}>
+                          {t(status)}
+                        </span>
+                      </td>
+                      {readOnly ? null : (
+                        <td className="table-actions">
+                          <button
+                            className="btn-sm"
+                            aria-label={t("轮换 {name}", { name: c.name })}
+                            disabled={busy === c.id || !active}
+                            onClick={() => setPending({ kind: "rotate", c })}
+                          >
+                            {t("轮换")}
+                          </button>
+                          <button
+                            className="danger btn-sm"
+                            aria-label={t("撤销 {name}", { name: c.name })}
+                            disabled={busy === c.id || !credentialCanRevoke(c)}
+                            onClick={() => setPending({ kind: "revoke", c })}
+                          >
+                            {t("撤销")}
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                    {active ? (
+                      <tr className="credential-urls">
+                        <td colSpan={readOnly ? 4 : 5}>
+                          {c.token_available ? (
+                            <Addresses urls={c.doh_urls} single={c.doh_url} />
+                          ) : (
+                            <p className="caption">
+                              {t("该凭证签发于保存完整地址之前。")}{" "}
+                              {readOnly ? (
+                                t("请到主控面板录入地址。")
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="link"
+                                  aria-label={t("录入 {name} 的地址", {
+                                    name: c.name,
+                                  })}
+                                  onClick={() => setRestoring(c)}
+                                >
+                                  {t("录入地址")}
+                                </button>
+                              )}
+                            </p>
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -304,8 +357,82 @@ export function CredentialManager({
         </Modal>
       ) : null}
       {issued ? (
-        <Secret issued={issued} onClose={() => setIssued(null)} />
+        <Issued issued={issued} onClose={() => setIssued(null)} />
+      ) : null}
+      {restoring ? (
+        <RestoreAddress
+          base={base}
+          credential={restoring}
+          onClose={() => setRestoring(null)}
+          onDone={() => {
+            setRestoring(null);
+            setVersion((x) => x + 1);
+          }}
+        />
       ) : null}
     </>
   );
+}
+
+// RestoreAddress records the token a device already uses for a credential
+// issued before full addresses were kept. The server accepts it only if it
+// matches the stored hash, so the device keeps working unchanged.
+function RestoreAddress({
+  base,
+  credential,
+  onClose,
+  onDone,
+}: {
+  base: string;
+  credential: Credential;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [error, setError] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const value = String(new FormData(e.currentTarget).get("token")).trim();
+    setBusy(true);
+    setError("");
+    try {
+      await request<IssuedCredential>(
+        `${base}/credentials/${credential.id}/restore-token`,
+        json("POST", { token: value }),
+      );
+      onDone();
+    } catch (e) {
+      setError(restoreError(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={t("录入完整地址")} onClose={onClose}>
+      <form onSubmit={submit}>
+        <p className="confirm-text">
+          {t(
+            "输入设备上正在使用的“{name}”专属地址或令牌。核对与该凭证一致后保存，设备无需改动。",
+            { name: credential.name },
+          )}
+        </p>
+        <Alert error={error} />
+        <Field label={t("专属地址或令牌")}>
+          <input name="token" required autoComplete="off" spellCheck={false} />
+        </Field>
+        <div className="actions">
+          <button type="button" onClick={onClose}>
+            {t("取消")}
+          </button>
+          <button className="primary" disabled={busy}>
+            {busy ? t("正在保存…") : t("保存")}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+function restoreError(e: unknown) {
+  if (e instanceof APIError && e.code === "token_mismatch")
+    return t("与该凭证不一致，请确认输入的是这台设备正在使用的地址。");
+  return message(e);
 }

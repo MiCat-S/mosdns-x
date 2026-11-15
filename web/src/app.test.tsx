@@ -915,7 +915,7 @@ describe("前端访问与秘密处理", () => {
       "服务暂时不可用",
     );
   });
-  it("凭证令牌只在签发弹窗中展示，关闭即销毁", async () => {
+  it("签发后弹窗给出完整地址，关闭后不再保留在页面上", async () => {
     const fetcher = vi
       .fn()
       .mockImplementation((url: string, init?: RequestInit) => {
@@ -970,15 +970,20 @@ describe("前端访问与秘密处理", () => {
     const name = await screen.findByLabelText("名称");
     fireEvent.change(name, { target: { value: "手机" } });
     fireEvent.click(screen.getByRole("button", { name: "创建凭证" }));
-    expect(await screen.findByText("one-time-secret")).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "凭证已签发" });
+    expect(
+      within(dialog).getByText("https://dns.test/dns-query/k"),
+    ).toBeInTheDocument();
     expect(name).toHaveValue("");
     expect(
       fetcher.mock.calls.filter(([url]) => String(url).includes("/credentials"))
         .length,
     ).toBeGreaterThanOrEqual(2);
-    fireEvent.click(screen.getByRole("button", { name: "我已保存，关闭" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "完成" }));
     await waitFor(() =>
-      expect(screen.queryByText("one-time-secret")).not.toBeInTheDocument(),
+      expect(
+        screen.queryByText("https://dns.test/dns-query/k"),
+      ).not.toBeInTheDocument(),
     );
   });
   it("轮换和撤销凭证需在对话框中确认后才发送请求", async () => {
@@ -1008,7 +1013,7 @@ describe("前端访问与秘密处理", () => {
             response({
               credential,
               token: "rotated-secret",
-              doh_url: "https://dns.test/dns-query/k",
+              doh_url: "https://dns.test/dns-query/rotated",
             }),
           );
         if (url.includes("/credentials"))
@@ -1033,7 +1038,9 @@ describe("前端访问与秘密处理", () => {
     dialog = screen.getByRole("dialog", { name: "轮换凭证" });
     expect(writes()).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole("button", { name: "轮换" }));
-    expect(await screen.findByText("rotated-secret")).toBeInTheDocument();
+    expect(
+      await screen.findByText("https://dns.test/dns-query/rotated"),
+    ).toBeInTheDocument();
     expect(writes().map(([url]) => String(url))).toEqual([
       expect.stringMatching(/\/me\/credentials\/k\/rotate$/),
     ]);

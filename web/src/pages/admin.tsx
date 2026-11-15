@@ -167,6 +167,7 @@ const auditActionNames: Record<string, string> = {
   runtime_reload: msg("重载主配置"),
   cache_purge: msg("清除域名缓存"),
   identity_sync: msg("从主控同步账户"),
+  restore_credential_token: msg("录入凭证地址"),
 };
 const auditTargetNames: Record<string, string> = {
   user: msg("账户"),
@@ -292,9 +293,6 @@ export function SystemPage() {
             />
           </div>
           <CachePurgeCard />
-          <Card title={t("公共 DNS 地址")}>
-            <code className="block">{data.public_dns_url}</code>
-          </Card>
           <Card title={t("配置摘要")}>
             <pre>{JSON.stringify(data.config, null, 2)}</pre>
           </Card>

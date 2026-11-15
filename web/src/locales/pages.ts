@@ -83,18 +83,7 @@ export const en: Record<string, string> = {
   "正在加载…": "Loading…",
   加载更多: "Load more",
   凭证已签发: "Credential issued",
-  "请现在保存。关闭后将无法再次查看令牌。":
-    "Save it now. You can't view the token again after closing this.",
-  "DNS 地址": "DNS address",
-  已复制地址: "Address copied",
   复制: "Copy",
-  "Bearer 令牌": "Bearer token",
-  已复制令牌: "Token copied",
-  接入说明: "How to connect",
-  "可直接使用上方专属地址，或在固定 DNS 地址的请求中添加：":
-    "Use the personal address above directly, or add this header to requests sent to the fixed DNS address:",
-  "Authorization: Bearer <令牌>": "Authorization: Bearer <token>",
-  "我已保存，关闭": "I've saved it, close",
   有效: "Active",
   已撤销: "Revoked",
   已到期: "Expired",
@@ -291,8 +280,6 @@ export const en: Record<string, string> = {
   主页: "Home",
   "连接信息、服务额度与设备接入。":
     "Connection details, service quota, and device setup.",
-  连接信息: "Connection details",
-  "公共 DoH 地址": "Public DoH address",
   管理设备凭证: "Manage device credentials",
   设备凭证: "Device credentials",
   "尚未创建设备凭证。每台设备请使用独立凭证接入。":
@@ -306,18 +293,18 @@ export const en: Record<string, string> = {
   "每日 额度": "Daily quota",
   "每月 额度": "Monthly quota",
   设备接入: "Device setup",
-  "为每台设备创建独立凭证，专属 DoH 地址和令牌只显示一次。":
-    "Create a separate credential for each device. The personal DoH address and token are shown only once.",
-  "在客户端填写专属地址，或使用对应的 Bearer Token。":
-    "Enter the personal address in the client, or use the matching Bearer token.",
+  "为每台设备创建独立凭证，完整地址随时可在账户中心查看。":
+    "Create a separate credential for each device; its full addresses are always available in the account center.",
+  "在客户端填写该凭证的完整地址，任选一个节点即可。":
+    "Enter one of the credential's full addresses in the client; any node works.",
   "设备遗失或不再使用时，请在账户中心轮换或撤销其凭证。":
     "If a device is lost or no longer used, rotate or revoke its credential on the Account page.",
   统计与日志: "Stats & logs",
   "过去 24 小时的用量、设备和 DNS 查询记录":
     "Usage, devices, and DNS query records from the last 24 hours",
   接入凭证: "Access credentials",
-  "为每台设备签发独立地址或 Bearer 令牌":
-    "Issue a separate address or Bearer token for each device",
+  为每台设备签发独立的专属地址:
+    "Issue a separate personal address for each device",
   "密码已修改，请重新登录": "Password changed. Please sign in again.",
   当前密码: "Current password",
   "至少 12 个字符": "At least 12 characters",
@@ -332,15 +319,12 @@ export const en: Record<string, string> = {
     "Manage your account status, device credentials, and sign-in password.",
   账户: "Account",
   凭证名额: "Credential slots",
-  "公共 DNS 地址": "Public DNS address",
-  "请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。":
-    "Connect with the personal address generated for a device credential. Don't share credential tokens with anyone.",
   "修改成功后，当前会话会立即退出。":
     "Once the change succeeds, this session signs out immediately.",
   帮助与支持: "Help and support",
   "设备接入与用量查看说明。": "How to set up devices and check usage.",
-  "先在账户中心创建一个设备凭证。专属 DoH 地址和 Bearer Token 仅会显示一次，请在设备端安全保存。":
-    "First create a device credential on the Account page. The personal DoH address and Bearer token are shown only once, so store them securely on the device.",
+  "先在账户中心创建一个设备凭证，再将它的完整地址填到设备上。地址随时可以在账户中心查看和复制。":
+    "Create a device credential in the account center, then enter its full address on the device. You can view and copy the address there at any time.",
   "凭证遗失或设备不再使用时，可在账户中心轮换或撤销它。":
     "If a credential is lost or a device is no longer used, you can rotate or revoke it on the Account page.",
   用量与日志: "Usage and logs",
@@ -384,10 +368,30 @@ export const en: Record<string, string> = {
   查看设备凭证: "View device credentials",
   "查看账户状态与设备凭证。":
     "View your account status and device credentials.",
-  "主控签发的专属地址在本节点同样可用：将地址中令牌之前的部分换成上方地址即可。不要将凭证令牌分享给他人。":
-    "Personal addresses issued on the master also work on this node: replace the part before the token with the address above. Don't share credential tokens with anyone.",
   从主控同步账户: "Sync accounts from master",
   节点: "Node",
+  "复制 {name} 的地址": "Copy the address for {name}",
+  复制地址: "Copy address",
+  已复制: "Copied",
+  "以下是该凭证在各节点的完整地址，其他节点在下次同步后（30 秒内）生效。之后也可以在凭证列表中查看。":
+    "These are this credential's full addresses on each node. Other nodes accept it after their next sync, within 30 seconds. You can also find them later in the credential list.",
+  "以下是该凭证的完整地址，之后也可以在凭证列表中查看。":
+    "This is the credential's full address. You can also find it later in the credential list.",
+  完成: "Done",
+  "该凭证签发于保存完整地址之前。":
+    "This credential was issued before full addresses were kept.",
+  "请到主控面板录入地址。": "Enter its address in the master panel.",
+  "录入 {name} 的地址": "Enter the address for {name}",
+  录入地址: "Enter address",
+  录入完整地址: "Enter full address",
+  "输入设备上正在使用的“{name}”专属地址或令牌。核对与该凭证一致后保存，设备无需改动。":
+    "Enter the personal address or token that the device for “{name}” uses now. It is saved once it matches this credential; the device needs no change.",
+  专属地址或令牌: "Personal address or token",
+  "与该凭证不一致，请确认输入的是这台设备正在使用的地址。":
+    "This doesn't match the credential. Check that you entered the address this device uses now.",
+  "该凭证签发于保存完整地址之前，可在账户中心录入。":
+    "This credential was issued before full addresses were kept; enter its address in the account center.",
+  录入凭证地址: "Enter credential address",
 };
 
 export const ja: Record<string, string> = {
@@ -473,18 +477,7 @@ export const ja: Record<string, string> = {
   "正在加载…": "読み込み中…",
   加载更多: "さらに読み込む",
   凭证已签发: "認証情報を発行しました",
-  "请现在保存。关闭后将无法再次查看令牌。":
-    "今すぐ保存してください。閉じるとトークンは二度と表示できません。",
-  "DNS 地址": "DNS アドレス",
-  已复制地址: "アドレスをコピーしました",
   复制: "コピー",
-  "Bearer 令牌": "Bearer トークン",
-  已复制令牌: "トークンをコピーしました",
-  接入说明: "接続方法",
-  "可直接使用上方专属地址，或在固定 DNS 地址的请求中添加：":
-    "上の専用アドレスをそのまま使用するか、固定 DNS アドレスへのリクエストに次を追加します：",
-  "Authorization: Bearer <令牌>": "Authorization: Bearer <トークン>",
-  "我已保存，关闭": "保存しました、閉じる",
   有效: "有効",
   已撤销: "失効済み",
   已到期: "期限切れ",
@@ -680,8 +673,6 @@ export const ja: Record<string, string> = {
   主页: "ホーム",
   "连接信息、服务额度与设备接入。":
     "接続情報、サービスクォータ、デバイスの接続設定です。",
-  连接信息: "接続情報",
-  "公共 DoH 地址": "公開 DoH アドレス",
   管理设备凭证: "デバイス認証情報を管理",
   设备凭证: "デバイス認証情報",
   "尚未创建设备凭证。每台设备请使用独立凭证接入。":
@@ -695,18 +686,17 @@ export const ja: Record<string, string> = {
   "每日 额度": "日次クォータ",
   "每月 额度": "月次クォータ",
   设备接入: "デバイスの接続",
-  "为每台设备创建独立凭证，专属 DoH 地址和令牌只显示一次。":
-    "デバイスごとに個別の認証情報を作成します。専用 DoH アドレスとトークンは一度だけ表示されます。",
-  "在客户端填写专属地址，或使用对应的 Bearer Token。":
-    "クライアントに専用アドレスを入力するか、対応する Bearer トークンを使用します。",
+  "为每台设备创建独立凭证，完整地址随时可在账户中心查看。":
+    "デバイスごとに個別の認証情報を作成します。完全なアドレスはいつでもアカウントセンターで確認できます。",
+  "在客户端填写该凭证的完整地址，任选一个节点即可。":
+    "クライアントに認証情報の完全なアドレスを入力します。どのノードでも使えます。",
   "设备遗失或不再使用时，请在账户中心轮换或撤销其凭证。":
     "デバイスを紛失した場合や使わなくなった場合は、「アカウント」ページで認証情報をローテーションまたは失効してください。",
   统计与日志: "統計とログ",
   "过去 24 小时的用量、设备和 DNS 查询记录":
     "過去 24 時間の使用量、デバイス、DNS クエリ記録",
   接入凭证: "接続用認証情報",
-  "为每台设备签发独立地址或 Bearer 令牌":
-    "デバイスごとに個別のアドレスまたは Bearer トークンを発行します",
+  为每台设备签发独立的专属地址: "デバイスごとに個別の専用アドレスを発行",
   "密码已修改，请重新登录":
     "パスワードを変更しました。もう一度ログインしてください。",
   当前密码: "現在のパスワード",
@@ -722,15 +712,12 @@ export const ja: Record<string, string> = {
     "アカウントの状態、デバイス認証情報、ログインパスワードを管理します。",
   账户: "アカウント",
   凭证名额: "認証情報の枠",
-  "公共 DNS 地址": "公開 DNS アドレス",
-  "请使用设备凭证生成的专属地址接入；不要将凭证令牌分享给他人。":
-    "デバイス認証情報で生成された専用アドレスで接続してください。認証情報のトークンは他人と共有しないでください。",
   "修改成功后，当前会话会立即退出。":
     "変更に成功すると、現在のセッションは直ちにログアウトされます。",
   帮助与支持: "ヘルプとサポート",
   "设备接入与用量查看说明。": "デバイスの接続方法と使用量の確認方法です。",
-  "先在账户中心创建一个设备凭证。专属 DoH 地址和 Bearer Token 仅会显示一次，请在设备端安全保存。":
-    "まず「アカウント」ページでデバイス認証情報を作成します。専用 DoH アドレスと Bearer トークンは一度だけ表示されるため、デバイス側で安全に保存してください。",
+  "先在账户中心创建一个设备凭证，再将它的完整地址填到设备上。地址随时可以在账户中心查看和复制。":
+    "まずアカウントセンターでデバイス認証情報を作成し、その完全なアドレスをデバイスに入力します。アドレスはいつでもアカウントセンターで確認・コピーできます。",
   "凭证遗失或设备不再使用时，可在账户中心轮换或撤销它。":
     "認証情報を紛失した場合やデバイスを使わなくなった場合は、「アカウント」ページでローテーションまたは失効できます。",
   用量与日志: "使用量とログ",
@@ -774,8 +761,28 @@ export const ja: Record<string, string> = {
   查看设备凭证: "デバイス認証情報を見る",
   "查看账户状态与设备凭证。":
     "アカウントの状態とデバイス認証情報を確認します。",
-  "主控签发的专属地址在本节点同样可用：将地址中令牌之前的部分换成上方地址即可。不要将凭证令牌分享给他人。":
-    "マスターで発行した専用アドレスはこのノードでも使えます。アドレスのトークンより前の部分を上のアドレスに置き換えてください。認証情報のトークンは他人と共有しないでください。",
   从主控同步账户: "マスターからアカウントを同期",
   节点: "ノード",
+  "复制 {name} 的地址": "{name} のアドレスをコピー",
+  复制地址: "アドレスをコピー",
+  已复制: "コピーしました",
+  "以下是该凭证在各节点的完整地址，其他节点在下次同步后（30 秒内）生效。之后也可以在凭证列表中查看。":
+    "このノードごとの完全なアドレスです。他のノードでは次回の同期後（30 秒以内）に使えます。後から認証情報の一覧でも確認できます。",
+  "以下是该凭证的完整地址，之后也可以在凭证列表中查看。":
+    "この認証情報の完全なアドレスです。後から認証情報の一覧でも確認できます。",
+  完成: "完了",
+  "该凭证签发于保存完整地址之前。":
+    "この認証情報は、完全なアドレスを保存する前に発行されました。",
+  "请到主控面板录入地址。": "マスターのパネルでアドレスを入力してください。",
+  "录入 {name} 的地址": "{name} のアドレスを入力",
+  录入地址: "アドレスを入力",
+  录入完整地址: "完全なアドレスを入力",
+  "输入设备上正在使用的“{name}”专属地址或令牌。核对与该凭证一致后保存，设备无需改动。":
+    "「{name}」のデバイスで使用中の専用アドレスまたはトークンを入力してください。この認証情報と一致すれば保存され、デバイスの変更は不要です。",
+  专属地址或令牌: "専用アドレスまたはトークン",
+  "与该凭证不一致，请确认输入的是这台设备正在使用的地址。":
+    "この認証情報と一致しません。このデバイスで使用中のアドレスを入力したか確認してください。",
+  "该凭证签发于保存完整地址之前，可在账户中心录入。":
+    "この認証情報は完全なアドレスを保存する前に発行されました。アカウントセンターでアドレスを入力できます。",
+  录入凭证地址: "認証情報のアドレスを入力",
 };
