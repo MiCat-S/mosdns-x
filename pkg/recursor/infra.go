@@ -147,7 +147,17 @@ func (in *infra) markLame(addr netip.Addr, zone string) {
 	if s.lame == nil {
 		s.lame = make(map[string]time.Time)
 	}
-	s.lame[zone] = in.now().Add(lameDuration)
+	now := in.now()
+	// A server that stays in use while lame for one zone after another would
+	// otherwise keep every zone it ever failed for.
+	if len(s.lame) >= maxEDNSZones {
+		for z, until := range s.lame {
+			if !now.Before(until) {
+				delete(s.lame, z)
+			}
+		}
+	}
+	s.lame[zone] = now.Add(lameDuration)
 }
 
 func (in *infra) noEDNS(addr netip.Addr, zone string) bool {
