@@ -22,6 +22,8 @@ package hosts
 import (
 	"bytes"
 	"net"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -103,5 +105,39 @@ func Test_hostsContainer_Match(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLookupMsgLeavesSharedAddressesAlone(t *testing.T) {
+	m := domain.NewMixMatcher[*IPs]()
+	m.SetDefaultMatcher(domain.MatcherDomain)
+	const list = "many.example 192.0.2.1 192.0.2.2 192.0.2.3 192.0.2.4 192.0.2.5 192.0.2.6 192.0.2.7 192.0.2.8\n"
+	if err := domain.LoadFromTextReader[*IPs](m, bytes.NewBufferString(list), ParseIPs); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHosts(m)
+	before, _ := h.Lookup("many.example.")
+	want := slices.Clone(before)
+
+	q := new(dns.Msg)
+	q.SetQuestion("many.example.", dns.TypeA)
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if r := h.LookupMsg(q); len(r.Answer) != len(want) {
+					t.Errorf("got %d answers, want %d", len(r.Answer), len(want))
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	after, _ := h.Lookup("many.example.")
+	if !slices.Equal(after, want) {
+		t.Fatalf("LookupMsg reordered the shared address list: %v, want %v", after, want)
 	}
 }

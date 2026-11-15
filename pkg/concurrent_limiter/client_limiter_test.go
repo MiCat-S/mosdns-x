@@ -73,3 +73,13 @@ func Benchmark_HPClientLimiter_AcquireToken(b *testing.B) {
 		l.AcquireToken(addr)
 	}
 }
+
+func TestHPLimiterOptsDefaultMasks(t *testing.T) {
+	opts := HPLimiterOpts{Threshold: 1, Interval: time.Second}
+	if err := opts.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if opts.IPv4Mask != 32 || opts.IPv6Mask != 48 {
+		t.Fatalf("default masks = /%d and /%d, want /32 and /48", opts.IPv4Mask, opts.IPv6Mask)
+	}
+}

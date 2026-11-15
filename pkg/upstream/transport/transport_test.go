@@ -371,3 +371,33 @@ func TestTransport_Exchange(t *testing.T) {
 		})
 	}
 }
+
+func TestReusedConnDialHonorsDialTimeout(t *testing.T) {
+	dialBudget := make(chan time.Duration, 1)
+	tt, err := NewTransport(Opts{
+		DialFunc: func(ctx context.Context) (net.Conn, error) {
+			dl, _ := ctx.Deadline()
+			dialBudget <- time.Until(dl)
+			return nil, errors.New("dial err")
+		},
+		WriteFunc:   dnsutils.WriteMsgToTCP,
+		ReadFunc:    dnsutils.ReadMsgFromTCP,
+		IdleTimeout: time.Second,
+		DialTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tt.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	q := new(dns.Msg)
+	q.SetQuestion("example.org.", dns.TypeA)
+	if _, err := tt.ExchangeContext(ctx, q); err == nil {
+		t.Fatal("exchange succeeded without a connection")
+	}
+	if got := <-dialBudget; got > 50*time.Millisecond {
+		t.Fatalf("dial got %v, want at most the configured 50ms DialTimeout", got)
+	}
+}
