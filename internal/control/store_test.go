@@ -555,7 +555,7 @@ func TestClosedFailsClosedAndPermissions(t *testing.T) {
 	}
 }
 
-func TestSecretsAreNotStoredInPlaintextAndAdminInitializationIsOneShot(t *testing.T) {
+func TestLoginSecretsStayHashedAndCredentialTokensPersist(t *testing.T) {
 	s, _, path := newTestStore(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	ctx := context.Background()
 	admin, err := s.InitializeAdmin(ctx, adminSpec())
@@ -581,10 +581,13 @@ func TestSecretsAreNotStoredInPlaintextAndAdminInitializationIsOneShot(t *testin
 		t.Fatal(err)
 	}
 	_, sessionSecret, _ := splitToken(sessionToken)
-	for _, secret := range []string{adminSpec().Password, sessionSecret, sessionToken, issued.Token} {
+	for _, secret := range []string{adminSpec().Password, sessionSecret, sessionToken} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Fatalf("database contains plaintext secret of length %d", len(secret))
 		}
+	}
+	if !bytes.Contains(raw, []byte(issued.Token)) {
+		t.Fatal("credential token was not persisted for personal address display")
 	}
 }
 

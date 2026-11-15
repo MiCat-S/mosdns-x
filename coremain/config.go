@@ -20,6 +20,7 @@
 package coremain
 
 import (
+	"github.com/pmkol/mosdns-x/internal/control"
 	"github.com/pmkol/mosdns-x/mlog"
 	"github.com/pmkol/mosdns-x/pkg/data_provider"
 	"github.com/pmkol/mosdns-x/pkg/utils"
@@ -58,10 +59,11 @@ type ControlConfig struct {
 }
 
 type IdentitySyncConfig struct {
-	Mode            string `yaml:"mode"`
-	Token           string `yaml:"token"`
-	MasterURL       string `yaml:"master_url"`
-	IntervalSeconds int    `yaml:"interval_seconds"`
+	Nodes           []control.DNSNode `yaml:"nodes,omitempty"`
+	Mode            string            `yaml:"mode"`
+	Token           string            `yaml:"token"`
+	MasterURL       string            `yaml:"master_url"`
+	IntervalSeconds int               `yaml:"interval_seconds"`
 }
 
 // AdmitConfig tunes the per-query admission path. Every admit is still durably

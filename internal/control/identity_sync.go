@@ -15,6 +15,7 @@ import (
 // IdentitySnapshot contains authentication material. It belongs only on the
 // authenticated node export endpoint, never on panel responses or in logs.
 type IdentitySnapshot struct {
+	Nodes       []DNSNode            `json:"nodes,omitempty"`
 	Version     int                  `json:"version"`
 	Users       []IdentityUser       `json:"users"`
 	Credentials []IdentityCredential `json:"credentials"`
@@ -28,6 +29,7 @@ type IdentityUser struct {
 }
 
 type IdentityCredential struct {
+	Token string `json:"token,omitempty"`
 	Credential
 	LegacySecretHash []byte `json:"legacy_secret_hash"`
 	TokenHash        []byte `json:"token_hash"`
@@ -92,6 +94,11 @@ func validIdentityID(id string) bool {
 }
 
 func (v IdentitySnapshot) Validate() error {
+	// Loopback HTTP is a supported wire value for development masters;
+	// production configuration rejects it at the source boundary.
+	if err := ValidateDNSNodes(v.Nodes, true); err != nil {
+		return err
+	}
 	if v.Version != 1 || v.Users == nil || v.Credentials == nil {
 		return ErrInvalidInput
 	}
@@ -110,6 +117,9 @@ func (v IdentitySnapshot) Validate() error {
 		return ErrInvalidInput
 	}
 	for _, c := range v.Credentials {
+		if c.Token != "" && (len(c.Token) > 512 || !c.RevokedAt.IsZero() || !credentialTokenMatches(c.ID, c.Token, c.TokenHash, c.LegacySecretHash)) {
+			return ErrInvalidInput
+		}
 		if !validIdentityID(c.ID) || credentials[c.ID] || !users[c.UserID] || c.Version == 0 || len(c.Name) == 0 || len(c.Name) > 128 || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() {
 			return ErrInvalidInput
 		}
@@ -192,7 +202,28 @@ func (s *MySQLStore) ExportIdentitySnapshot(ctx context.Context) (IdentitySnapsh
 			rows.Close()
 			return v, mysqlStoreError(e)
 		}
-		v.Credentials = append(v.Credentials, IdentityCredential{c.Credential, c.LegacySecretHash, c.TokenHash, c.Version})
+		v.Credentials = append(v.Credentials, IdentityCredential{Credential: c.Credential, LegacySecretHash: c.LegacySecretHash, TokenHash: c.TokenHash, Version: c.Version})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return v, mysqlStoreError(err)
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT t.credential_id,t.token FROM mosdns_credential_tokens t JOIN mosdns_credentials c ON c.id=t.credential_id AND c.version=t.version WHERE c.revoked_at_ns IS NULL`)
+	if err != nil {
+		return v, mysqlStoreError(err)
+	}
+	indexes := map[string]int{}
+	for i, c := range v.Credentials {
+		indexes[c.ID] = i
+	}
+	for rows.Next() {
+		var id, token string
+		if err := rows.Scan(&id, &token); err != nil {
+			rows.Close()
+			return v, mysqlStoreError(err)
+		}
+		v.Credentials[indexes[id]].Token = token
 	}
 	err = rows.Err()
 	rows.Close()
@@ -209,6 +240,7 @@ func (s *MySQLStore) ExportIdentitySnapshot(ctx context.Context) (IdentitySnapsh
 }
 
 type IdentitySyncState struct {
+	Nodes         []DNSNode
 	Bootstrapped  bool
 	LastSuccessAt *time.Time
 	Users         int
@@ -220,10 +252,14 @@ func (s *MySQLStore) IdentitySyncState(ctx context.Context) (IdentitySyncState, 
 	ctx, cancel := s.operationContext(ctx)
 	defer cancel()
 	var last sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT bootstrapped,last_success_at_ns,(SELECT COUNT(*) FROM mosdns_users),(SELECT COUNT(*) FROM mosdns_credentials) FROM mosdns_identity_sync_state WHERE id=1`).Scan(&state.Bootstrapped, &last, &state.Users, &state.Credentials)
+	var nodesJSON []byte
+	err := s.db.QueryRowContext(ctx, `SELECT bootstrapped,last_success_at_ns,(SELECT COUNT(*) FROM mosdns_users),(SELECT COUNT(*) FROM mosdns_credentials),(SELECT nodes_json FROM mosdns_identity_sync_nodes WHERE id=1) FROM mosdns_identity_sync_state WHERE id=1`).Scan(&state.Bootstrapped, &last, &state.Users, &state.Credentials, &nodesJSON)
 	if last.Valid {
 		t := mysqlNullTime(last)
 		state.LastSuccessAt = &t
+	}
+	if err == nil {
+		err = json.Unmarshal(nodesJSON, &state.Nodes)
 	}
 	return state, mysqlStoreError(err)
 }
@@ -237,6 +273,14 @@ func (s *MySQLStore) ApplyIdentitySnapshot(ctx context.Context, v IdentitySnapsh
 		return false, ErrForbidden
 	}
 	if err := v.Validate(); err != nil {
+		return false, err
+	}
+	nodes := v.Nodes
+	if nodes == nil {
+		nodes = []DNSNode{}
+	}
+	nodesJSON, err := json.Marshal(nodes)
+	if err != nil {
 		return false, err
 	}
 	now := s.clock.Now().UTC()
@@ -360,6 +404,54 @@ func (s *MySQLStore) ApplyIdentitySnapshot(ctx context.Context, v IdentitySnapsh
 				return err
 			}
 		}
+		rows, err = tx.QueryContext(ctx, `SELECT credential_id,token,version FROM mosdns_credential_tokens`)
+		if err != nil {
+			return err
+		}
+		type savedToken struct {
+			token   string
+			version uint64
+		}
+		oldTokens := map[string]savedToken{}
+		for rows.Next() {
+			var id string
+			var saved savedToken
+			if err := rows.Scan(&id, &saved.token, &saved.version); err != nil {
+				rows.Close()
+				return err
+			}
+			oldTokens[id] = saved
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, c := range v.Credentials {
+			saved, exists := oldTokens[c.ID]
+			if c.Token == "" {
+				if exists {
+					if _, err := tx.ExecContext(ctx, `DELETE FROM mosdns_credential_tokens WHERE credential_id=?`, c.ID); err != nil {
+						return err
+					}
+					changed = true
+				}
+			} else if !exists || saved.token != c.Token || saved.version != c.Version {
+				if err := putMySQLCredentialToken(ctx, tx, c.ID, c.Token, c.Version); err != nil {
+					return err
+				}
+				changed = true
+			}
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE mosdns_identity_sync_nodes SET nodes_json=? WHERE id=1 AND nodes_json<>?`, nodesJSON, nodesJSON)
+		if err != nil {
+			return err
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		changed = changed || updated > 0
 		if _, err := tx.ExecContext(ctx, `UPDATE mosdns_control_meta SET initialized=TRUE WHERE id=1`); err != nil {
 			return err
 		}
@@ -367,7 +459,7 @@ func (s *MySQLStore) ApplyIdentitySnapshot(ctx context.Context, v IdentitySnapsh
 			return err
 		}
 		if changed {
-			return mysqlAudit(ctx, tx, "", "identity_sync", "node", "", map[string]any{"users": len(v.Users), "credentials": len(v.Credentials), "bootstrap": !bootstrapped}, now)
+			return mysqlAudit(ctx, tx, "", "identity_sync", "node", "", map[string]any{"users": len(v.Users), "credentials": len(v.Credentials), "bootstrap": !bootstrapped, "nodes": len(v.Nodes)}, now)
 		}
 		return nil
 	})

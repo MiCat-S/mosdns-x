@@ -53,10 +53,18 @@ func validateIdentitySyncConfig(c *ControlConfig) error {
 		}
 	}
 	if v.Mode == "master" {
+		if err := control.ValidateDNSNodes(v.Nodes, c.Development); err != nil {
+			return err
+		}
 		if v.MasterURL != "" || v.IntervalSeconds != 0 {
 			return errors.New("identity_sync master_url and interval_seconds are follower-only")
 		}
 		return nil
+	}
+	// An empty list is the same as none: the runtime clones the config
+	// through YAML, which turns a missing list into an empty one.
+	if len(v.Nodes) != 0 {
+		return errors.New("identity_sync nodes are master-only")
 	}
 	u, err := url.Parse(v.MasterURL)
 	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" || u.ForceQuery {
@@ -72,6 +80,7 @@ func validateIdentitySyncConfig(c *ControlConfig) error {
 }
 
 type identityFollower struct {
+	nodes         []control.DNSNode // immutable slices, replaced after a successful import
 	logger        *zap.Logger
 	cleanupFailed bool
 	cfg           *IdentitySyncConfig
@@ -87,8 +96,14 @@ func newIdentityFollower(ctx context.Context, cfg *IdentitySyncConfig, store *co
 		return nil, false, err
 	}
 	source, _ := url.Parse(cfg.MasterURL) // validated configuration
-	f := &identityFollower{cfg: cfg, store: store, client: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, status: controlapi.IdentitySyncHealth{Mode: "follower", Source: source.Host, LastSuccessAt: state.LastSuccessAt, Users: state.Users, Credentials: state.Credentials}}
+	f := &identityFollower{nodes: state.Nodes, cfg: cfg, store: store, client: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, status: controlapi.IdentitySyncHealth{Mode: "follower", Source: source.Host, LastSuccessAt: state.LastSuccessAt, Users: state.Users, Credentials: state.Credentials}}
 	return f, state.Bootstrapped, nil
+}
+
+func (f *identityFollower) dnsNodes() []control.DNSNode {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nodes
 }
 
 func (f *identityFollower) health() controlapi.IdentitySyncHealth {
@@ -124,6 +139,7 @@ func (f *identityFollower) pull(ctx context.Context) (retErr error) {
 	}
 	success := time.Now().UTC()
 	f.mu.Lock()
+	f.nodes = snapshot.Nodes
 	f.status.LastSuccessAt = &success
 	f.status.Users = len(snapshot.Users)
 	f.status.Credentials = len(snapshot.Credentials)
@@ -188,7 +204,12 @@ func prepareIdentitySync(ctx context.Context, c *ControlConfig, store control.Se
 	mysql := store.(*control.MySQLStore) // validateIdentitySyncConfig requires MySQL
 	options := &controlapi.IdentitySyncOptions{Info: controlapi.IdentitySyncInfo{Mode: cfg.Mode}, Token: cfg.Token}
 	if cfg.Mode == "master" {
-		options.Export = mysql.ExportIdentitySnapshot
+		options.Nodes = func() []control.DNSNode { return cfg.Nodes }
+		options.Export = func(ctx context.Context) (control.IdentitySnapshot, error) {
+			snapshot, err := mysql.ExportIdentitySnapshot(ctx)
+			snapshot.Nodes = cfg.Nodes
+			return snapshot, err
+		}
 		return options, nil, nil
 	}
 	follower, ready, err := newIdentityFollower(ctx, cfg, mysql)
@@ -202,6 +223,7 @@ func prepareIdentitySync(ctx context.Context, c *ControlConfig, store control.Se
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	options.Nodes = follower.dnsNodes
 	options.Info.MasterPanelURL = cfg.MasterURL
 	options.Health = follower.health
 	options.Interval = identitySyncInterval(cfg)

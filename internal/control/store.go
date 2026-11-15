@@ -121,6 +121,7 @@ type sessionRecord struct {
 }
 
 type credentialRecord struct {
+	Token string `json:"token,omitempty"`
 	Credential
 	// SecretHash is retained only for credentials issued in the legacy
 	// id.secret format. New credentials hash the complete UUID token.
@@ -309,7 +310,7 @@ func (s *Store) batch(ctx context.Context, fn func(*bbolt.Tx) error) error {
 }
 
 func isDomainError(err error) bool {
-	return errors.Is(err, ErrIdentityManagedByMaster) || errors.Is(err, ErrIdentityPeriodLocked) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrRateLimited) || errors.Is(err, ErrQuotaExceeded) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalidInput)
+	return errors.Is(err, ErrTokenMismatch) || errors.Is(err, ErrIdentityManagedByMaster) || errors.Is(err, ErrIdentityPeriodLocked) || errors.Is(err, ErrInvalidCredential) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrRateLimited) || errors.Is(err, ErrQuotaExceeded) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalidInput)
 }
 
 func marshalPut(b *bbolt.Bucket, key []byte, v any) error {
@@ -1012,7 +1013,7 @@ func (s *Store) CreateCredential(ctx context.Context, actor, userID, name string
 			return e
 		}
 		c := Credential{ID: id, UserID: userID, Name: name, ExpiresAt: expires, CreatedAt: now, UpdatedAt: now}
-		r := credentialRecord{Credential: c, TokenHash: append([]byte(nil), tokenHash[:]...), Version: 1}
+		r := credentialRecord{Token: token, Credential: c, TokenHash: append([]byte(nil), tokenHash[:]...), Version: 1}
 		if e = marshalPut(tx.Bucket(bCredentials), []byte(id), r); e != nil {
 			return e
 		}
@@ -1089,6 +1090,7 @@ func (s *Store) RotateCredential(ctx context.Context, actor, userID, id string) 
 		}
 		r.SecretHash = [sha256.Size]byte{}
 		r.TokenHash = append([]byte(nil), tokenHash[:]...)
+		r.Token = token
 		r.Version++
 		r.UpdatedAt = now
 		if e := marshalPut(tx.Bucket(bCredentials), []byte(id), r); e != nil {
@@ -1121,6 +1123,7 @@ func (s *Store) RevokeCredential(ctx context.Context, actor, userID, id string) 
 		}
 		if r.RevokedAt.IsZero() {
 			r.RevokedAt = now
+			r.Token = ""
 			r.UpdatedAt = now
 			if e := marshalPut(tx.Bucket(bCredentials), []byte(id), r); e != nil {
 				return e

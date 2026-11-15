@@ -239,6 +239,17 @@ var mysqlControlMigrations = []string{
 	`CREATE TABLE IF NOT EXISTS mosdns_identity_sync_erases (
         user_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY
     ) ENGINE=InnoDB`,
+	`CREATE TABLE IF NOT EXISTS mosdns_identity_sync_nodes (
+        id TINYINT UNSIGNED PRIMARY KEY,
+        nodes_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL
+    ) ENGINE=InnoDB`,
+	`INSERT INTO mosdns_identity_sync_nodes (id,nodes_json) VALUES (1,'[]') ON DUPLICATE KEY UPDATE id=VALUES(id)`,
+	`CREATE TABLE IF NOT EXISTS mosdns_credential_tokens (
+        credential_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+        token VARCHAR(512) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        version BIGINT UNSIGNED NOT NULL,
+        CONSTRAINT fk_mosdns_credential_tokens_credential FOREIGN KEY (credential_id) REFERENCES mosdns_credentials(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB`,
 }
 
 var mysqlControlV3Columns = []struct {
@@ -1289,6 +1300,9 @@ func (s *MySQLStore) CreateCredential(ctx context.Context, actor, userID, name s
 			VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, ?, 1)`, id, userID, name, mysqlTimeValue(expires), now.UnixNano(), now.UnixNano(), tokenHash[:]); err != nil {
 			return err
 		}
+		if err := putMySQLCredentialToken(ctx, tx, id, token, 1); err != nil {
+			return err
+		}
 		return mysqlAudit(ctx, tx, actor, "create_credential", "credential", id, map[string]any{"name": name, "user_id": userID}, now)
 	})
 	return IssuedCredential{Credential: c, Token: token}, err
@@ -1326,6 +1340,9 @@ func (s *MySQLStore) RotateCredential(ctx context.Context, actor, userID, id str
 			return err
 		}
 		r.Version++
+		if err := putMySQLCredentialToken(ctx, tx, id, token, r.Version); err != nil {
+			return err
+		}
 		r.UpdatedAt = now
 		out = r.Credential
 		return mysqlAudit(ctx, tx, actor, "rotate_credential", "credential", id, map[string]any{"user_id": userID}, now)
@@ -1353,6 +1370,9 @@ func (s *MySQLStore) RevokeCredential(ctx context.Context, actor, userID, id str
 			if _, err := tx.ExecContext(ctx, `UPDATE mosdns_credentials SET revoked_at_ns=?, updated_at_ns=? WHERE id=?`, now.UnixNano(), now.UnixNano(), id); err != nil {
 				return err
 			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM mosdns_credential_tokens WHERE credential_id=?`, id); err != nil {
+			return err
 		}
 		return mysqlAudit(ctx, tx, actor, "revoke_credential", "credential", id, map[string]any{"user_id": userID}, now)
 	})

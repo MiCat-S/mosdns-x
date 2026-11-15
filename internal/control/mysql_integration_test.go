@@ -107,6 +107,8 @@ func cleanupMySQLControlTables(t *testing.T, dsn string) {
 	}
 	defer db.Close()
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS mosdns_credential_tokens`,
+		`DROP TABLE IF EXISTS mosdns_identity_sync_nodes`,
 		`DROP TABLE IF EXISTS mosdns_identity_sync_erases`,
 		`DROP TABLE IF EXISTS mosdns_identity_sync_state`,
 		`DROP TABLE IF EXISTS mosdns_sessions`,

@@ -358,7 +358,7 @@ func TestSessionOriginCSRFCookieAndPasswordReset(t *testing.T) {
 	login(t, f.handler, "alice", "new-password-alice")
 }
 
-func TestCredentialOneTimeURLAndIsolation(t *testing.T) {
+func TestCredentialSavedURLsAndIsolation(t *testing.T) {
 	f := newFixture(t)
 	alice, csrf := login(t, f.handler, "alice", "password-for-alice")
 	w := req(f.handler, http.MethodPost, "/api/v1/me/credentials", `{"name":"phone"}`, alice, csrf)
@@ -370,8 +370,8 @@ func TestCredentialOneTimeURLAndIsolation(t *testing.T) {
 		t.Fatalf("issued=%s", w.Body.String())
 	}
 	w = req(f.handler, http.MethodGet, "/api/v1/me/credentials", "", alice, "")
-	if w.Code != 200 || strings.Contains(w.Body.String(), issued.Token) || strings.Contains(w.Body.String(), "doh_url") {
-		t.Fatalf("list leaked=%s", w.Body.String())
+	if w.Code != 200 || !strings.Contains(w.Body.String(), issued.Token) || !strings.Contains(w.Body.String(), "doh_url") {
+		t.Fatalf("list omitted saved URL: status=%d", w.Code)
 	}
 	bob, bobCSRF := login(t, f.handler, "bob", "password-for-bob")
 	w = req(f.handler, http.MethodDelete, "/api/v1/me/credentials/"+issued.Credential.ID, "", bob, bobCSRF)

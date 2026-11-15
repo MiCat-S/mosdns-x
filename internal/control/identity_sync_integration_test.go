@@ -147,6 +147,7 @@ func TestMySQLIntegrationIdentitySyncLifecycle(t *testing.T) {
 	newHash := hashSecret(newToken)
 	for i := range snapshot.Credentials {
 		if snapshot.Credentials[i].ID == issued.Credential.ID {
+			snapshot.Credentials[i].Token = newToken
 			snapshot.Credentials[i].TokenHash = newHash[:]
 			snapshot.Credentials[i].Version++
 		}
@@ -392,5 +393,233 @@ func TestMySQLIntegrationIdentitySyncLargeHistory(t *testing.T) {
 	drain()
 	if err = store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_usage_minutes WHERE scope_kind IN ('u','d') AND scope_id=?`, user.ID).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("old history remains: rows=%d err=%v", rows, err)
+	}
+}
+
+func TestMySQLIntegrationIdentitySyncDNSNodes(t *testing.T) {
+	dsn := os.Getenv("MOSDNS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MOSDNS_TEST_MYSQL_DSN is not set")
+	}
+	ctx := context.Background()
+	cleanupMySQLControlTables(t, dsn)
+	t.Cleanup(func() { cleanupMySQLControlTables(t, dsn) })
+	open := func(mode string) *MySQLStore {
+		t.Helper()
+		s, err := OpenMySQL(MySQLOptions{DSN: dsn, IdentityMode: mode, OperationTimeout: 1500 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	source := open("master")
+	admin, err := source.InitializeAdmin(ctx, adminSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := source.CreateCredential(ctx, admin.ID, admin.ID, "phone", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := source.ExportIdentitySnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = source.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cleanupMySQLControlTables(t, dsn)
+	follower := open("follower")
+	defer func() { _ = follower.Close() }()
+	snapshot.Nodes = []DNSNode{{"广州", "https://gz.example/dns-query"}, {"成都", "https://cd.example/dns-query"}}
+	if _, err = follower.ApplyIdentitySnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := follower.AuthenticateCredential(ctx, issued.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = follower.Admit(ctx, identity); err != nil {
+		t.Fatal(err)
+	}
+	auditCount := func() int {
+		var n int
+		if err := follower.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_audit_logs WHERE action='identity_sync'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := auditCount()
+	if _, err = follower.ApplyIdentitySnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if n := auditCount(); n != before {
+		t.Fatalf("unchanged nodes rewrote audit: before=%d after=%d", before, n)
+	}
+	if err = follower.Close(); err != nil {
+		t.Fatal(err)
+	}
+	follower = open("")
+	state, err := follower.IdentitySyncState(ctx)
+	if err != nil || len(state.Nodes) != 2 || state.Nodes[1] != snapshot.Nodes[1] {
+		t.Fatalf("restart nodes=%v err=%v", state.Nodes, err)
+	}
+	bad := snapshot
+	bad.Nodes = []DNSNode{{"bad", "http://public.example/dns-query"}}
+	if _, err = follower.ApplyIdentitySnapshot(ctx, bad); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("invalid source nodes=%v", err)
+	}
+	state, err = follower.IdentitySyncState(ctx)
+	if err != nil || len(state.Nodes) != 2 {
+		t.Fatalf("invalid snapshot replaced good nodes: err=%v", err)
+	}
+	snapshot.Nodes = nil // Older master snapshots and explicit list removal clear metadata.
+	if _, err = follower.ApplyIdentitySnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	state, err = follower.IdentitySyncState(ctx)
+	if err != nil || len(state.Nodes) != 0 {
+		t.Fatalf("list not cleared: err=%v", err)
+	}
+	quota, err := follower.CurrentQuota(ctx, admin.ID)
+	if err != nil || quota.Used != 1 {
+		t.Fatalf("node changes altered quota: used=%d err=%v", quota.Used, err)
+	}
+}
+
+func TestMySQLIntegrationCredentialTokens(t *testing.T) {
+	dsn := os.Getenv("MOSDNS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("MOSDNS_TEST_MYSQL_DSN is not set")
+	}
+	ctx := context.Background()
+	cleanupMySQLControlTables(t, dsn)
+	t.Cleanup(func() { cleanupMySQLControlTables(t, dsn) })
+	open := func(mode string) *MySQLStore {
+		t.Helper()
+		s, e := OpenMySQL(MySQLOptions{DSN: dsn, IdentityMode: mode, OperationTimeout: 1500 * time.Millisecond})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return s
+	}
+	master := open("master")
+	admin, err := master.InitializeAdmin(ctx, adminSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := master.CreateCredential(ctx, admin.ID, admin.ID, "phone", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := issued.Credential.ID
+	ids := []string{id}
+	tokens, err := master.CredentialTokens(ctx, admin.ID, ids)
+	if err != nil || tokens[id] != issued.Token {
+		t.Fatal("created token not persisted")
+	}
+	if _, err = master.db.ExecContext(ctx, `DELETE FROM mosdns_credential_tokens WHERE credential_id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	before, err := master.AuthenticateCredential(ctx, issued.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = master.RestoreCredentialToken(ctx, admin.ID, admin.ID, id, "wrong"); !errors.Is(err, ErrTokenMismatch) {
+		t.Fatalf("wrong restore=%v", err)
+	}
+	if _, err = master.RestoreCredentialToken(ctx, admin.ID, admin.ID, id, "https://cd.example/dns-query/"+issued.Token); err != nil {
+		t.Fatal(err)
+	}
+	after, err := master.AuthenticateCredential(ctx, issued.Token)
+	if err != nil || after != before {
+		t.Fatalf("restore changed auth: %v", err)
+	}
+	rotated, err := master.RotateCredential(ctx, admin.ID, admin.ID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err = master.CredentialTokens(ctx, admin.ID, ids)
+	if err != nil || tokens[id] != rotated.Token {
+		t.Fatal("rotated token not persisted")
+	}
+	// A previous binary can rotate hashes/version without knowing the new table.
+	oldBinaryToken := "a31cf743-023b-405c-8d20-5975e8cc0566"
+	h := hashSecret(oldBinaryToken)
+	if _, err = master.db.ExecContext(ctx, `UPDATE mosdns_credentials SET token_hash=?,version=version+1 WHERE id=?`, h[:], id); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err = master.CredentialTokens(ctx, admin.ID, ids)
+	if err != nil || len(tokens) != 0 {
+		t.Fatal("older rotation exposed stale token")
+	}
+	snapshot, err := master.ExportIdentitySnapshot(ctx)
+	if err != nil || snapshot.Credentials[0].Token != "" {
+		t.Fatal("older rotation exported stale token")
+	}
+	if _, err = master.RestoreCredentialToken(ctx, admin.ID, admin.ID, id, oldBinaryToken); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = master.ExportIdentitySnapshot(ctx)
+	if err != nil || snapshot.Credentials[0].Token != oldBinaryToken {
+		t.Fatal("saved token not exported")
+	}
+	if err = master.RevokeCredential(ctx, admin.ID, admin.ID, id); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = master.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_credential_tokens WHERE credential_id=?`, id).Scan(&count); err != nil || count != 0 {
+		t.Fatal("revoke did not clear plaintext token")
+	}
+	if err = master.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cleanupMySQLControlTables(t, dsn)
+	follower := open("follower")
+	defer func() { _ = follower.Close() }()
+	if _, err = follower.ApplyIdentitySnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err = follower.CredentialTokens(ctx, admin.ID, ids)
+	if err != nil || tokens[id] != oldBinaryToken {
+		t.Fatal("token not imported")
+	}
+	if _, err = follower.RestoreCredentialToken(ctx, admin.ID, admin.ID, id, oldBinaryToken); !errors.Is(err, ErrIdentityManagedByMaster) {
+		t.Fatalf("follower restore=%v", err)
+	}
+	if err = follower.Close(); err != nil {
+		t.Fatal(err)
+	}
+	follower = open("")
+	tokens, err = follower.CredentialTokens(ctx, admin.ID, ids)
+	if err != nil || tokens[id] != oldBinaryToken {
+		t.Fatal("token lost on restart")
+	}
+	bad := snapshot
+	bad.Credentials = append([]IdentityCredential(nil), snapshot.Credentials...)
+	bad.Credentials[0].Token = "wrong"
+	if _, err = follower.ApplyIdentitySnapshot(ctx, bad); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("mismatched wire token accepted: %v", err)
+	}
+	snapshot.Credentials[0].Token = "" // older sources omit the optional display token
+	if _, err = follower.ApplyIdentitySnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err = follower.CredentialTokens(ctx, admin.ID, ids)
+	if err != nil || len(tokens) != 0 {
+		t.Fatal("omitted source token not cleared")
+	}
+	if _, err = follower.AuthenticateCredential(ctx, oldBinaryToken); err != nil {
+		t.Fatal("clearing display token changed auth")
+	}
+	snapshot.Credentials[0].Token = oldBinaryToken
+	if _, err = follower.ApplyIdentitySnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = follower.db.ExecContext(ctx, `DELETE FROM mosdns_credentials WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err = follower.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mosdns_credential_tokens WHERE credential_id=?`, id).Scan(&count); err != nil || count != 0 {
+		t.Fatal("credential deletion did not cascade plaintext deletion")
 	}
 }

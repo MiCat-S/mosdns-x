@@ -110,6 +110,8 @@ func TestApplyIdentityPreservesLocalStateAndRevokesPasswordSessions(t *testing.T
 				mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_users SET username=?,username_normalized=?,role=?,enabled=?,expires_at_ns=?,period=?,timezone=?,quota_limit=?,qps=?,burst=?,max_credentials=?,created_at_ns=?,updated_at_ns=?,password_salt=?,password_hash=?,password_version=? WHERE id=?`)).WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			mock.ExpectQuery(regexp.QuoteMeta(`SELECT ` + mysqlCredentialColumns + ` FROM mosdns_credentials ORDER BY user_id,id FOR UPDATE`)).WillReturnRows(sqlmock.NewRows(mysqlCredentialTestColumns))
+			mock.ExpectQuery(regexp.QuoteMeta(`SELECT credential_id,token,version FROM mosdns_credential_tokens`)).WillReturnRows(sqlmock.NewRows([]string{"credential_id", "token", "version"}))
+			mock.ExpectExec(regexp.QuoteMeta(`UPDATE mosdns_identity_sync_nodes SET nodes_json=? WHERE id=1 AND nodes_json<>?`)).WithArgs([]byte("[]"), []byte("[]")).WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectExec(`UPDATE mosdns_control_meta SET initialized=TRUE`).WillReturnResult(sqlmock.NewResult(0, 1))
 			mock.ExpectExec(`UPDATE mosdns_identity_sync_state SET bootstrapped=TRUE,last_success_at_ns=\?`).WithArgs(now.UnixNano()).WillReturnResult(sqlmock.NewResult(0, 1))
 			if passwordChange {

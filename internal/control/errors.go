@@ -3,6 +3,7 @@ package control
 import "errors"
 
 var (
+	ErrTokenMismatch           = errors.New("credential token mismatch")
 	ErrIdentityManagedByMaster = errors.New("identity managed by master")
 	ErrIdentityPeriodLocked    = errors.New("identity period and timezone locked in sync mode")
 	ErrInvalidCredential       = errors.New("invalid credential")

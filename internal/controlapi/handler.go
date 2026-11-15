@@ -974,6 +974,7 @@ func (h *Handler) runtimeError(w http.ResponseWriter, err error, invalidAsBadReq
 }
 
 type issuedResponse struct {
+	DohURLs []namedDohURL `json:"doh_urls,omitempty"`
 	control.IssuedCredential
 	DNSURL string `json:"doh_url"`
 }
@@ -990,7 +991,20 @@ func (h *Handler) credentials(w http.ResponseWriter, r *http.Request, actor, use
 				h.serviceError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, v)
+			ids := make([]string, len(v.Items))
+			for i, c := range v.Items {
+				ids[i] = c.ID
+			}
+			tokens, err := h.opts.Control.CredentialTokens(r.Context(), userID, ids)
+			if err != nil {
+				h.serviceError(w, err)
+				return
+			}
+			view := control.PageResult[credentialView]{Items: []credentialView{}, NextCursor: v.NextCursor}
+			for _, c := range v.Items {
+				view.Items = append(view.Items, h.credentialView(c, tokens[c.ID]))
+			}
+			writeJSON(w, http.StatusOK, view)
 			return
 		}
 		if r.Method == http.MethodPost {
@@ -1010,7 +1024,7 @@ func (h *Handler) credentials(w http.ResponseWriter, r *http.Request, actor, use
 				h.serviceError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusCreated, issuedResponse{v, h.dohURL(v.Token)})
+			writeJSON(w, http.StatusCreated, h.issuedCredential(v))
 			return
 		}
 		methodNotAllowed(w)
@@ -1025,21 +1039,34 @@ func (h *Handler) credentials(w http.ResponseWriter, r *http.Request, actor, use
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "restore-token" && r.Method == http.MethodPost {
+		var in struct {
+			Token string `json:"token"`
+		}
+		if decodeJSON(w, r, &in) != nil {
+			return
+		}
+		v, err := h.opts.Control.RestoreCredentialToken(r.Context(), actor, userID, parts[0], in.Token)
+		if err != nil {
+			h.serviceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, h.issuedCredential(v))
+		return
+	}
 	if len(parts) == 2 && parts[1] == "rotate" && r.Method == http.MethodPost {
 		v, err := h.opts.Control.RotateCredential(r.Context(), actor, userID, parts[0])
 		if err != nil {
 			h.serviceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, issuedResponse{v, h.dohURL(v.Token)})
+		writeJSON(w, http.StatusOK, h.issuedCredential(v))
 		return
 	}
 	writeError(w, http.StatusNotFound, "not_found")
 }
 func (h *Handler) dohURL(token string) string {
-	u := *h.publicURL
-	u.Path = strings.TrimRight(u.Path, "/") + "/" + url.PathEscape(token)
-	return u.String()
+	return credentialDohURL(h.publicURL, token)
 }
 
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request, actorID, userID string) {
@@ -1396,6 +1423,8 @@ func (h *Handler) serviceError(w http.ResponseWriter, err error) {
 		writeError(w, 409, "identity_managed_by_master")
 	case errors.Is(err, control.ErrIdentityPeriodLocked):
 		writeError(w, 409, "identity_period_locked")
+	case errors.Is(err, control.ErrTokenMismatch):
+		writeError(w, 400, "token_mismatch")
 	case errors.Is(err, control.ErrInvalidInput):
 		writeError(w, 400, "invalid_input")
 	case errors.Is(err, control.ErrInvalidCredential):

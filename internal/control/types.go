@@ -141,6 +141,8 @@ type Service interface {
 	CreateCredential(ctx context.Context, actorID, userID, name string, expiresAt time.Time) (IssuedCredential, error)
 	RotateCredential(ctx context.Context, actorID, userID, credentialID string) (IssuedCredential, error)
 	RevokeCredential(ctx context.Context, actorID, userID, credentialID string) error
+	CredentialTokens(ctx context.Context, userID string, ids []string) (map[string]string, error)
+	RestoreCredentialToken(ctx context.Context, actorID, userID, credentialID, token string) (IssuedCredential, error)
 	AuthenticateCredential(ctx context.Context, token string) (Identity, error)
 	Admit(ctx context.Context, identity Identity) error
 	GetUser(ctx context.Context, userID string) (User, error)

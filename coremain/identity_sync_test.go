@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pmkol/mosdns-x/internal/control"
+	"go.uber.org/zap"
 )
 
 func TestIdentitySyncConfiguration(t *testing.T) {
@@ -116,6 +117,95 @@ func TestInvalidOriginsRejectedBeforeFollowerBootstrap(t *testing.T) {
 			tc.change(cfg.Control)
 			if _, _, err := validateControlConfig(cfg); err == nil {
 				t.Fatal("invalid origin accepted before import")
+			}
+		})
+	}
+}
+
+// The managed runtime validates a YAML clone of the configuration; a follower
+// without nodes must survive that round trip.
+func TestFollowerConfigurationSurvivesClone(t *testing.T) {
+	cfg := &Config{Control: &ControlConfig{Storage: StorageConfig{Driver: "mysql"}, IdentitySync: &IdentitySyncConfig{Mode: "follower", Token: strings.Repeat("x", 32), MasterURL: "https://master.example"}}}
+	clone, err := cloneConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateIdentitySyncConfig(clone.Control); err != nil {
+		t.Fatal(err)
+	}
+	clone.Control.IdentitySync.Nodes = []control.DNSNode{}
+	if err := validateIdentitySyncConfig(clone.Control); err != nil {
+		t.Fatalf("empty node list rejected: %v", err)
+	}
+}
+
+func TestIdentitySyncDNSNodesConfiguration(t *testing.T) {
+	nodes := []control.DNSNode{{Name: "广州", PublicDNSURL: "https://gz.example/dns-query"}}
+	c := &ControlConfig{Storage: StorageConfig{Driver: "mysql"}, IdentitySync: &IdentitySyncConfig{Mode: "master", Token: strings.Repeat("x", 32), Nodes: nodes}}
+	if err := validateIdentitySyncConfig(c); err != nil {
+		t.Fatal(err)
+	}
+	c.IdentitySync.Mode = "follower"
+	c.IdentitySync.MasterURL = "https://master.example"
+	if err := validateIdentitySyncConfig(c); err == nil {
+		t.Fatal("follower-local nodes accepted")
+	}
+}
+
+func TestFollowerKeepsDNSNodesWhenSourceUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer server.Close()
+	nodes := []control.DNSNode{{Name: "广州", PublicDNSURL: "https://gz.example/dns-query"}, {Name: "成都", PublicDNSURL: "https://cd.example/dns-query"}}
+	follower := &identityFollower{nodes: nodes, cfg: &IdentitySyncConfig{MasterURL: server.URL, Token: strings.Repeat("x", 32)}, client: server.Client(), logger: zap.NewNop()}
+	if err := follower.pull(context.Background()); err == nil {
+		t.Fatal("source error swallowed")
+	}
+	if got := follower.dnsNodes(); len(got) != 2 || got[1] != nodes[1] {
+		t.Fatal("offline source cleared cached list")
+	}
+}
+
+func TestIdentitySyncNodesSurviveManagedConfiguration(t *testing.T) {
+	nodes := []control.DNSNode{{Name: "广州", PublicDNSURL: "https://gz.example/dns-query"}, {Name: "成都", PublicDNSURL: "https://cd.example/dns-query"}}
+	for _, tc := range []struct {
+		name, mode string
+		nodes      []control.DNSNode
+	}{
+		{"follower absent", "follower", nil},
+		{"follower empty", "follower", []control.DNSNode{}},
+		{"master empty", "master", []control.DNSNode{}},
+		{"master nodes", "master", nodes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := managedRuntimeTestConfig(t)
+			cfg.Control.Storage = StorageConfig{Driver: "mysql", MySQL: MySQLConfig{DSN: "unused-managed-roundtrip-database"}}
+			cfg.Control.IdentitySync = &IdentitySyncConfig{Mode: tc.mode, Token: strings.Repeat("x", 32), Nodes: tc.nodes}
+			if tc.mode == "follower" {
+				cfg.Control.IdentitySync.MasterURL = "https://master.example"
+			}
+			effective, base, _, view, _, err := prepareManagedRuntimeConfig(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Startup and each managed apply clone the control config through YAML.
+			// Exercise that real path, including a second apply of the persisted view.
+			reapplied, err := applyManagedConfig(base, view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, candidate := range []*Config{base, effective, reapplied} {
+				if _, _, err := validateControlConfig(candidate); err != nil {
+					t.Fatal(err)
+				}
+				got := candidate.Control.IdentitySync.Nodes
+				if len(got) != len(tc.nodes) {
+					t.Fatalf("node count changed: got=%d want=%d", len(got), len(tc.nodes))
+				}
+				for i, node := range tc.nodes {
+					if got[i] != node {
+						t.Fatalf("node %d changed after managed roundtrip", i)
+					}
+				}
 			}
 		})
 	}

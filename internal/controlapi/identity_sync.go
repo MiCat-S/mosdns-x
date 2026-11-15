@@ -26,6 +26,7 @@ type IdentitySyncHealth struct {
 }
 
 type IdentitySyncOptions struct {
+	Nodes    func() []control.DNSNode
 	Info     IdentitySyncInfo
 	Token    string
 	Export   func(context.Context) (control.IdentitySnapshot, error)
