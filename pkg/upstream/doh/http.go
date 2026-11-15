@@ -79,6 +79,7 @@ func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool
 	if err != nil {
 		return upstreamtrace.Result{}, err
 	}
+	defer res.Body.Close()
 	if res.StatusCode != 200 {
 		return upstreamtrace.Result{}, fmt.Errorf("unexpected status %v: %s", res.StatusCode, res.Status)
 	}
@@ -90,7 +91,6 @@ func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool
 			return upstreamtrace.Result{}, fmt.Errorf("empty response")
 		}
 	}
-	defer res.Body.Close()
 	bb := bufPool.Get()
 	defer bufPool.Release(bb)
 	_, err = bb.ReadFrom(res.Body)
