@@ -344,13 +344,13 @@ func (r *Resolver) prefetchKey(ctx context.Context, st *reqState, zone string) {
 	st.mu.Unlock()
 	c := st.fork()
 	c.noWait = true
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
+	if !r.spawn(func() {
 		defer close(done)
 		defer r.recoverPanic(nil)
 		r.lookup(ctx, c, zone, dns.TypeDNSKEY, false)
-	}()
+	}) {
+		close(done)
+	}
 }
 
 func (r *Resolver) waitKeyFetch(ctx context.Context, st *reqState, zone string) {

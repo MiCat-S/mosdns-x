@@ -834,9 +834,7 @@ func (r *Resolver) startProbe(addr netip.Addr) {
 		r.infra.endProbe(addr)
 		return
 	}
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
+	ok := r.spawn(func() {
 		defer func() { <-r.probeSem }()
 		defer r.recoverPanic(nil)
 		ctx, cancel := context.WithTimeout(r.ctx, probeTimeout)
@@ -847,7 +845,11 @@ func (r *Resolver) startProbe(addr netip.Addr) {
 			return
 		}
 		r.infra.setDoT(addr, err == nil)
-	}()
+	})
+	if !ok {
+		<-r.probeSem
+		r.infra.endProbe(addr)
+	}
 }
 
 func sanitizeSection(rrs []dns.RR, zone string, extra bool) []dns.RR {

@@ -132,6 +132,8 @@ type Resolver struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	closeMu     sync.Mutex
+	closed      bool
 	probeSem    chan struct{}
 	prefetchSem chan struct{}
 	prefetching sync.Map
@@ -222,9 +224,39 @@ func New(opts Opts) (*Resolver, error) {
 }
 
 func (r *Resolver) Close() error {
+	r.closeMu.Lock()
+	r.closed = true
+	r.closeMu.Unlock()
 	r.cancel()
 	r.wg.Wait()
 	return r.ex.close()
+}
+
+// enter registers work with r.wg so that Close waits for it, and refuses once
+// Close has begun: an Add after Close started waiting would race with Wait,
+// and the work could still reach the exchanger after it was closed. A caller
+// that gets true must call r.wg.Done when the work ends.
+func (r *Resolver) enter() bool {
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.wg.Add(1)
+	return true
+}
+
+// spawn runs f on a goroutine registered through enter. Background work
+// started after New returns must use it.
+func (r *Resolver) spawn(f func()) bool {
+	if !r.enter() {
+		return false
+	}
+	go func() {
+		defer r.wg.Done()
+		f()
+	}()
+	return true
 }
 
 func (r *Resolver) Stats() Stats {
@@ -409,6 +441,12 @@ func (r *Resolver) Resolve(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
 		key += "|" + ecs.String()
 	}
 	ch := r.sf.DoChan(key, func() (v any, err error) {
+		// The shared resolution outlives a caller that gives up, so it must
+		// be joined by Close like any other background work.
+		if !r.enter() {
+			return nil, errClosed
+		}
+		defer r.wg.Done()
 		defer r.recoverPanic(&err)
 		sctx, cancel := context.WithTimeout(r.ctx, sharedTimeout)
 		defer cancel()
@@ -565,10 +603,7 @@ func (r *Resolver) startPrefetch(name string, qtype uint16, ecs *dns.EDNS0_SUBNE
 		r.prefetching.Delete(key)
 		return
 	}
-	r.prefetchs.Add(1)
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
+	ok := r.spawn(func() {
 		defer func() { <-r.prefetchSem }()
 		defer r.prefetching.Delete(key)
 		defer r.recoverPanic(nil)
@@ -579,7 +614,13 @@ func (r *Resolver) startPrefetch(name string, qtype uint16, ecs *dns.EDNS0_SUBNE
 		if _, err := r.iterate(ctx, st, name, qtype, ecs != nil); err != nil {
 			r.logger.Debug("prefetch failed", zap.String("name", name), zap.Uint16("qtype", qtype), zap.Error(err))
 		}
-	}()
+	})
+	if !ok {
+		<-r.prefetchSem
+		r.prefetching.Delete(key)
+		return
+	}
+	r.prefetchs.Add(1)
 }
 
 func (r *Resolver) maybePrefetch(res *lookupResult, name string, qtype uint16, ecs *dns.EDNS0_SUBNET) {
