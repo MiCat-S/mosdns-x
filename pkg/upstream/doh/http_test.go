@@ -60,3 +60,46 @@ func TestErrorResponsesReleaseTheConnection(t *testing.T) {
 		}
 	}
 }
+
+func TestExchangeKeepsTheCallersQueryID(t *testing.T) {
+	up := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		q := new(dns.Msg)
+		if err := q.Unpack(b); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if q.Id != 0 {
+			http.Error(w, "DoH query id must be 0", http.StatusBadRequest)
+			return
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(q)
+		out, _ := resp.Pack()
+		w.Header().Set("Content-Type", dnsContentType)
+		_, _ = w.Write(out)
+	})
+
+	q := new(dns.Msg)
+	q.SetQuestion("www.example.org.", dns.TypeA)
+	q.Id = 4242
+	for _, detailed := range []bool{false, true} {
+		var r *dns.Msg
+		var err error
+		if detailed {
+			result, derr := up.ExchangeContextDetailed(context.Background(), q)
+			r, err = result.Response, derr
+		} else {
+			r, err = up.ExchangeContext(context.Background(), q)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if q.Id != 4242 {
+			t.Fatalf("detailed=%v: caller's query id changed to %d", detailed, q.Id)
+		}
+		if r.Id != 4242 {
+			t.Fatalf("detailed=%v: response id = %d, want the caller's 4242", detailed, r.Id)
+		}
+	}
+}
