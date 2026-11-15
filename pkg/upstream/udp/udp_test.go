@@ -278,3 +278,43 @@ func TestDialPanicIsReturnedAsError(t *testing.T) {
 		t.Fatalf("err = %v, want the recovered dial panic", err)
 	}
 }
+
+func TestUnclaimLeavesAReusedIDToItsNewQuery(t *testing.T) {
+	u, err := NewUDPUpstream(func(context.Context) (net.Conn, error) { return nil, net.ErrClosed }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer u.Close()
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+
+	q := new(dns.Msg)
+	q.SetQuestion("www.example.org.", dns.TypeA)
+	id, ch, err := u.claimID(q, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := reply(q, "192.0.2.1")
+	r.Id = id
+	u.deliver(conn, r) // frees id
+
+	// Another query claims the freed id before the first one releases it.
+	next := &pendingEntry{ch: make(chan *dns.Msg, 1), deadline: time.Now().Add(pendingTTL), conn: conn}
+	u.pendingMu.Lock()
+	u.pending[id] = next
+	u.pendingMu.Unlock()
+
+	u.unclaimID(id, ch)
+	u.pendingMu.Lock()
+	got := u.pending[id]
+	u.pendingMu.Unlock()
+	if got != next {
+		t.Fatal("releasing a finished query removed the query that reused its id")
+	}
+	select {
+	case m := <-next.ch:
+		t.Fatalf("the query that reused the id was woken with %v", m)
+	default:
+	}
+}

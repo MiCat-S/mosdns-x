@@ -294,22 +294,6 @@ func (u *Upstream) handleConnClosed(conn net.Conn, _ error) {
 	}
 }
 
-func (u *Upstream) removePendingAndNotify(id uint16, msg *dns.Msg) {
-	u.pendingMu.Lock()
-	entry, ok := u.pending[id]
-	if !ok {
-		u.pendingMu.Unlock()
-		return
-	}
-	delete(u.pending, id)
-	u.pendingMu.Unlock()
-
-	select {
-	case entry.ch <- msg:
-	default:
-	}
-}
-
 func (u *Upstream) claimID(q *dns.Msg, conn net.Conn) (uint16, chan *dns.Msg, error) {
 	entry := &pendingEntry{
 		ch:        make(chan *dns.Msg, 2),
@@ -353,8 +337,15 @@ func (u *Upstream) deliver(conn net.Conn, msg *dns.Msg) {
 	}
 }
 
-func (u *Upstream) unclaimID(id uint16) {
-	u.removePendingAndNotify(id, nil)
+// unclaimID releases id if it still belongs to the query waiting on ch. A
+// reply or a socket failure may have freed the id already, and another query
+// may have claimed it since.
+func (u *Upstream) unclaimID(id uint16, ch chan *dns.Msg) {
+	u.pendingMu.Lock()
+	if entry, ok := u.pending[id]; ok && entry.ch == ch {
+		delete(u.pending, id)
+	}
+	u.pendingMu.Unlock()
 	select {
 	case u.wakeup <- struct{}{}:
 	default:
@@ -382,7 +373,7 @@ func (u *Upstream) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, e
 	if err != nil {
 		return nil, err
 	}
-	defer u.unclaimID(id)
+	defer u.unclaimID(id, respCh)
 
 	u.writeMu.Lock()
 	var dlSet bool
