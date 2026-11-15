@@ -58,12 +58,15 @@ func (u *Upstream) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (ups
 }
 
 func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool) (upstreamtrace.Result, error) {
-	q.Id = 0
+	// RFC 8484 asks for id 0. Send it from a copy so the caller's query
+	// keeps its id, and give that id back to the response.
+	qc := *q
+	qc.Id = 0
 	var requestSnapshot dnsutils.EDNSSnapshot
 	if capture {
-		requestSnapshot = dnsutils.SnapshotEDNS(q)
+		requestSnapshot = dnsutils.SnapshotEDNS(&qc)
 	}
-	wire, buf, err := pool.PackBuffer(q)
+	wire, buf, err := pool.PackBuffer(&qc)
 	if err != nil {
 		return upstreamtrace.Result{}, err
 	}
@@ -79,6 +82,7 @@ func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool
 	if err != nil {
 		return upstreamtrace.Result{}, err
 	}
+	defer res.Body.Close()
 	if res.StatusCode != 200 {
 		return upstreamtrace.Result{}, fmt.Errorf("unexpected status %v: %s", res.StatusCode, res.Status)
 	}
@@ -90,7 +94,6 @@ func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool
 			return upstreamtrace.Result{}, fmt.Errorf("empty response")
 		}
 	}
-	defer res.Body.Close()
 	bb := bufPool.Get()
 	defer bufPool.Release(bb)
 	_, err = bb.ReadFrom(res.Body)
@@ -102,6 +105,7 @@ func (u *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool
 	if err != nil {
 		return upstreamtrace.Result{}, err
 	}
+	r.Id = q.Id
 	if capture {
 		return upstreamtrace.NewResult(r, requestSnapshot), nil
 	}

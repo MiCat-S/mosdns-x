@@ -160,10 +160,13 @@ func (h *Upstream) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (ups
 }
 
 func (h *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool) (upstreamtrace.Result, error) {
-	q.Id = 0
+	// RFC 9250 asks for id 0. Send it from a copy so the caller's query
+	// keeps its id, and give that id back to the response.
+	qc := *q
+	qc.Id = 0
 	var requestSnapshot dnsutils.EDNSSnapshot
 	if capture {
-		requestSnapshot = dnsutils.SnapshotEDNS(q)
+		requestSnapshot = dnsutils.SnapshotEDNS(&qc)
 	}
 	var err error
 	for range 3 {
@@ -173,8 +176,9 @@ func (h *Upstream) exchangeContext(ctx context.Context, q *dns.Msg, capture bool
 			return upstreamtrace.Result{}, err
 		}
 		var resp *dns.Msg
-		resp, err = exchangeMsg(ctx, conn, q)
+		resp, err = exchangeMsg(ctx, conn, &qc)
 		if err == nil {
+			resp.Id = q.Id
 			if capture {
 				return upstreamtrace.NewResult(resp, requestSnapshot), nil
 			}
@@ -202,6 +206,11 @@ func exchange(ctx context.Context, conn *Conn, q *dns.Msg) (*dns.Msg, error) {
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() {
+		stream.CancelRead(1)
+		stream.CancelWrite(1)
+	})
+	defer stop()
 	_, err = dnsutils.WriteMsgToTCP(stream, q)
 	if err != nil {
 		stream.CancelRead(1)

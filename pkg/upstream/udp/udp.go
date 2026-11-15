@@ -23,8 +23,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
-	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,7 +39,7 @@ import (
 )
 
 const (
-	defaultBufSize = 4096
+	defaultBufSize = 65535
 	pendingTTL     = 10 * time.Second
 )
 
@@ -48,8 +50,44 @@ var bufPool = sync.Pool{
 }
 
 type pendingEntry struct {
-	ch       chan *dns.Msg
-	deadline time.Time
+	ch        chan *dns.Msg
+	deadline  time.Time
+	conn      net.Conn
+	opcode    int
+	questions []dns.Question
+}
+
+// matches reports whether msg, read from conn, answers the query this entry
+// waits for. The reply must arrive on the socket the query was sent from, be
+// a response with the query's opcode and echo its whole question section
+// (names compared case-insensitively). An error reply may leave the question
+// section out, as some servers do for FORMERR or REFUSED; it carries no
+// records, so accepting it only ends the wait early.
+func (e *pendingEntry) matches(conn net.Conn, msg *dns.Msg) bool {
+	if conn != e.conn || !msg.Response || msg.Opcode != e.opcode {
+		return false
+	}
+	if len(msg.Question) == 0 && isErrorRcode(msg.Rcode) {
+		return true
+	}
+	if len(msg.Question) != len(e.questions) {
+		return false
+	}
+	for i, q := range e.questions {
+		r := msg.Question[i]
+		if r.Qtype != q.Qtype || r.Qclass != q.Qclass || !strings.EqualFold(r.Name, q.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func isErrorRcode(rcode int) bool {
+	switch rcode {
+	case dns.RcodeFormatError, dns.RcodeServerFailure, dns.RcodeNotImplemented, dns.RcodeRefused:
+		return true
+	}
+	return false
 }
 
 type Upstream struct {
@@ -67,7 +105,6 @@ type Upstream struct {
 	wakeup    chan struct{}
 
 	writeMu sync.Mutex
-	rr      uint32
 	closed  int32
 }
 
@@ -98,6 +135,10 @@ func (u *Upstream) Close() error {
 	}
 	u.mu.Unlock()
 
+	if u.tcpTransport != nil {
+		_ = u.tcpTransport.Close()
+	}
+
 	select {
 	case u.wakeup <- struct{}{}:
 	default:
@@ -126,7 +167,7 @@ func (u *Upstream) Close() error {
 	return nil
 }
 
-func (u *Upstream) ensureConn(ctx context.Context) error {
+func (u *Upstream) ensureConn(ctx context.Context) (err error) {
 	for {
 		u.mu.Lock()
 		if atomic.LoadInt32(&u.closed) == 1 {
@@ -154,7 +195,6 @@ func (u *Upstream) ensureConn(ctx context.Context) error {
 			}()
 
 			var conn net.Conn
-			var err error
 
 			defer func() {
 				if r := recover(); r != nil {
@@ -216,7 +256,7 @@ func (u *Upstream) reader(conn net.Conn) {
 		if n > 0 {
 			msg := new(dns.Msg)
 			if err := msg.Unpack(b[:n]); err == nil {
-				u.removePendingAndNotify(msg.Id, msg)
+				u.deliver(conn, msg)
 			}
 		}
 	}
@@ -232,22 +272,18 @@ func (u *Upstream) handleConnClosed(conn net.Conn, _ error) {
 	u.mu.Unlock()
 
 	u.pendingMu.Lock()
-	snapshot := make([]struct {
-		id    uint16
-		entry *pendingEntry
-	}, 0, len(u.pending))
+	var failed []*pendingEntry
 	for id, entry := range u.pending {
-		snapshot = append(snapshot, struct {
-			id    uint16
-			entry *pendingEntry
-		}{id, entry})
+		if entry.conn == conn {
+			delete(u.pending, id)
+			failed = append(failed, entry)
+		}
 	}
-	u.pending = make(map[uint16]*pendingEntry)
 	u.pendingMu.Unlock()
 
-	for _, it := range snapshot {
+	for _, entry := range failed {
 		select {
-		case it.entry.ch <- nil:
+		case entry.ch <- nil:
 		default:
 		}
 	}
@@ -258,14 +294,41 @@ func (u *Upstream) handleConnClosed(conn net.Conn, _ error) {
 	}
 }
 
-func (u *Upstream) removePendingAndNotify(id uint16, msg *dns.Msg) {
+func (u *Upstream) claimID(q *dns.Msg, conn net.Conn) (uint16, chan *dns.Msg, error) {
+	entry := &pendingEntry{
+		ch:        make(chan *dns.Msg, 2),
+		deadline:  time.Now().Add(pendingTTL),
+		conn:      conn,
+		opcode:    q.Opcode,
+		questions: slices.Clone(q.Question),
+	}
+
+	start := uint16(rand.Uint32())
 	u.pendingMu.Lock()
-	entry, ok := u.pending[id]
-	if !ok {
+	defer u.pendingMu.Unlock()
+	for i := 0; i < 65536; i++ {
+		id := start + uint16(i)
+		if _, exists := u.pending[id]; exists {
+			continue
+		}
+		u.pending[id] = entry
+		select {
+		case u.wakeup <- struct{}{}:
+		default:
+		}
+		return id, entry.ch, nil
+	}
+	return 0, nil, errors.New("no free dns id available")
+}
+
+func (u *Upstream) deliver(conn net.Conn, msg *dns.Msg) {
+	u.pendingMu.Lock()
+	entry, ok := u.pending[msg.Id]
+	if !ok || !entry.matches(conn, msg) {
 		u.pendingMu.Unlock()
 		return
 	}
-	delete(u.pending, id)
+	delete(u.pending, msg.Id)
 	u.pendingMu.Unlock()
 
 	select {
@@ -274,30 +337,15 @@ func (u *Upstream) removePendingAndNotify(id uint16, msg *dns.Msg) {
 	}
 }
 
-func (u *Upstream) claimID() (uint16, chan *dns.Msg, error) {
-	for i := 0; i < 65536; i++ {
-		id := uint16(atomic.AddUint32(&u.rr, 1) & 0xffff)
-		u.pendingMu.Lock()
-		if _, exists := u.pending[id]; !exists {
-			ch := make(chan *dns.Msg, 2)
-			u.pending[id] = &pendingEntry{
-				ch:       ch,
-				deadline: time.Now().Add(pendingTTL),
-			}
-			select {
-			case u.wakeup <- struct{}{}:
-			default:
-			}
-			u.pendingMu.Unlock()
-			return id, ch, nil
-		}
-		u.pendingMu.Unlock()
+// unclaimID releases id if it still belongs to the query waiting on ch. A
+// reply or a socket failure may have freed the id already, and another query
+// may have claimed it since.
+func (u *Upstream) unclaimID(id uint16, ch chan *dns.Msg) {
+	u.pendingMu.Lock()
+	if entry, ok := u.pending[id]; ok && entry.ch == ch {
+		delete(u.pending, id)
 	}
-	return 0, nil, errors.New("no free dns id available")
-}
-
-func (u *Upstream) unclaimID(id uint16) {
-	u.removePendingAndNotify(id, nil)
+	u.pendingMu.Unlock()
 	select {
 	case u.wakeup <- struct{}{}:
 	default:
@@ -314,18 +362,18 @@ func (u *Upstream) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, e
 		return nil, err
 	}
 
-	id, respCh, err := u.claimID()
-	if err != nil {
-		return nil, err
-	}
-	defer u.unclaimID(id)
-
 	u.mu.Lock()
 	conn := u.conn
 	u.mu.Unlock()
 	if conn == nil {
 		return nil, errors.New("udp connection closed")
 	}
+
+	id, respCh, err := u.claimID(q, conn)
+	if err != nil {
+		return nil, err
+	}
+	defer u.unclaimID(id, respCh)
 
 	u.writeMu.Lock()
 	var dlSet bool
@@ -343,12 +391,12 @@ func (u *Upstream) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, e
 
 	if err != nil {
 		u.mu.Lock()
-		if u.conn != nil {
-			_ = u.conn.Close()
+		if u.conn == conn {
 			u.conn = nil
 			u.readerOn = false
 		}
 		u.mu.Unlock()
+		_ = conn.Close()
 		return nil, err
 	}
 
@@ -437,49 +485,4 @@ func (u *Upstream) pendingJanitor() {
 		case <-ch:
 		}
 	}
-}
-
-type UpstreamPool struct {
-	upstreams []*Upstream
-	next      uint32
-}
-
-func NewUpstreamPool(dialFunc func(ctx context.Context) (net.Conn, error), tcpTransport *transport.Transport) (*UpstreamPool, error) {
-	num := runtime.NumCPU() * 2
-	pool := &UpstreamPool{
-		upstreams: make([]*Upstream, num),
-	}
-	for i := 0; i < num; i++ {
-		u, err := NewUDPUpstream(dialFunc, tcpTransport)
-		if err != nil {
-			for j := 0; j < i; j++ {
-				_ = pool.upstreams[j].Close()
-			}
-			return nil, err
-		}
-		pool.upstreams[i] = u
-	}
-	return pool, nil
-}
-
-func (p *UpstreamPool) ExchangeContext(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
-	i := atomic.AddUint32(&p.next, 1)
-	u := p.upstreams[i%uint32(len(p.upstreams))]
-	return u.ExchangeContext(ctx, q)
-}
-
-func (p *UpstreamPool) ExchangeContextDetailed(ctx context.Context, q *dns.Msg) (upstreamtrace.Result, error) {
-	i := atomic.AddUint32(&p.next, 1)
-	u := p.upstreams[i%uint32(len(p.upstreams))]
-	return u.ExchangeContextDetailed(ctx, q)
-}
-
-func (p *UpstreamPool) Close() error {
-	var firstErr error
-	for _, u := range p.upstreams {
-		if err := u.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
 }

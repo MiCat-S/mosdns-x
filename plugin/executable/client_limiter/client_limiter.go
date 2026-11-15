@@ -58,6 +58,8 @@ func NewLimiter(bp *coremain.BP, args *Args) (*Limiter, error) {
 	hpl, err := concurrent_limiter.NewHPClientLimiter(concurrent_limiter.HPLimiterOpts{
 		Threshold: args.MaxQPS,
 		Interval:  time.Second,
+		IPv4Mask:  args.V4Mask,
+		IPv6Mask:  args.V6Mask,
 	})
 	if err != nil {
 		return nil, err
@@ -89,7 +91,7 @@ func (l *Limiter) Close() error {
 	l.closeOnce.Do(func() {
 		close(l.closeNotify)
 	})
-	return nil
+	return l.hpLimiter.Close()
 }
 
 func (l *Limiter) cleanerLoop() {

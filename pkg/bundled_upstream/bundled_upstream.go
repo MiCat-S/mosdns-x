@@ -232,7 +232,7 @@ func exchangeParallel(ctx context.Context, qCtx *query_context.Context, upstream
 		select {
 		case res := <-c:
 			if res.err != nil {
-				logger.Warn("upstream err", qCtx.InfoField(), zap.String("addr", res.from.Address()))
+				logger.Warn("upstream err", qCtx.InfoField(), zap.String("addr", res.from.Address()), zap.Error(res.err))
 				continue
 			}
 

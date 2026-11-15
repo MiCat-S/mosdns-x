@@ -174,13 +174,6 @@ func (f *FallbackNode) exec(ctx context.Context, qCtx *query_context.Context) er
 	return f.doFallback(ctx, qCtx)
 }
 
-func (f *FallbackNode) isolateDoPrimary(ctx context.Context, qCtx *query_context.Context) (err error) {
-	qCtxCopy := qCtx.Copy()
-	err = f.doPrimary(ctx, qCtxCopy)
-	qCtx.AdoptResponse(qCtxCopy)
-	return err
-}
-
 // doPrimaryInPlace runs primary on qCtx itself, naming the branch for the
 // journal while it runs.
 func (f *FallbackNode) doPrimaryInPlace(ctx context.Context, qCtx *query_context.Context) error {
