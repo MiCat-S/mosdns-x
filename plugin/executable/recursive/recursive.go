@@ -3,11 +3,13 @@ package recursive
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pmkol/mosdns-x/coremain"
+	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/pkg/bundled_upstream"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
@@ -25,6 +27,9 @@ func init() {
 var _ coremain.ExecutablePlugin = (*recursive)(nil)
 
 type Args struct {
+	// Label names the resolver in query logs and statistics instead of the
+	// plugin tag.
+	Label            string `yaml:"label"`
 	RootHints        string `yaml:"root_hints"`
 	TrustAnchor      string `yaml:"trust_anchor"`
 	DisableDNSSEC    bool   `yaml:"disable_dnssec"`
@@ -49,7 +54,8 @@ type Args struct {
 
 type recursive struct {
 	*coremain.BP
-	r *recursor.Resolver
+	r     *recursor.Resolver
+	label string
 }
 
 func Init(bp *coremain.BP, args interface{}) (p coremain.Plugin, err error) {
@@ -102,6 +108,9 @@ func newOpts(bp *coremain.BP, args *Args) (recursor.Opts, error) {
 }
 
 func newRecursive(bp *coremain.BP, args *Args) (*recursive, error) {
+	if !upstreamtrace.ValidLabel(args.Label) {
+		return nil, fmt.Errorf("label must be at most %d characters without control characters", upstreamtrace.MaxLabel)
+	}
 	opts, err := newOpts(bp, args)
 	if err != nil {
 		return nil, err
@@ -110,7 +119,11 @@ func newRecursive(bp *coremain.BP, args *Args) (*recursive, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to init resolver, %w", err)
 	}
-	p := &recursive{BP: bp, r: r}
+	label := args.Label
+	if strings.TrimSpace(label) == "" {
+		label = bp.Tag()
+	}
+	p := &recursive{BP: bp, r: r, label: upstreamtrace.DisplayName(bp.Tag(), 0, "recursive://", label)}
 	if bp.M() != nil {
 		bp.GetMetricsReg().MustRegister(p.collectors()...)
 	}
@@ -166,7 +179,7 @@ func (p *recursive) Exec(ctx context.Context, qCtx *query_context.Context, next 
 	if qCtx.CaptureQueryDetails() {
 		// A resolution can query several authorities. There is no single
 		// upstream EDNS exchange to attach to the selected logical result.
-		trace.UpstreamStageStatus = query_context.UpstreamStageUnavailable
+		trace.UpstreamStageStatus = query_context.UpstreamStageIterative
 	}
 	qCtx.SetResponseWithTrace(result.Response, trace)
 	return executable_seq.ExecChainNode(ctx, qCtx, next)
@@ -176,15 +189,15 @@ func (p *recursive) Exchange(ctx context.Context, q *dns.Msg) (*dns.Msg, error) 
 	return p.r.Resolve(ctx, q)
 }
 
-func (p *recursive) ObserverID() string { return p.Tag() + "/0" }
-func (p *recursive) Address() string    { return p.Tag() }
-func (p *recursive) Trusted() bool      { return true }
-func (p *recursive) PluginTag() string  { return p.Tag() }
-func (p *recursive) DisplayName() string {
-	return upstreamtrace.DisplayName(p.Tag(), 0, "recursive://", p.Tag())
-}
+func (p *recursive) ObserverID() string  { return p.Tag() + "/0" }
+func (p *recursive) Address() string     { return p.Tag() }
+func (p *recursive) Trusted() bool       { return true }
+func (p *recursive) PluginTag() string   { return p.Tag() }
+func (p *recursive) DisplayName() string { return p.label }
 
-func (p *recursive) UpstreamIDs() []string { return []string{p.ObserverID()} }
+func (p *recursive) ListUpstreams() []runtimeconfig.ActiveUpstream {
+	return []runtimeconfig.ActiveUpstream{{ID: p.ObserverID(), Label: p.label}}
+}
 
 func (p *recursive) Close() error {
 	return p.r.Close()

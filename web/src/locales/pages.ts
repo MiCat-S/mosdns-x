@@ -178,6 +178,8 @@ export const en: Record<string, string> = {
     "This response was generated from local Hosts, so there is no upstream snapshot",
   本次最终响应没有可关联的上游快照:
     "No upstream snapshot can be linked to this final response",
+  "本次由本机自行向多台域名服务器层层查询得出（也可能来自其内部缓存），没有单一的上游快照":
+    "This server resolved it itself through several name servers in turn (or from its internal cache), so there is no single upstream snapshot",
   无: "None",
   "地址族 {family}": "Address family {family}",
   "有 EDNS": "EDNS present",
@@ -555,6 +557,8 @@ export const ja: Record<string, string> = {
     "この応答はローカルの Hosts で生成されたため、対応するアップストリームのスナップショットはありません",
   本次最终响应没有可关联的上游快照:
     "この最終応答に関連付けられるアップストリームのスナップショットはありません",
+  "本次由本机自行向多台域名服务器层层查询得出（也可能来自其内部缓存），没有单一的上游快照":
+    "このサーバー自身が複数のネームサーバーへ順に問い合わせて得た応答（内部キャッシュの場合もあります）のため、1 つのアップストリームのスナップショットはありません",
   无: "なし",
   "地址族 {family}": "アドレスファミリー {family}",
   "有 EDNS": "EDNS あり",

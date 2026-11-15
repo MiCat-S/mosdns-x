@@ -208,25 +208,27 @@ func TestLocalSERVFAILWithoutUpstreamTraceIsNotLinked(t *testing.T) {
 }
 
 func TestLocalSERVFAILDiscardsSelectedUpstreamWithUnavailableSnapshots(t *testing.T) {
-	var got Result
-	exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
-		response := new(dns.Msg)
-		response.SetReply(qCtx.Q())
-		qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
-			Source: query_context.ResponseSourceUpstream, UpstreamID: "legacy-upstream/0",
-			UpstreamStageStatus: query_context.UpstreamStageUnavailable,
+	for _, status := range []string{query_context.UpstreamStageUnavailable, query_context.UpstreamStageIterative} {
+		var got Result
+		exec := executableFunc(func(_ context.Context, qCtx *query_context.Context, _ executable_seq.ExecutableChainNode) error {
+			response := new(dns.Msg)
+			response.SetReply(qCtx.Q())
+			qCtx.SetResponseWithTrace(response, query_context.ResponseTrace{
+				Source: query_context.ResponseSourceUpstream, UpstreamID: "upstream/0",
+				UpstreamStageStatus: status,
+			})
+			return errors.New("post-forward execution failed")
 		})
-		return errors.New("post-forward execution failed")
-	})
-	h, _ := NewEntryHandler(EntryHandlerOpts{
-		Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result },
-	})
-	response, err := h.ServeDNS(context.Background(), validQuery(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.Rcode != dns.RcodeServerFailure || got.UpstreamStageStatus != query_context.UpstreamStageDiscarded || got.UpstreamID != "" || got.ResponseEDNS == nil {
-		t.Fatalf("SERVFAIL result = %+v", got)
+		h, _ := NewEntryHandler(EntryHandlerOpts{
+			Entry: exec, CaptureQueryDetails: true, Observe: func(result Result) { got = result },
+		})
+		response, err := h.ServeDNS(context.Background(), validQuery(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Rcode != dns.RcodeServerFailure || got.UpstreamStageStatus != query_context.UpstreamStageDiscarded || got.UpstreamID != "" || got.ResponseEDNS == nil {
+			t.Fatalf("%s: SERVFAIL result = %+v", status, got)
+		}
 	}
 }
 

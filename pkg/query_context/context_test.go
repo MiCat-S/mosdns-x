@@ -130,15 +130,19 @@ func TestSetResponseWithLocalTraceKeepsDiscardedStatus(t *testing.T) {
 	}
 }
 
+// An upstream answer without snapshots, including a recursive resolution,
+// is still discarded when a local response replaces it.
 func TestSetResponseDiscardsSelectedUpstreamWhenSnapshotsUnavailable(t *testing.T) {
-	ctx := NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), nil)
-	ctx.SetCaptureQueryDetails(true)
-	ctx.SetResponseWithTrace(new(dns.Msg), ResponseTrace{
-		Source: ResponseSourceUpstream, UpstreamID: "legacy-upstream/0", UpstreamStageStatus: UpstreamStageUnavailable,
-	})
-	ctx.SetResponseWithTrace(new(dns.Msg), ResponseTrace{Source: ResponseSourceHosts})
-	trace := ctx.ResponseTrace()
-	if trace.Source != ResponseSourceHosts || trace.UpstreamStageStatus != UpstreamStageDiscarded || trace.UpstreamID != "" {
-		t.Fatalf("local replacement retained unavailable selected upstream: %+v", trace)
+	for _, status := range []string{UpstreamStageUnavailable, UpstreamStageIterative} {
+		ctx := NewContext(new(dns.Msg).SetQuestion("example.org.", dns.TypeA), nil)
+		ctx.SetCaptureQueryDetails(true)
+		ctx.SetResponseWithTrace(new(dns.Msg), ResponseTrace{
+			Source: ResponseSourceUpstream, UpstreamID: "upstream/0", UpstreamStageStatus: status,
+		})
+		ctx.SetResponseWithTrace(new(dns.Msg), ResponseTrace{Source: ResponseSourceHosts})
+		trace := ctx.ResponseTrace()
+		if trace.Source != ResponseSourceHosts || trace.UpstreamStageStatus != UpstreamStageDiscarded || trace.UpstreamID != "" {
+			t.Fatalf("local replacement retained %s selected upstream: %+v", status, trace)
+		}
 	}
 }

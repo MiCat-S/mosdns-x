@@ -83,7 +83,10 @@ type SeriesPoint struct {
 }
 
 type UpstreamStats struct {
-	ID           string  `json:"id"`
+	ID string `json:"id"`
+	// Label is the upstream's current query log name, filled from the
+	// running configuration; the store records only ID.
+	Label        string  `json:"label,omitempty"`
 	Attempts     uint64  `json:"attempts"`
 	Failures     uint64  `json:"failures"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`

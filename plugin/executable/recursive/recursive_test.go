@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -110,11 +111,12 @@ func TestEntryObservesRecursiveResolution(t *testing.T) {
 				if closed {
 					p.Close()
 				}
-				var lister coremain.UpstreamIDLister = p
-				ids := lister.UpstreamIDs()
-				if len(ids) != 1 || ids[0] != "recurse/0" {
-					t.Fatalf("active upstream IDs = %v", ids)
+				var lister coremain.UpstreamLister = p
+				upstreams := lister.ListUpstreams()
+				if len(upstreams) != 1 || upstreams[0].ID != "recurse/0" || upstreams[0].Label != "recurse" {
+					t.Fatalf("active upstreams = %v", upstreams)
 				}
+				ids := []string{upstreams[0].ID}
 				principal := query_context.Principal{UserID: "user", CredentialID: "device"}
 				meta := new(query_context.RequestMeta)
 				meta.SetPrincipal(principal)
@@ -164,10 +166,29 @@ func TestEntryObservesRecursiveResolution(t *testing.T) {
 					if result.UpstreamStageStatus != query_context.UpstreamStageAttemptedNoSelection || attempt.Error == "" {
 						t.Fatalf("failed trace = %+v", result)
 					}
-				} else if result.UpstreamStageStatus != query_context.UpstreamStageUnavailable || attempt.Rcode != "NOTIMP" || attempt.Error != "" {
+				} else if result.UpstreamStageStatus != query_context.UpstreamStageIterative || attempt.Rcode != "NOTIMP" || attempt.Error != "" {
 					t.Fatalf("selected trace = %+v", result)
 				}
 			})
+		}
+	}
+}
+
+func TestLabel(t *testing.T) {
+	p, err := newRecursive(coremain.NewBP("recurse", PluginType, nil, nil), &Args{Label: "递归解析"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if got := p.DisplayName(); got != "递归解析" {
+		t.Fatalf("display name = %q", got)
+	}
+	if got := p.ListUpstreams(); len(got) != 1 || got[0].ID != "recurse/0" || got[0].Label != "递归解析" {
+		t.Fatalf("upstreams = %v", got)
+	}
+	for _, label := range []string{"bad\nlabel", strings.Repeat("x", 65)} {
+		if _, err := newRecursive(coremain.NewBP("recurse", PluginType, nil, nil), &Args{Label: label}); err == nil {
+			t.Fatalf("label %q accepted", label)
 		}
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/pmkol/mosdns-x/coremain"
+	"github.com/pmkol/mosdns-x/internal/runtimeconfig"
 	"github.com/pmkol/mosdns-x/pkg/bundled_upstream"
 	"github.com/pmkol/mosdns-x/pkg/executable_seq"
 	"github.com/pmkol/mosdns-x/pkg/query_context"
@@ -176,16 +177,20 @@ func newFastForward(bp *coremain.BP, args *Args) (*fastForward, error) {
 	return f, nil
 }
 
-// UpstreamIDs returns the identifiers telemetry records this plugin's
-// upstreams under, tag/index in configuration order.
-func (f *fastForward) UpstreamIDs() []string {
-	ids := make([]string, 0, len(f.upstreamWrappers))
+// ListUpstreams returns this plugin's upstreams in configuration order, under
+// the identifiers telemetry records them (tag/index) with their query log
+// names.
+func (f *fastForward) ListUpstreams() []runtimeconfig.ActiveUpstream {
+	upstreams := make([]runtimeconfig.ActiveUpstream, 0, len(f.upstreamWrappers))
 	for _, u := range f.upstreamWrappers {
-		if identified, ok := u.(interface{ ObserverID() string }); ok {
-			ids = append(ids, identified.ObserverID())
+		if named, ok := u.(interface {
+			ObserverID() string
+			DisplayName() string
+		}); ok {
+			upstreams = append(upstreams, runtimeconfig.ActiveUpstream{ID: named.ObserverID(), Label: named.DisplayName()})
 		}
 	}
-	return ids
+	return upstreams
 }
 
 type upstreamWrapper struct {

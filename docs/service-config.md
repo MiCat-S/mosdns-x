@@ -251,6 +251,7 @@ plugins:
   - tag: recursive
     type: recursive
     args:
+      label: 递归解析                                   # 查询日志和统计中的显示名称，省略时显示插件 tag
       local_root: true                                  # 在本地保存一份根区，不再查询根服务器
       local_root_file: /var/lib/mosdns/root.zone        # 根区副本，重启或应用配置后可立即使用
       auto_trust_anchor_file: /var/lib/mosdns/root.key  # 按 RFC 5011 自动跟随根密钥轮换
@@ -276,7 +277,7 @@ plugins:
 - **ECS**：客户端带 ECS 时才转发给权威服务器；权威按子网区分的应答（scope 大于 0）不进入插件缓存。
 - **出站**：需要能直接访问权威服务器的 UDP/TCP 53 端口。本机或网关上的代理软件若劫持 53 端口（常见于 Surge、Clash 等的 DNS 劫持），递归查询会被代理软件应答，无法正常工作，需要把 mosdns 的出站流量排除在劫持之外。`proxy` 或 `socks5` 可让全部递归流量经代理，写法与 `fast_forward` 上游相同，两者不能同时设置；递归要向许多服务器发起大量短查询，经代理会明显变慢。`so_mark`、`bind_to_device` 与转发上游相同，`no_ipv4` / `no_ipv6` 禁用对应地址族。
 - **机会式 DoT（`opportunistic_dot`）**：默认关闭。开启后在后台探测每台权威服务器的 853 端口，可用时改走 DoT。它不校验证书，只能防被动窃听，应答正确性仍靠 DNSSEC 保证；目前支持 DoT 的权威服务器很少。
-- **查询日志与面板**：一次完整的递归解析在查询日志、查询路径和上游统计中记为一次上游请求，上游名称显示插件 tag，不记录途中各台权威服务器的地址。由插件内部缓存直接应答的查询同样记为一次上游请求，不单独标出；一次解析可能经过多台权威服务器，查询明细中的上游 EDNS 显示为不可用。面板运行配置页中该插件为只读，参数只能在主配置中修改。
+- **查询日志与面板**：一次完整的递归解析在查询日志、查询路径和上游统计中记为一次上游请求，上游名称显示 `label`（不超过 64 个字符，不含控制字符），省略时显示插件 tag；不记录途中各台权威服务器的地址。由插件内部缓存直接应答的查询同样记为一次上游请求，不单独标出。一次解析可能经过多台权威服务器，没有单一的上游请求和响应，查询明细的上游 EDNS 阶段会说明这一点（`upstream_stage_status` 为 `iterative`），而不是显示为不可用。面板运行配置页中该插件为只读，参数只能在主配置中修改。
 - **运行代**：插件缓存保存在内存中，重启服务或在面板应用配置（会建立新的运行代）后清空。设置了 `local_root_file` 时，新运行代先加载本地副本，再按需下载更新。
 
 `/metrics` 提供 `mosdns_plugin_<tag>_query_total`、`mosdns_plugin_<tag>_upstream_query_total`（发往权威服务器的查询数）、`mosdns_plugin_<tag>_cache_hit_total`、`mosdns_plugin_<tag>_dnssec_secure_total` / `_insecure_total` / `_bogus_total`、`mosdns_plugin_<tag>_cache_size` 和 `mosdns_plugin_<tag>_local_root_serial` 等指标。

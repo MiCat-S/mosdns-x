@@ -911,11 +911,13 @@ func TestQueryLogsNameAccountsAndDevices(t *testing.T) {
 }
 
 type fakeUpstreamLister struct {
-	ids []string
-	err error
+	upstreams []runtimeconfig.ActiveUpstream
+	err       error
 }
 
-func (f *fakeUpstreamLister) ActiveUpstreamIDs() ([]string, error) { return f.ids, f.err }
+func (f *fakeUpstreamLister) ActiveUpstreams() ([]runtimeconfig.ActiveUpstream, error) {
+	return f.upstreams, f.err
+}
 
 func TestStatsHideUpstreamsMissingFromTheRunningConfig(t *testing.T) {
 	f := newFixture(t)
@@ -934,7 +936,11 @@ func TestStatsHideUpstreamsMissingFromTheRunningConfig(t *testing.T) {
 		}
 		got := make([]string, 0, len(v.Upstreams))
 		for _, u := range v.Upstreams {
-			got = append(got, u.ID)
+			if u.Label != "" {
+				got = append(got, u.ID+"="+u.Label)
+			} else {
+				got = append(got, u.ID)
+			}
 		}
 		return strings.Join(got, " ")
 	}
@@ -942,13 +948,14 @@ func TestStatsHideUpstreamsMissingFromTheRunningConfig(t *testing.T) {
 	if got := ids(); got != recorded {
 		t.Fatalf("without lister: %q", got)
 	}
-	lister := &fakeUpstreamLister{ids: []string{"forward_a/0", "forward_b/0"}}
+	lister := &fakeUpstreamLister{upstreams: []runtimeconfig.ActiveUpstream{{ID: "forward_a/0", Label: "Primary"}, {ID: "forward_b/0", Label: "Backup"}}}
 	f.handler.opts.ActiveUpstreams = lister
-	// forward_gone was removed and forward_a lost its second upstream.
-	if got := ids(); got != "forward_a/0" {
+	// forward_gone was removed and forward_a lost its second upstream. The
+	// kept one is named as the running configuration names it.
+	if got := ids(); got != "forward_a/0=Primary" {
 		t.Fatalf("filtered: %q", got)
 	}
-	lister.ids = nil
+	lister.upstreams = nil
 	if got := ids(); got != "" {
 		t.Fatalf("no active upstreams: %q", got)
 	}

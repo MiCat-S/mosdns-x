@@ -101,8 +101,9 @@ export function StatsBlocks({
               {stats.upstreams.map((u) => (
                 <div key={u.id}>
                   <span>
-                    {u.id}
+                    {u.label || u.id}
                     <small>
+                      {u.label && u.label !== u.id ? `${u.id} · ` : ""}
                       {t("{attempts} 次尝试 · {failures} 次失败", {
                         attempts: fmt.num(u.attempts),
                         failures: fmt.num(u.failures),

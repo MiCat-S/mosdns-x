@@ -98,6 +98,9 @@ const (
 	UpstreamStageDiscarded            = "discarded"
 	UpstreamStageNotLinked            = "not_linked"
 	UpstreamStageUnavailable          = "unavailable"
+	// UpstreamStageIterative marks an answer resolved iteratively from the
+	// authorities, which has no single upstream EDNS exchange to show.
+	UpstreamStageIterative = "iterative"
 )
 
 // ResponseTrace identifies the component that produced the response selected

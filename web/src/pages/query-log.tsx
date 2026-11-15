@@ -129,6 +129,10 @@ function missingEDNSMessage(record: QueryRecord, stage: EDNSStage) {
         return t("本次由本地 Hosts 生成响应，无对应上游快照");
       }
       return t("本次最终响应没有可关联的上游快照");
+    case "iterative":
+      return t(
+        "本次由本机自行向多台域名服务器层层查询得出（也可能来自其内部缓存），没有单一的上游快照",
+      );
     default:
       return t("该阶段快照暂不可用");
   }

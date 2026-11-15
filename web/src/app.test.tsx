@@ -373,6 +373,63 @@ describe("前端访问与秘密处理", () => {
     ).not.toBeInTheDocument();
     expect(within(detail).queryByText("未调用上游")).not.toBeInTheDocument();
   });
+  it("查询明细说明递归解析没有单一的上游快照", async () => {
+    const noEDNS = {
+      present: false,
+      version: 0,
+      udp_size: 0,
+      dnssec_ok: false,
+      option_codes: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          items: [
+            {
+              id: "recursive-query",
+              time: "2026-09-11T12:00:00Z",
+              user_id: "u1",
+              credential_id: "c1",
+              client_ip: "192.0.2.44",
+              name: "iterative.example.",
+              qtype: "A",
+              rcode: "NOERROR",
+              duration_ms: 31,
+              cache_hit: false,
+              protocol: "h2",
+              answer_ips: ["192.0.2.1"],
+              response_source: "upstream",
+              response_source_id: "recursive",
+              upstream_id: "recursive/0",
+              upstream_label: "递归解析",
+              edns_trace_version: 1,
+              upstream_stage_status: "iterative",
+              edns: noEDNS,
+              upstream_request_edns: null,
+              upstream_response_edns: null,
+              response_edns: noEDNS,
+            },
+          ],
+        }),
+      ),
+    );
+    render(<QueryDetails path="/me/queries" enabled />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "查看 iterative.example. 详情",
+      }),
+    );
+    const detail = screen.getByRole("dialog");
+    expect(
+      within(detail).getAllByText(
+        "本次由本机自行向多台域名服务器层层查询得出（也可能来自其内部缓存），没有单一的上游快照",
+      ),
+    ).toHaveLength(2);
+    expect(
+      within(detail).queryByText("该阶段快照暂不可用"),
+    ).not.toBeInTheDocument();
+  });
   it("管理端日志以名称显示账户和设备，账户删除后显示 ID", async () => {
     const base = {
       time: "2026-10-07T12:00:00Z",
@@ -1086,7 +1143,16 @@ describe("前端访问与秘密处理", () => {
         p95_latency_ms: 5,
         rcode_counts: {},
         series: [],
-        upstreams: [],
+        upstreams: [
+          {
+            id: "recursive/0",
+            label: "递归解析",
+            attempts: 6,
+            failures: 1,
+            avg_latency_ms: 30,
+          },
+          { id: "forward_old/0", attempts: 4, failures: 0, avg_latency_ms: 9 },
+        ],
         dropped: 0,
         updated_at: "2026-10-10T00:00:00Z",
         query_log_enabled: false,
@@ -1094,5 +1160,13 @@ describe("前端访问与秘密处理", () => {
     );
     expect(await screen.findByText("处理完成")).toBeInTheDocument();
     expect(await screen.findByText("排行暂不可用")).toBeInTheDocument();
+    // Upstreams are named by their label, with the ID kept beside the counts;
+    // one without a label falls back to its ID.
+    expect(screen.getByText("递归解析")).toBeInTheDocument();
+    expect(
+      screen.getByText("recursive/0 · 6 次尝试 · 1 次失败"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("forward_old/0")).toBeInTheDocument();
+    expect(screen.getByText("4 次尝试 · 0 次失败")).toBeInTheDocument();
   });
 });

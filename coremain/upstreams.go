@@ -2,26 +2,27 @@ package coremain
 
 import "github.com/pmkol/mosdns-x/internal/runtimeconfig"
 
-// UpstreamIDLister is implemented by plugins that forward to upstreams and
-// know the identifiers telemetry records them under (tag/index).
-type UpstreamIDLister interface {
-	UpstreamIDs() []string
+// UpstreamLister is implemented by plugins that forward to upstreams. It
+// lists them under the identifiers telemetry records (tag/index) with the
+// names query logs show.
+type UpstreamLister interface {
+	ListUpstreams() []runtimeconfig.ActiveUpstream
 }
 
-// ActiveUpstreamIDs lists the upstream identifiers of the running
-// generation, so callers can tell recorded upstreams that still exist from
-// ones a configuration change removed.
-func (m *RuntimeManager) ActiveUpstreamIDs() ([]string, error) {
+// ActiveUpstreams lists the upstreams of the running generation, so callers
+// can tell recorded upstreams that still exist from ones a configuration
+// change removed, and name them as the configuration does now.
+func (m *RuntimeManager) ActiveUpstreams() ([]runtimeconfig.ActiveUpstream, error) {
 	generation, ok := m.acquireCurrent()
 	if !ok {
 		return nil, runtimeconfig.ErrRuntimeUnavailable
 	}
 	defer generation.releaseRequest()
-	var ids []string
+	var upstreams []runtimeconfig.ActiveUpstream
 	for _, plugin := range generation.plugins {
-		if lister, ok := plugin.(UpstreamIDLister); ok {
-			ids = append(ids, lister.UpstreamIDs()...)
+		if lister, ok := plugin.(UpstreamLister); ok {
+			upstreams = append(upstreams, lister.ListUpstreams()...)
 		}
 	}
-	return ids, nil
+	return upstreams, nil
 }

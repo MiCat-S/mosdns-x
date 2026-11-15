@@ -14,14 +14,21 @@ type upstreamTestPlugin struct {
 	ids []string
 }
 
-func (p *upstreamTestPlugin) Tag() string           { return p.tag }
-func (p *upstreamTestPlugin) Type() string          { return "fast_forward" }
-func (p *upstreamTestPlugin) Close() error          { return nil }
-func (p *upstreamTestPlugin) UpstreamIDs() []string { return p.ids }
+func (p *upstreamTestPlugin) ListUpstreams() []runtimeconfig.ActiveUpstream {
+	upstreams := make([]runtimeconfig.ActiveUpstream, 0, len(p.ids))
+	for _, id := range p.ids {
+		upstreams = append(upstreams, runtimeconfig.ActiveUpstream{ID: id, Label: "label " + id})
+	}
+	return upstreams
+}
+
+func (p *upstreamTestPlugin) Tag() string  { return p.tag }
+func (p *upstreamTestPlugin) Type() string { return "fast_forward" }
+func (p *upstreamTestPlugin) Close() error { return nil }
 
 func TestRuntimeManagerListsUpstreamsOfTheRunningGeneration(t *testing.T) {
 	manager := NewRuntimeManager()
-	if _, err := manager.ActiveUpstreamIDs(); !errors.Is(err, runtimeconfig.ErrRuntimeUnavailable) {
+	if _, err := manager.ActiveUpstreams(); !errors.Is(err, runtimeconfig.ErrRuntimeUnavailable) {
 		t.Fatalf("without runtime: %v", err)
 	}
 	generation := runtimeTestGeneration(runtimeTestHandler{answer: 1}, nil)
@@ -39,9 +46,13 @@ func TestRuntimeManagerListsUpstreamsOfTheRunningGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the running generation counts; the swapped-out one is gone.
-	ids, err := manager.ActiveUpstreamIDs()
-	if got := strings.Join(ids, " "); err != nil || got != "forward_a/0 forward_b/0 forward_b/1" {
-		t.Fatalf("ids = %q, %v", got, err)
+	upstreams, err := manager.ActiveUpstreams()
+	got := make([]string, 0, len(upstreams))
+	for _, u := range upstreams {
+		got = append(got, u.ID+"="+u.Label)
+	}
+	if err != nil || strings.Join(got, ",") != "forward_a/0=label forward_a/0,forward_b/0=label forward_b/0,forward_b/1=label forward_b/1" {
+		t.Fatalf("upstreams = %q, %v", got, err)
 	}
 	if err := manager.Drain(context.Background()); err != nil {
 		t.Fatal(err)

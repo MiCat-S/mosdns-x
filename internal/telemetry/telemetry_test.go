@@ -167,6 +167,20 @@ func TestQueryFiltersAndNewestFirst(t *testing.T) {
 	}
 }
 
+func TestIterativeStageStatusIsStored(t *testing.T) {
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	s := openTestStore(t, true, now)
+	r := result("u1", "c1", dns.RcodeSuccess)
+	r.EDNSTraceVersion = 1
+	r.UpstreamStageStatus = query_context.UpstreamStageIterative
+	s.Observe(r)
+	flush(t, s)
+	page, err := s.Queries(context.Background(), "u1", now.Add(-time.Minute), now.Add(time.Minute), QueryFilter{}, Page{})
+	if err != nil || len(page.Items) != 1 || page.Items[0].UpstreamStageStatus != query_context.UpstreamStageIterative {
+		t.Fatalf("queries=%+v err=%v", page, err)
+	}
+}
+
 func TestQueryDetailsSnapshotAndLegacyRecordCompatibility(t *testing.T) {
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
 	s := openTestStore(t, true, now)

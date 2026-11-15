@@ -213,6 +213,7 @@ export interface SeriesPoint {
 }
 export interface Upstream {
   id: string;
+  label?: string;
   attempts: number;
   failures: number;
   avg_latency_ms: number;
@@ -307,6 +308,7 @@ export type UpstreamStageStatus =
   | "attempted_no_selection"
   | "discarded"
   | "not_linked"
+  | "iterative"
   | "unavailable";
 export interface EDNSInfo {
   present: boolean;

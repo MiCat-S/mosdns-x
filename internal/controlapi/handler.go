@@ -1088,11 +1088,11 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request, userID string) {
 		return
 	}
 	if h.opts.ActiveUpstreams != nil {
-		// Only upstreams of the running generation are listed; counters of
-		// removed ones stay in the store. Without a running generation the
-		// list is returned as recorded.
-		if ids, err := h.opts.ActiveUpstreams.ActiveUpstreamIDs(); err == nil {
-			v.Upstreams = activeUpstreams(v.Upstreams, ids)
+		// Only upstreams of the running generation are listed, under their
+		// current names; counters of removed ones stay in the store. Without
+		// a running generation the list is returned as recorded.
+		if active, err := h.opts.ActiveUpstreams.ActiveUpstreams(); err == nil {
+			v.Upstreams = activeUpstreams(v.Upstreams, active)
 		}
 	}
 	if v.RcodeCounts == nil {
@@ -1150,15 +1150,17 @@ func (h *Handler) topDomains(w http.ResponseWriter, r *http.Request, userID stri
 	writeJSON(w, http.StatusOK, v)
 }
 
-// activeUpstreams keeps the statistics whose upstream ID is in ids.
-func activeUpstreams(stats []telemetry.UpstreamStats, ids []string) []telemetry.UpstreamStats {
-	active := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		active[id] = struct{}{}
+// activeUpstreams keeps the statistics of the active upstreams and labels
+// them with their current names.
+func activeUpstreams(stats []telemetry.UpstreamStats, upstreams []runtimeconfig.ActiveUpstream) []telemetry.UpstreamStats {
+	labels := make(map[string]string, len(upstreams))
+	for _, u := range upstreams {
+		labels[u.ID] = u.Label
 	}
 	kept := make([]telemetry.UpstreamStats, 0, len(stats))
 	for _, s := range stats {
-		if _, ok := active[s.ID]; ok {
+		if label, ok := labels[s.ID]; ok {
+			s.Label = label
 			kept = append(kept, s)
 		}
 	}

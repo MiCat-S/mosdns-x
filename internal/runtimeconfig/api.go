@@ -165,11 +165,18 @@ type CachePurger interface {
 	PurgeDomainCache(ctx context.Context, domain string, subdomains bool) (CachePurge, error)
 }
 
-// UpstreamLister reports the identifiers (plugin tag/index) of the upstreams
-// the running generation forwards to, as telemetry records them. It returns
-// ErrRuntimeUnavailable when no generation is serving.
+// ActiveUpstream is an upstream the running generation forwards to: the
+// identifier telemetry records it under (plugin tag/index) and the name query
+// logs show for it.
+type ActiveUpstream struct {
+	ID    string
+	Label string
+}
+
+// UpstreamLister reports the upstreams the running generation forwards to. It
+// returns ErrRuntimeUnavailable when no generation is serving.
 type UpstreamLister interface {
-	ActiveUpstreamIDs() ([]string, error)
+	ActiveUpstreams() ([]ActiveUpstream, error)
 }
 
 // TTLExtensionLister reports the names whose TTL the running generation
