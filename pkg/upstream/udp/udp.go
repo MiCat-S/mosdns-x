@@ -26,6 +26,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,19 +51,44 @@ var bufPool = sync.Pool{
 }
 
 type pendingEntry struct {
-	ch          chan *dns.Msg
-	deadline    time.Time
-	conn        net.Conn
-	question    dns.Question
-	hasQuestion bool
+	ch        chan *dns.Msg
+	deadline  time.Time
+	conn      net.Conn
+	opcode    int
+	questions []dns.Question
 }
 
-func (e *pendingEntry) matches(msg *dns.Msg) bool {
-	if !e.hasQuestion || len(msg.Question) == 0 {
+// matches reports whether msg, read from conn, answers the query this entry
+// waits for. The reply must arrive on the socket the query was sent from, be
+// a response with the query's opcode and echo its whole question section
+// (names compared case-insensitively). An error reply may leave the question
+// section out, as some servers do for FORMERR or REFUSED; it carries no
+// records, so accepting it only ends the wait early.
+func (e *pendingEntry) matches(conn net.Conn, msg *dns.Msg) bool {
+	if conn != e.conn || !msg.Response || msg.Opcode != e.opcode {
+		return false
+	}
+	if len(msg.Question) == 0 && isErrorRcode(msg.Rcode) {
 		return true
 	}
-	q := msg.Question[0]
-	return q.Qtype == e.question.Qtype && q.Qclass == e.question.Qclass && strings.EqualFold(q.Name, e.question.Name)
+	if len(msg.Question) != len(e.questions) {
+		return false
+	}
+	for i, q := range e.questions {
+		r := msg.Question[i]
+		if r.Qtype != q.Qtype || r.Qclass != q.Qclass || !strings.EqualFold(r.Name, q.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func isErrorRcode(rcode int) bool {
+	switch rcode {
+	case dns.RcodeFormatError, dns.RcodeServerFailure, dns.RcodeNotImplemented, dns.RcodeRefused:
+		return true
+	}
+	return false
 }
 
 type Upstream struct {
@@ -231,7 +257,7 @@ func (u *Upstream) reader(conn net.Conn) {
 		if n > 0 {
 			msg := new(dns.Msg)
 			if err := msg.Unpack(b[:n]); err == nil {
-				u.deliver(msg)
+				u.deliver(conn, msg)
 			}
 		}
 	}
@@ -287,13 +313,11 @@ func (u *Upstream) removePendingAndNotify(id uint16, msg *dns.Msg) {
 
 func (u *Upstream) claimID(q *dns.Msg, conn net.Conn) (uint16, chan *dns.Msg, error) {
 	entry := &pendingEntry{
-		ch:       make(chan *dns.Msg, 2),
-		deadline: time.Now().Add(pendingTTL),
-		conn:     conn,
-	}
-	if len(q.Question) > 0 {
-		entry.question = q.Question[0]
-		entry.hasQuestion = true
+		ch:        make(chan *dns.Msg, 2),
+		deadline:  time.Now().Add(pendingTTL),
+		conn:      conn,
+		opcode:    q.Opcode,
+		questions: slices.Clone(q.Question),
 	}
 
 	start := uint16(rand.Uint32())
@@ -314,13 +338,10 @@ func (u *Upstream) claimID(q *dns.Msg, conn net.Conn) (uint16, chan *dns.Msg, er
 	return 0, nil, errors.New("no free dns id available")
 }
 
-func (u *Upstream) deliver(msg *dns.Msg) {
-	if !msg.Response {
-		return
-	}
+func (u *Upstream) deliver(conn net.Conn, msg *dns.Msg) {
 	u.pendingMu.Lock()
 	entry, ok := u.pending[msg.Id]
-	if !ok || !entry.matches(msg) {
+	if !ok || !entry.matches(conn, msg) {
 		u.pendingMu.Unlock()
 		return
 	}
