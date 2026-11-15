@@ -126,12 +126,21 @@ func (a attemptRecorder) end(seq int, r *dns.Msg, err error) {
 	a.journal.EndAttempt(seq, rcode, errKind)
 }
 
+// abandoned reports whether an attempt ended only because its query stopped
+// waiting for it: another upstream's answer was already returned and the query
+// finished, or the client went away. Such an attempt says nothing about the
+// upstream, so observers do not count it as a failure or a latency sample.
+// The query journal still shows it as unfinished or canceled.
+func abandoned(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled)
+}
+
 func exchange(ctx context.Context, q *dns.Msg, u Upstream, observer query_context.UpstreamObserver, principal query_context.Principal, rec attemptRecorder) (*dns.Msg, int, error) {
 	started := time.Now()
 	seq := rec.begin(u)
 	r, err := u.Exchange(ctx, q)
 	rec.end(seq, r, err)
-	if observer != nil {
+	if observer != nil && !abandoned(ctx, err) {
 		attempt := query_context.UpstreamAttempt{
 			Principal:  principal,
 			UpstreamID: observerID(u),
@@ -165,7 +174,7 @@ func exchangeDetailed(ctx context.Context, q *dns.Msg, u Upstream, observer quer
 		result.Response, err = u.Exchange(ctx, q)
 	}
 	rec.end(seq, result.Response, err)
-	if observer != nil {
+	if observer != nil && !abandoned(ctx, err) {
 		attempt := query_context.UpstreamAttempt{
 			Principal: principal, UpstreamID: observerID(u), Duration: time.Since(started),
 			Rcode: -1, Failed: err != nil || result.Response == nil,

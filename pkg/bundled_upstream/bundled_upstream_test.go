@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -236,6 +237,78 @@ func TestExchangeParallelJournalsEveryAttemptByLabel(t *testing.T) {
 	for _, a := range trace.Attempts {
 		if a.Upstream == "contains-secret" {
 			t.Fatal("attempt named by address")
+		}
+	}
+}
+
+// blockingUpstream answers only when its query is canceled or times out.
+type blockingUpstream struct{ id string }
+
+func (u *blockingUpstream) Exchange(ctx context.Context, _ *dns.Msg) (*dns.Msg, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (u *blockingUpstream) Trusted() bool      { return true }
+func (u *blockingUpstream) Address() string    { return u.id }
+func (u *blockingUpstream) ObserverID() string { return u.id }
+
+// canceledUpstream fails with context.Canceled on its own, while its query
+// is still waiting.
+type canceledUpstream struct{ id string }
+
+func (u *canceledUpstream) Exchange(context.Context, *dns.Msg) (*dns.Msg, error) {
+	return nil, context.Canceled
+}
+func (u *canceledUpstream) Trusted() bool      { return true }
+func (u *canceledUpstream) Address() string    { return u.id }
+func (u *canceledUpstream) ObserverID() string { return u.id }
+
+// A race loser is canceled once its query finishes with the winner's answer.
+// That is not the loser's failure and must not reach the statistics, while an
+// upstream that runs out the query's time, or reports a cancellation of its
+// own while the query still waits, counts as failed.
+func TestExchangeParallelDoesNotObserveAbandonedAttempts(t *testing.T) {
+	for _, detailed := range []bool{false, true} {
+		exchange := ExchangeParallel
+		if detailed {
+			exchange = ExchangeParallelDetailed
+		}
+		run := func(ctx context.Context, cancel context.CancelFunc, upstreams []Upstream) []query_context.UpstreamAttempt {
+			t.Helper()
+			meta := query_context.NewRequestMeta(netip.Addr{})
+			var (
+				mu       sync.Mutex
+				attempts []query_context.UpstreamAttempt
+				work     sync.WaitGroup
+			)
+			meta.SetUpstreamObserver(func(a query_context.UpstreamAttempt) { mu.Lock(); attempts = append(attempts, a); mu.Unlock() })
+			meta.SetBackgroundWorkTracker(func() (func(), bool) { work.Add(1); return work.Done, true })
+			q := new(dns.Msg).SetQuestion("example.org.", dns.TypeA)
+			_, _ = exchange(ctx, query_context.NewContext(q, meta), upstreams, nil)
+			cancel() // the query finished, as EntryHandler does on return
+			work.Wait()
+			mu.Lock()
+			defer mu.Unlock()
+			sort.Slice(attempts, func(i, j int) bool { return attempts[i].UpstreamID < attempts[j].UpstreamID })
+			return attempts
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		attempts := run(ctx, cancel, []Upstream{&blockingUpstream{id: "ff/0"}, &fakeUpstream{id: "ff/1", trusted: true}})
+		if len(attempts) != 1 || attempts[0].UpstreamID != "ff/1" || attempts[0].Failed {
+			t.Fatalf("detailed=%t: race loser observed: %+v", detailed, attempts)
+		}
+
+		ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
+		attempts = run(ctx, cancel, []Upstream{&blockingUpstream{id: "ff/0"}, &blockingUpstream{id: "ff/1"}})
+		if len(attempts) != 2 || !attempts[0].Failed || !attempts[1].Failed {
+			t.Fatalf("detailed=%t: timed out attempts = %+v", detailed, attempts)
+		}
+
+		ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
+		attempts = run(ctx, cancel, []Upstream{&canceledUpstream{id: "ff/0"}, &blockingUpstream{id: "ff/1"}})
+		if len(attempts) != 2 || attempts[0].UpstreamID != "ff/0" || !attempts[0].Failed {
+			t.Fatalf("detailed=%t: upstream's own cancellation not counted: %+v", detailed, attempts)
 		}
 	}
 }
