@@ -270,5 +270,5 @@ func TestMySQLIntegrationDeleteUser(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	checkUserDeleted(t, store, f, started)
+	checkUserDeleted(t, store, f, started, time.Now().Add(time.Hour))
 }
