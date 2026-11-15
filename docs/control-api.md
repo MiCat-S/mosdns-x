@@ -7,7 +7,7 @@
 - 基础路径 `/api/v1`，请求和响应为 JSON；成功直接返回下列对象，不套额外 `data` 层。列表返回 `{items: [], next_cursor?: string}`，空列表必须是数组。写入成功返回 200 或创建时 201，删除/退出成功 204。
 - 失败返回 `{error: {code: string, message: string}}`。code 使用 `invalid_input`、`invalid_credential`、`forbidden`、`not_found`、`conflict`、`rate_limited`、`quota_exceeded`、`unavailable`。错误不包含秘密或内部数据库错误。
 - 面板通过 HttpOnly 会话 Cookie 鉴权；写请求须携带 `X-CSRF-Token`。登录校验同源 Origin。API 不允许跨域读取；Cookie、CSRF 和 DNS Token 不保存到浏览器持久存储。
-- `GET /session` 和成功登录返回 `{user: User, csrf_token: string, expires_at: string}`。前端刷新后重新获取会话。
+- `GET /session` 和成功登录返回 `{user: User, csrf_token: string, expires_at: string, identity_sync?: {mode, master_panel_url?}}`。前端刷新后重新获取会话。`identity_sync` 只在启用[多节点账户同步](#多节点账户同步)时出现，见下文。
 - `/me/*` 的用户身份来自会话；`/admin/*` 需要服务端管理员授权。服务端对凭证归属再次检查。
 - 分页使用 `limit`（默认 100，上限 1000）和 `cursor`。时间查询用 `from`、`to`，左闭右开，最长 31 天。前端不得将单页用量冒充整个区间的用量。
 - 用量和响应聚合按分钟桶时间筛选；需要完整分钟区间时将边界对齐到整分钟，当前分钟仍可能增长。查询明细按请求事件时间筛选。当前周期已用额度直接读取 `quota.used`。
@@ -36,7 +36,7 @@
 
 `IssuedCredential` 的 token 是规范小写 RFC 4122 UUIDv4，只展示一次，并与 `Credential.id` 分离。数据库只保存完整 token 的 SHA-256；升级前签发的 `id.secret` token 继续有效，轮换后改为 UUIDv4。`doh_url` 是服务器配置的公共 DNS 基础 URL 加凭证路径；固定基础 URL 可搭配 `Authorization: Bearer <token>` 使用。创建完成后，列表只显示 Credential 元数据。零值到期时间表示未单独设置，由账户服务到期约束；前端对 `0001-01-01T00:00:00Z` 显示为未单独设置。
 
-删除用户会在一个事务中移除账户、会话、设备凭证、计费用量、旧版遗留的 DNS 策略设置与规则及公共列表覆盖，以及该用户执行的或以该用户、其会话、凭证、规则为对象的审计记录；随后清除该用户的查询明细和按用户统计的聚合。全站聚合不含用户标识，予以保留。删除后只留下一条 `delete_user` 审计，记录执行删除的管理员和被删除的用户 ID，不含用户名。管理员不能删除自己，最后一个启用的管理员因此始终保留。若账户已删除但查询日志清除失败，接口返回 503；对同一 ID 再次调用会补做清除，然后返回 404。
+删除用户会在一个事务中移除账户、会话、设备凭证、计费用量、旧版遗留的 DNS 策略设置与规则及公共列表覆盖，以及该用户执行的或以该用户、其会话、凭证、规则为对象的审计记录；随后清除该用户的查询明细和按用户统计的聚合。全站聚合不含用户标识，予以保留。删除后只留下一条 `delete_user` 审计，记录执行删除的管理员和被删除的用户 ID，不含用户名。管理员不能删除自己，最后一个启用的管理员因此始终保留。若账户已删除但查询日志清除失败，接口返回 503；对同一 ID 再次调用会补做清除，然后返回 404。使用 MySQL 存储时，删除事务只移除账户、会话、凭证、遗留策略和关联审计，并登记一条清除任务后即返回；该用户的计费用量、查询明细和按用户统计由后台每秒分批清除（每批每类最多 1000 行，每条语句受操作超时约束），任务保存在数据库中，重启后继续，因此不会因历史数据量大而超时，也不会长时间阻塞其他账户的受理。
 
 审计记录只能按对象 ID 关联到用户。维护任务按保留期清理过期会话和凭证后，更早的、只以这些会话或凭证为对象的审计便无法再关联到用户，删除用户时不会一并移除，直到 90 天审计保留期到期。本版起，凭证和会话审计的 `metadata` 附带 `user_id`，之后产生的记录不受此限制。
 
@@ -58,7 +58,7 @@
 | GET | `/admin/queries` | 管理员查询日志；可用 `user_id` 筛选 |
 | GET | `/me/top-domains` | 当前用户查询量最多的域名 `TopDomains`；需启用 `query_log` |
 | GET | `/admin/top-domains` | 全局查询量最多的域名；可用 `user_id` 选定用户 |
-| GET | `/admin/audit` | `PageResult<AuditRecord>`；`action` 包括账户与凭证操作（`initialize_admin`、`create_user`、`update_user`、`delete_user`、`set_password`、`change_password`、`revoke_session`、`create_credential`、`rotate_credential`、`revoke_credential`），以及运行操作 `runtime_apply`、`runtime_rollback`、`runtime_reload`（对象类型 `revision`）和 `cache_purge`（对象类型 `domain`） |
+| GET | `/admin/audit` | `PageResult<AuditRecord>`；`action` 包括账户与凭证操作（`initialize_admin`、`create_user`、`update_user`、`delete_user`、`set_password`、`change_password`、`revoke_session`、`create_credential`、`rotate_credential`、`revoke_credential`），从节点写入主控快照时的 `identity_sync`（对象类型 `node`），以及运行操作 `runtime_apply`、`runtime_rollback`、`runtime_reload`（对象类型 `revision`）和 `cache_purge`（对象类型 `domain`） |
 | GET | `/admin/system` | 安全的系统与配置概览，省略原始插件参数及秘密 |
 | POST | `/admin/runtime/cache/purge` | `{domain,subdomains}` → `{domain,subdomains,caches,removed}`，清除指定域名的缓存 |
 
@@ -82,6 +82,16 @@
 - 响应聚合默认保留 7 天。上述客户端 IP、Answer IP、EDNS/ECS 字段仅在 `query_log` 启用时写入查询明细；查询明细默认保留 24 小时且最多 100,000 条，均可通过 `control.telemetry` 在允许范围内调整。查询更久区间不会补齐已清理的数据。客户端 IP 和 ECS 可能属于个人或网络识别信息，启用前应按部署所在地要求限制面板访问并告知用户。P95 是直方图桶上界估算。
 - `cache/purge` 从当前运行代的全部 `cache` 插件（内存与 Redis，包括预置的 `_default_cache`）中删除问题名称等于 `domain` 的缓存条目，不分查询类型；`subdomains` 为 `true` 时同时删除其下所有子域名。不需要 `managed_config`。`domain` 不区分大小写，可带结尾的点，非 ASCII 域名自动转换为 Punycode；只接受字母、数字、`-` 和 `_`，不接受 `*` 或根域，否则返回 400 `invalid_domain`。响应中的 `domain` 是规范化后的 FQDN，`caches` 是配置中的缓存插件数（预置的 `_default_cache` 会被清除但不计入），`removed` 是删除的条目数。每个缓存插件同一时间只执行一次清除，撞上正在进行的清除时返回 429 `cache_purge_busy`；没有运行代在服务时返回 503 `unavailable`。某个缓存清除失败（如 Redis 不可用）时返回 503 `cache_purge_failed`，其他缓存照常清除，原因只写入服务日志。一次请求对全部缓存插件合计最多 30 秒。每次清除都会写一条 `cache_purge` 审计记录（对象类型 `domain`，`metadata` 含域名、是否含子域名、缓存数与删除数；域名超过 64 字节时只出现在 `metadata` 中），并以 `cache purged` 写一条 info 日志。
 - `system` 至少提供 `version`、`started_at`、`public_dns_url`、`query_log_enabled`、`config`（配置白名单概览）。`config` 包含 `dns_protocols`、`management_enabled`、`pprof_enabled`、`control_storage` 和 `telemetry_storage`，不会返回数据库路径或 MySQL DSN。查询明细默认关闭，关闭时接口返回空数组和页面说明。
+
+## 多节点账户同步
+
+配置见[服务配置](service-config.md#多节点账户同步controlidentity_sync)。启用后接口有以下变化：
+
+- 会话对象带 `identity_sync`：主控为 `{mode: "master"}`；从节点为 `{mode: "follower", master_panel_url}`，`master_panel_url` 即配置的 `master_url`。未启用时省略该字段。所有已登录用户都能看到，不含秘密。
+- 从节点拒绝一切账户、密码与凭证写入，返回 409 `identity_managed_by_master`，包括 `/me/password`、`/me/credentials` 的签发、轮换和撤销，以及 `/admin/users` 下的开设、修改、删除、重置密码和凭证操作。读取接口、登录与退出不受影响。
+- 主控上修改已有账户的 `period` 或 `timezone` 返回 409 `identity_period_locked`。
+- 从节点的 `GET /admin/health` 带 `identity_sync`：`{mode: "follower", source, last_attempt_at, last_success_at, last_error?, users, credentials}`。`source` 是主控的主机和端口；两个时间在尚未发生时为 `null`；`last_error` 只取 `fetch_failed`、`http_<状态码>`、`invalid_snapshot`、`apply_failed`、`cleanup_failed`、`period_mismatch` 之一，不返回原始错误；`period_mismatch` 表示同步已成功，只是有账户的周期或时区与主控不一致而保留了本机设置。`metrics` 中另有 `identity_sync`（“账户同步延迟”，单位秒，值为距上次成功同步的秒数），超过 90 秒为 `warning`、超过 300 秒为 `critical`（拉取间隔较长时取间隔的 3 倍和 10 倍），从未成功时为 `critical` 并带原因 `sync_never`，最近一次失败时原因为 `sync_failed`，存在周期或时区不一致时至少为 `warning` 并带原因 `period_mismatch`。该指标参与总体评分。
+- 主控提供 `GET /api/v1/identity/snapshot`，只接受 `Authorization: Bearer <identity_sync.token>`，不接受面板会话；令牌错误返回 401 `invalid_credential`，非主控节点返回 404。响应为 `{version: 1, users: [...], credentials: [...]}`：`users` 每项为 `User` 加 `password_salt`、`password_hash`、`password_version`，`credentials` 每项为 `Credential` 加 `token_hash`、`legacy_secret_hash`、`version`，包括已撤销和已到期的凭证。响应含认证材料，只应通过 HTTPS 传输，不得写入日志。从节点在字段缺失、ID 或令牌哈希重复、凭证指向不存在的账户或没有启用的管理员时拒绝整份快照，不会把缺失的条目当作删除。
 
 ## 托管运行配置
 
