@@ -89,7 +89,8 @@ func populateForDeletion(t *testing.T, s Service) deletionFixture {
 }
 
 // checkUserDeleted verifies what DeleteUser promises through the service API.
-func checkUserDeleted(t *testing.T, s Service, f deletionFixture, auditFrom time.Time) {
+// The audit window must be on the store's own clock.
+func checkUserDeleted(t *testing.T, s Service, f deletionFixture, auditFrom, auditTo time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := s.GetUser(ctx, f.victim.ID); !errors.Is(err, ErrNotFound) {
@@ -104,7 +105,7 @@ func checkUserDeleted(t *testing.T, s Service, f deletionFixture, auditFrom time
 	if _, err := s.AuthenticateCredential(ctx, f.bystanderToken); err != nil {
 		t.Fatalf("bystander credential err=%v", err)
 	}
-	audit, err := s.ListAudit(ctx, auditFrom, time.Now().Add(time.Hour), Page{Limit: 1000})
+	audit, err := s.ListAudit(ctx, auditFrom, auditTo, Page{Limit: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestDeleteUserErasesEverythingAboutTheUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkUserDeleted(t, s, f, now.Add(-time.Hour))
+	checkUserDeleted(t, s, f, now.Add(-time.Hour), now.Add(time.Hour))
 }
 
 // seedRetiredBoltRecords leaves rows in the retired policy and public list
