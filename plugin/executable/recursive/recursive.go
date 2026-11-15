@@ -39,6 +39,7 @@ type Args struct {
 	Socks5           string `yaml:"socks5"`
 	S5Username       string `yaml:"s5_username"`
 	S5Password       string `yaml:"s5_password"`
+	Proxy            string `yaml:"proxy"`
 	SoMark           int    `yaml:"so_mark"`
 	BindToDevice     string `yaml:"bind_to_device"`
 }
@@ -86,6 +87,7 @@ func newOpts(bp *coremain.BP, args *Args) (recursor.Opts, error) {
 		Socks5:       args.Socks5,
 		S5Username:   args.S5Username,
 		S5Password:   args.S5Password,
+		Proxy:        args.Proxy,
 		SoMark:       args.SoMark,
 		BindToDevice: args.BindToDevice,
 	})
@@ -144,7 +146,13 @@ func (p *recursive) Exec(ctx context.Context, qCtx *query_context.Context, next 
 	if err != nil {
 		return err
 	}
-	qCtx.SetResponse(r)
+	// Name the plugin as the upstream so query logs and the cache record
+	// where the answer came from; a private resolver is labelled by its tag.
+	qCtx.SetResponseWithTrace(r, query_context.ResponseTrace{
+		Source:        query_context.ResponseSourceUpstream,
+		SourceID:      p.Tag(),
+		UpstreamLabel: p.Tag(),
+	})
 	return executable_seq.ExecChainNode(ctx, qCtx, next)
 }
 

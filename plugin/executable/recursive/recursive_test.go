@@ -80,4 +80,18 @@ func TestExec(t *testing.T) {
 	if qCtx.R() == nil || qCtx.R().Rcode != dns.RcodeNotImplemented || qCtx.R().Id != q.Id {
 		t.Fatalf("unexpected response %v", qCtx.R())
 	}
+	tr := qCtx.ResponseTrace()
+	if tr.Source != query_context.ResponseSourceUpstream || tr.SourceID != "test" || tr.UpstreamLabel != "test" {
+		t.Fatalf("unexpected response trace %+v", tr)
+	}
+}
+
+func TestProxyArg(t *testing.T) {
+	bp := coremain.NewBP("test", PluginType, nil, nil)
+	if _, err := newOpts(bp, &Args{Proxy: "socks5://127.0.0.1:1080"}); err != nil {
+		t.Fatalf("proxy rejected: %v", err)
+	}
+	if _, err := newOpts(bp, &Args{Proxy: "socks5://127.0.0.1:1080", Socks5: "127.0.0.1:1080"}); err == nil {
+		t.Fatal("proxy together with socks5 accepted")
+	}
 }
