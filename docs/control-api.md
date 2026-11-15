@@ -34,7 +34,9 @@
 | GET/POST | `/admin/users/{id}/credentials` | 与 `/me/credentials` 相同 |
 | POST/DELETE | `/admin/users/{id}/credentials/{credential_id}[/rotate]` | 与用户端对应操作相同 |
 
-`IssuedCredential` 的 token 是规范小写 RFC 4122 UUIDv4，只展示一次，并与 `Credential.id` 分离。数据库只保存完整 token 的 SHA-256；升级前签发的 `id.secret` token 继续有效，轮换后改为 UUIDv4。`doh_url` 是服务器配置的公共 DNS 基础 URL 加凭证路径；固定基础 URL 可搭配 `Authorization: Bearer <token>` 使用。创建完成后，列表只显示 Credential 元数据。零值到期时间表示未单独设置，由账户服务到期约束；前端对 `0001-01-01T00:00:00Z` 显示为未单独设置。
+`IssuedCredential` 的 token 是规范小写 RFC 4122 UUIDv4，并与 `Credential.id` 分离。DNS 鉴权只比对完整 token 的 SHA-256；为了让面板随时显示完整地址，签发和轮换时还会把 token 另存在单独的表中（按凭证 ID 和版本对应，撤销或删除凭证时一并清除），鉴权和受理路径不读取它。升级前签发的 `id.secret` token 继续有效，轮换后改为 UUIDv4。`doh_url` 是服务器配置的公共 DNS 基础 URL 加凭证路径；固定基础 URL 也可搭配 `Authorization: Bearer <token>` 使用。
+
+凭证列表的每一项带 `token_available`；为 `true` 时同时带 `doh_url`，配置了多节点时还带 `doh_urls: [{name, url}]`，列表不返回 token 本身。保存 token 之前签发的凭证为 `false`，可以用 `POST /me/credentials/{id}/restore-token`（管理员为 `/admin/users/{uid}/credentials/{id}/restore-token`）提交设备上正在使用的 token 或完整地址补录：与已存哈希一致时返回与签发相同的 `IssuedCredential`，凭证 ID、哈希和版本都不变，设备无需改动；不一致返回 400 `token_mismatch`，已撤销返回 409 `conflict`，已到期返回 403 `forbidden`，从节点返回 409 `identity_managed_by_master`。补录会写审计，但不记录 token。零值到期时间表示未单独设置，由账户服务到期约束；前端对 `0001-01-01T00:00:00Z` 显示为未单独设置。
 
 删除用户会在一个事务中移除账户、会话、设备凭证、计费用量、旧版遗留的 DNS 策略设置与规则及公共列表覆盖，以及该用户执行的或以该用户、其会话、凭证、规则为对象的审计记录；随后清除该用户的查询明细和按用户统计的聚合。全站聚合不含用户标识，予以保留。删除后只留下一条 `delete_user` 审计，记录执行删除的管理员和被删除的用户 ID，不含用户名。管理员不能删除自己，最后一个启用的管理员因此始终保留。若账户已删除但查询日志清除失败，接口返回 503；对同一 ID 再次调用会补做清除，然后返回 404。使用 MySQL 存储时，删除事务只移除账户、会话、凭证、遗留策略和关联审计，并登记一条清除任务后即返回；该用户的计费用量、查询明细和按用户统计由后台每秒分批清除（每批每类最多 1000 行，每条语句受操作超时约束），任务保存在数据库中，重启后继续，因此不会因历史数据量大而超时，也不会长时间阻塞其他账户的受理。
 
@@ -91,7 +93,8 @@
 - 从节点拒绝一切账户、密码与凭证写入，返回 409 `identity_managed_by_master`，包括 `/me/password`、`/me/credentials` 的签发、轮换和撤销，以及 `/admin/users` 下的开设、修改、删除、重置密码和凭证操作。读取接口、登录与退出不受影响。
 - 主控上修改已有账户的 `period` 或 `timezone` 返回 409 `identity_period_locked`。
 - 从节点的 `GET /admin/health` 带 `identity_sync`：`{mode: "follower", source, last_attempt_at, last_success_at, last_error?, users, credentials}`。`source` 是主控的主机和端口；两个时间在尚未发生时为 `null`；`last_error` 只取 `fetch_failed`、`http_<状态码>`、`invalid_snapshot`、`apply_failed`、`cleanup_failed`、`period_mismatch` 之一，不返回原始错误；`period_mismatch` 表示同步已成功，只是有账户的周期或时区与主控不一致而保留了本机设置。`metrics` 中另有 `identity_sync`（“账户同步延迟”，单位秒，值为距上次成功同步的秒数），超过 90 秒为 `warning`、超过 300 秒为 `critical`（拉取间隔较长时取间隔的 3 倍和 10 倍），从未成功时为 `critical` 并带原因 `sync_never`，最近一次失败时原因为 `sync_failed`，存在周期或时区不一致时至少为 `warning` 并带原因 `period_mismatch`。该指标参与总体评分。
-- 主控提供 `GET /api/v1/identity/snapshot`，只接受 `Authorization: Bearer <identity_sync.token>`，不接受面板会话；令牌错误返回 401 `invalid_credential`，非主控节点返回 404。响应为 `{version: 1, users: [...], credentials: [...]}`：`users` 每项为 `User` 加 `password_salt`、`password_hash`、`password_version`，`credentials` 每项为 `Credential` 加 `token_hash`、`legacy_secret_hash`、`version`，包括已撤销和已到期的凭证。响应含认证材料，只应通过 HTTPS 传输，不得写入日志。从节点在字段缺失、ID 或令牌哈希重复、凭证指向不存在的账户或没有启用的管理员时拒绝整份快照，不会把缺失的条目当作删除。
+- 主控配置了 `nodes` 时，签发、轮换、补录凭证的响应和凭证列表中已保存 token 的项带 `doh_urls: [{name, url}]`，`url` 是该节点地址加凭证路径，规则与 `doh_url` 相同；`doh_url` 保持为本节点的地址。未配置时省略 `doh_urls`。新签发或轮换的凭证要等其他节点下一次同步成功后（默认 30 秒内）才在那些节点生效。
+- 主控提供 `GET /api/v1/identity/snapshot`，只接受 `Authorization: Bearer <identity_sync.token>`，不接受面板会话；令牌错误返回 401 `invalid_credential`，非主控节点返回 404。响应为 `{version: 1, users: [...], credentials: [...], nodes?: [...]}`：`users` 每项为 `User` 加 `password_salt`、`password_hash`、`password_version`，`credentials` 每项为 `Credential` 加 `token_hash`、`legacy_secret_hash`、`version` 和已保存时的 token，包括已撤销和已到期的凭证；从节点会用哈希校验收到的 token。响应含认证材料，只应通过 HTTPS 传输，不得写入日志。从节点在字段缺失、ID 或令牌哈希重复、凭证指向不存在的账户或没有启用的管理员时拒绝整份快照，不会把缺失的条目当作删除。
 
 ## 托管运行配置
 
