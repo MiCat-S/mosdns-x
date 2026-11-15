@@ -102,9 +102,14 @@ func TestExchangeIgnoresRepliesThatDoNotAnswerTheQuery(t *testing.T) {
 		wrongOpcode.Opcode = dns.OpcodeNotify
 		questionless := reply(q, "198.51.100.6")
 		questionless.Question = nil
+		// An error reply may omit the question, but then it must carry no
+		// records: this one would smuggle an answer past the question check.
+		questionlessError := reply(q, "198.51.100.7")
+		questionlessError.Rcode = dns.RcodeFormatError
+		questionlessError.Question = nil
 		good := reply(q, "192.0.2.1")
 		good.Question[0].Name = "WwW.ExAmPlE.oRg."
-		return []*dns.Msg{wrongName, wrongType, notResponse, extraQuestion, wrongOpcode, questionless, good}
+		return []*dns.Msg{wrongName, wrongType, notResponse, extraQuestion, wrongOpcode, questionless, questionlessError, good}
 	})
 	u := newTestUpstream(t, addr)
 

@@ -61,14 +61,15 @@ type pendingEntry struct {
 // waits for. The reply must arrive on the socket the query was sent from, be
 // a response with the query's opcode and echo its whole question section
 // (names compared case-insensitively). An error reply may leave the question
-// section out, as some servers do for FORMERR or REFUSED; it carries no
-// records, so accepting it only ends the wait early.
+// section out, as some servers do for FORMERR or REFUSED. It is accepted only
+// when it carries no records besides OPT, so it can end the wait early but
+// cannot deliver data that was never matched to the query.
 func (e *pendingEntry) matches(conn net.Conn, msg *dns.Msg) bool {
 	if conn != e.conn || !msg.Response || msg.Opcode != e.opcode {
 		return false
 	}
 	if len(msg.Question) == 0 && isErrorRcode(msg.Rcode) {
-		return true
+		return recordless(msg)
 	}
 	if len(msg.Question) != len(e.questions) {
 		return false
@@ -76,6 +77,18 @@ func (e *pendingEntry) matches(conn net.Conn, msg *dns.Msg) bool {
 	for i, q := range e.questions {
 		r := msg.Question[i]
 		if r.Qtype != q.Qtype || r.Qclass != q.Qclass || !strings.EqualFold(r.Name, q.Name) {
+			return false
+		}
+	}
+	return true
+}
+
+func recordless(msg *dns.Msg) bool {
+	if len(msg.Answer) > 0 || len(msg.Ns) > 0 {
+		return false
+	}
+	for _, rr := range msg.Extra {
+		if rr.Header().Rrtype != dns.TypeOPT {
 			return false
 		}
 	}
